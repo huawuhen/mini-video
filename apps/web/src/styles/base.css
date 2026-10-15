@@ -1,0 +1,20 @@
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--miv-bg); color: var(--miv-text); font-family: var(--miv-font); -webkit-font-smoothing: antialiased; }
+body { min-height: 100vh; overflow-x: hidden; }
+a { color: var(--miv-primary-strong); text-decoration: none; }
+h1, h2, h3, p { margin: 0; }
+img, video { max-width: 100%; display: block; }
+
+.miv-page { padding: var(--miv-space-4); max-width: var(--miv-content-max); margin: 0 auto; }
+.miv-card { background: var(--miv-surface); border-radius: var(--miv-radius-lg); box-shadow: var(--miv-shadow); padding: var(--miv-space-4); }
+.miv-section { margin-top: var(--miv-space-5); }
+.miv-section-title { font-size: 17px; font-weight: 600; margin-bottom: var(--miv-space-3); display: flex; align-items: center; justify-content: space-between; }
+.miv-muted { color: var(--miv-text-2); font-size: 14px; line-height: 1.6; }
+.miv-hint { color: var(--miv-text-3); font-size: 12px; }
+.miv-grid { display: grid; gap: var(--miv-space-3); grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.miv-btn-accent.van-button--primary { background: var(--miv-accent); border-color: var(--miv-accent); }
+
+@media (min-width: 1024px) {
+  .miv-page { padding: var(--miv-space-5) var(--miv-space-6); }
+  .miv-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: var(--miv-space-4); }
+}

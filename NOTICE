@@ -1,0 +1,7 @@
+Mini AI Video
+Copyright (C) 2026 Mini AI Video contributors
+
+Third-party material copied into this repository must be listed below with its source and license.
+
+- (none yet) Design ideas referenced from open-ai-canvas (MIT, https://github.com/ddcat-ai/open-ai-canvas); no code copied.
+- Generation engine modules will be ported from the internal chaodayun project (same owner).
