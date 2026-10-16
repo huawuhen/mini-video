@@ -35,14 +35,15 @@
 
 - `docs/API.md` 是前后端唯一接口事实来源；`apps/web/src/api/types.ts` 必须与之一致。
 - 改接口流程：在 handoff 提变更申请 → 主代理更新 `docs/API.md` → 后端实现 → 前端跟进。**禁止前后端各自先改再对齐。**
-- 金额字段统一 `*Fen`（整数）；时间统一 ISO 8601 字符串（UTC）；ID 为带前缀的字符串（`prj_`、`ast_`、`shot_` …）。
+- 金额字段统一 `*Fen`（整数）；时间统一 ISO 8601 字符串（UTC）；ID 为带前缀的字符串（`prj_`、`chr_`、`seg_` …，前缀表见 `docs/API.md` §0）。
 - 错误响应统一 `{ code, message, requestId }`，`message` 为面向用户的中文。
 
 ## 4. Git 与多 Agent 并行
 
-- 每个 Agent 在独立 worktree 与分支工作：`git worktree add ../mini-ai-video-wt/<role> -b agent/<role>/<topic>`；主代理负责合并回 `main`。
+- 远端仓库：`github.com/huawuhen/mini-video`（**公开仓库**，禁止提交密钥与用户数据）。跨设备协作的完整步骤见 `CODEX_HANDOFF.md` §0。
+- 每个 Agent 在独立分支工作：`agent/<role>/<任务ID>-<简述>`（同一台机器上可配合 `git worktree`）；**只有主代理合并并推送 `main`**，开发 Agent 只推送自己的分支，审查结果见 `CODEX_HANDOFF.md` §6。
 - 随做随提交：一个功能/修复一个提交；提交信息写「背景 / 受影响模块 / 验证结果」。禁止 `reset --hard`、`clean -fd`、`push --force`、改写已合并历史；回退一律反向提交。
-- 合并前必须：rebase 到最新 `main` 或解决冲突、跑通本模块测试与 `npm run check`。
+- 推送前必须：`git merge origin/main` 跟上最新 `main` 并解决冲突（已推送的分支不要 rebase）、跑通 `npm run test:server` 与 `npm run check`、`npm run build`。
 
 ## 5. 开发原则
 
