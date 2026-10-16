@@ -1,127 +1,160 @@
-// 与 docs/API.md 一一对应。改动必须先改 docs/API.md（AGENTS.md §3）。
+// 与 docs/API.md v1.0 一一对应；改这里之前先改文档（AGENTS.md §3）。
 
-export interface ApiError { code: string; message: string; requestId?: string }
-export interface Page<T> { items: T[]; nextCursor?: string | null }
+// ── 通用 ──
+export interface ApiError { code: string; message: string; requestId?: string; details?: unknown }
+export interface Page<T> { items: T[]; nextCursor: string | null }
+export type Ratio = '9:16' | '16:9' | '1:1';
 
-// 1. 认证
-export interface User { id: string; phoneMasked: string; nickname: string; avatarUrl?: string }
+// ── §1 认证与用户 ──
+export type TipKey = 'story_review' | 'cast_review' | 'delivery';
+export interface Onboarding { tourCompletedAt: string | null; tipsSeen: TipKey[] }
+export interface User { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding }
 export interface Session { user: User; csrfToken: string }
+export interface LoginResult extends Session { isNewUser: boolean }
 
-// 2. 目录
-export interface StyleOption { id: string; name: string; coverUrl?: string }
-export interface QualityOption { id: string; name: string; note?: string }
+// ── §2 目录 ──
+export interface Style { id: string; name: string; description: string; coverUrl?: string }
+export interface QualityTier { id: string; name: string; note: string; pricePer30sFen: number }
 export interface Catalog {
-  ratios: string[];
-  durations: number[];
-  styles: StyleOption[];
-  qualities: QualityOption[];
-  limits: { minScriptChars: number; maxScriptChars: number };
+  styles: Style[];
+  qualityTiers: QualityTier[];
+  ratios: Ratio[];
+  limits: {
+    minStoryChars: number; maxStoryChars: number; maxDurationSeconds: number; dailyFreeUnderstanding: number;
+    retentionDays: number; expiryRemindDays: number; maxCharacterPhotos: number;
+  };
 }
+export type VoiceCategory = 'girl' | 'boy' | 'child_f' | 'child_m' | 'young_f' | 'young_m' | 'middle_f' | 'middle_m' | 'elder_f' | 'elder_m';
+export interface Voice { id: string; name: string; category: VoiceCategory; categoryName: string; description: string; sampleUrl?: string }
 
-// 3. 钱包与报价
+// ── §3 钱包与报价 ──
 export interface Wallet { availableFen: number; frozenFen: number }
-export type LedgerKind = 'recharge' | 'redeem' | 'reserve' | 'settle' | 'refund' | 'adjust';
-export interface LedgerEntry { id: string; kind: LedgerKind; amountFen: number; title: string; createdAt: string }
-export type QuoteRequest =
-  | { kind: 'project'; sourceText: string; options: ProjectOptions }
-  | { kind: 'asset_version'; projectId: string; assetId: string }
-  | { kind: 'shot_take'; projectId: string; shotId: string };
-export interface Quote { quoteId: string; amountFen: number; breakdown: { label: string; amountFen: number }[]; expiresAt: string }
-
-// 4. 项目
-export interface ProjectOptions { ratio: string; durationSeconds: number; styleId: string; qualityId: string }
-export type SourceType = 'text' | 'file' | 'idea';
-export type ProjectMode = 'auto' | 'guided';
-export interface CreateProjectRequest {
-  title?: string;
-  sourceType: SourceType;
-  sourceText: string;
-  options: ProjectOptions;
-  mode: ProjectMode;
-  quoteId: string;
-  idempotencyKey: string;
+export interface LedgerEntry {
+  id: string; kind: 'recharge' | 'redeem' | 'reserve' | 'settle' | 'refund' | 'charge' | 'adjust';
+  amountFen: number; title: string; createdAt: string;
 }
+export interface EstimateRequest { qualityTierId: string; styleId: string; characterIds: string[] }
+export type QuoteRequest =
+  | { kind: 'cast_looks'; projectId: string }
+  | { kind: 'project_render'; projectId: string }
+  | { kind: 'look_regenerate'; characterId: string; styleId: string }
+  | { kind: 'segment_take'; projectId: string; segmentId: string };
+export interface Quote {
+  quoteId: string; kind: QuoteRequest['kind']; amountFen: number;
+  breakdown: { label: string; amountFen: number }[]; expiresAt: string;
+}
+
+// ── §4 上传 ──
+export interface UploadedImage { uploadId: string; url: string }
+
+// ── §5 数字资产库 ──
+export type GenStatus = 'pending' | 'running' | 'succeeded' | 'failed';
+export interface LookVersion { id: string; status: GenStatus; imageUrl?: string; viewUrls?: string[]; error?: string; createdAt: string }
+export interface Look { styleId: string; selectedVersionId?: string; imageUrl?: string; versions: LookVersion[] }
+export interface Character {
+  id: string; name: string; tags: string[]; avatarUrl?: string; styleIds: string[];
+  worksCount: number; defaultVoiceId?: string; createdAt: string;
+}
+export interface CharacterDetail extends Character { description?: string; photos: { uploadId: string; url: string }[]; looks: Look[] }
+export interface CreateCharacterRequest { name: string; tags?: string[]; description?: string; photoUploadIds: string[]; defaultVoiceId?: string }
+export interface UpdateCharacterRequest { name?: string; tags?: string[]; description?: string; defaultVoiceId?: string | null }
+
+// ── §6 作品 ──
+export type ProjectGroup = 'active' | 'review' | 'done' | 'failed' | 'expired';
 export type ProjectStatus =
-  | 'draft' | 'planning' | 'plan_review' | 'assets_generating' | 'asset_review' | 'storyboarding'
-  | 'shot_review' | 'shots_generating' | 'composing' | 'delivered' | 'paused' | 'failed' | 'canceled';
+  | 'understanding' | 'story_review' | 'casting' | 'cast_review' | 'rendering' | 'composing'
+  | 'delivered' | 'expired' | 'paused' | 'failed' | 'canceled';
+export interface Progress { percent: number; message: string }
+export interface CreateProjectRequest {
+  storyText: string; sourceType: 'text' | 'file'; title?: string;
+  styleId: string; qualityTierId: string; ratio?: Ratio; characterIds: string[]; idempotencyKey: string;
+}
 export interface ProjectSummary {
-  id: string; title: string; status: ProjectStatus; coverUrl?: string; durationSeconds?: number;
+  id: string; title: string; status: ProjectStatus; group: ProjectGroup;
+  coverUrl?: string; durationSeconds?: number; progress: Progress; expiresAt?: string;
   createdAt: string; updatedAt: string;
 }
-export interface ProjectProgress { percent: number; message: string }
+export interface StoryResult { synopsis: string; totalSeconds: number; segmentCount: number; compressed: boolean; notice?: string }
+export type Gender = 'female' | 'male' | 'unknown';
+export type AgeGroup = 'child' | 'teen' | 'young' | 'middle' | 'elder';
+export interface CastMember {
+  id: string; name: string; description: string; gender: Gender; ageGroup: AgeGroup;
+  characterId?: string; matchSource: 'user' | 'ai' | 'new';
+  look: { status: 'ready' | 'missing' | 'generating' | 'failed'; versionId?: string; imageUrl?: string; versions: LookVersion[] };
+  voice?: { voiceId: string; source: 'user' | 'ai' | 'default' };
+}
+export type TakeStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown';
+export interface Take { id: string; status: TakeStatus; videoUrl?: string; posterUrl?: string; error?: string; createdAt: string }
+export interface Segment {
+  id: string; index: number; durationSeconds: number; plot: string;
+  dialogue: { castId: string; line: string }[]; transition: 'prev_tail' | 'hard_cut'; castIds: string[];
+  selectedTakeId?: string; takes: Take[];
+}
+export interface Pricing {
+  looksToGenerate: number; looksFen: number; videoFen: number; totalFen: number;
+  reservedFen: number; settledFen: number; refundedFen: number;
+}
+export interface Render { id: string; status: GenStatus; videoUrl?: string; coverUrl?: string; durationSeconds?: number; createdAt: string }
 export interface ProjectDetail extends ProjectSummary {
-  mode: ProjectMode;
-  options: ProjectOptions;
-  sourceText: string;
+  storyText: string; sourceType: 'text' | 'file'; styleId: string; qualityTierId: string; ratio: Ratio;
   pausedFrom?: ProjectStatus;
-  progress: ProjectProgress;
-  error?: { code: string; message: string };
-  billing: { quotedFen: number; frozenFen: number; settledFen: number };
-  plan?: Plan;
-  assets: Asset[];
-  shots: Shot[];
-  renders: Render[];
+  error?: { code: string; message: string; step: ProjectStatus };
+  story?: StoryResult;
+  cast: CastMember[];
+  segments: Segment[];
+  voicesEnabled: boolean;
+  pricing: Pricing;
+  render?: Render;
+  deliveredAt?: string;
 }
-export type ProjectSection = 'plan' | 'assets' | 'shots' | 'renders';
-export interface ProjectEvent { projectId: string; status: ProjectStatus; progress: ProjectProgress; changed: ProjectSection[] }
-export type ConfirmStage = 'plan' | 'assets' | 'shots';
+export interface ProjectEvent { projectId: string; status: ProjectStatus; progress: Progress; changed: ('story' | 'cast' | 'segments' | 'render' | 'pricing')[] }
 
-// 5. 剧本
-export interface DialogueLine { speaker: string; line: string }
-export interface Scene { id: string; title: string; location: string; description: string; dialogue: DialogueLine[] }
-export interface Plan { version: number; title: string; logline: string; synopsis: string; scenes: Scene[] }
-
-// 6. 资产
-export type GenStatus = 'pending' | 'running' | 'succeeded' | 'failed';
-export interface AssetVersion { id: string; source: 'generated' | 'uploaded'; status: GenStatus; imageUrl?: string; createdAt: string }
-export interface Asset {
-  id: string; kind: 'character' | 'scene' | 'prop'; name: string; description: string;
-  locked: boolean; selectedVersionId?: string; versions: AssetVersion[];
-}
-
-// 7. 镜头
-export interface ShotTake {
-  id: string; source: 'generated' | 'uploaded'; status: GenStatus;
-  videoUrl?: string; posterUrl?: string; error?: string; createdAt: string;
-}
-export interface Shot {
-  id: string; index: number; durationSeconds: number; description: string; voiceover: string;
-  assetRefs: string[]; firstFrameUrl?: string; selectedTakeId?: string; takes: ShotTake[];
-}
-
-// 8. 成片
-export interface RenderOptions { subtitles: boolean; bgmId?: string }
-export interface Render {
-  id: string; status: GenStatus; videoUrl?: string; coverUrl?: string; durationSeconds?: number;
-  options: RenderOptions; createdAt: string;
-}
-
-/** 前端调用的完整 API 面，http 与 mock 两种实现都必须满足。 */
+/** 前端统一 API 接口；mock 与 http 两套实现必须同时满足（src/api/index.ts 选择）。 */
 export interface MivApi {
+  // §1
   me(): Promise<Session>;
   sendSms(phone: string): Promise<{ cooldownSeconds: number }>;
-  login(phone: string, code: string): Promise<Session>;
+  login(phone: string, code: string): Promise<LoginResult>;
   logout(): Promise<void>;
+  updateOnboarding(patch: { tourCompleted?: true; tipSeen?: TipKey }): Promise<{ onboarding: Onboarding }>;
+  // §2
   catalog(): Promise<Catalog>;
+  voices(category?: VoiceCategory): Promise<{ items: Voice[] }>;
+  // §3
   wallet(): Promise<Wallet>;
   ledger(cursor?: string): Promise<Page<LedgerEntry>>;
   redeem(code: string): Promise<{ amountFen: number; wallet: Wallet }>;
-  quote(request: QuoteRequest): Promise<Quote>;
-  uploadScript(file: File): Promise<{ title: string; text: string }>;
-  listProjects(cursor?: string): Promise<Page<ProjectSummary>>;
-  createProject(request: CreateProjectRequest): Promise<ProjectDetail>;
+  estimate(body: EstimateRequest): Promise<{ minFen: number; maxFen: number }>;
+  quote(body: QuoteRequest): Promise<Quote>;
+  // §4
+  uploadStory(file: File): Promise<{ title: string; text: string }>;
+  uploadImage(file: File): Promise<UploadedImage>;
+  // §5
+  listCharacters(): Promise<{ items: Character[] }>;
+  createCharacter(body: CreateCharacterRequest): Promise<Character>;
+  getCharacter(id: string): Promise<CharacterDetail>;
+  updateCharacter(id: string, body: UpdateCharacterRequest): Promise<CharacterDetail>;
+  replaceCharacterPhotos(id: string, uploadIds: string[]): Promise<CharacterDetail>;
+  generateLook(id: string, styleId: string, quoteId: string, idempotencyKey: string): Promise<LookVersion>;
+  selectLook(id: string, styleId: string, versionId: string): Promise<CharacterDetail>;
+  deleteCharacter(id: string): Promise<{ ok: true }>;
+  // §6
+  listProjects(group?: ProjectGroup, cursor?: string): Promise<Page<ProjectSummary>>;
+  createProject(body: CreateProjectRequest): Promise<ProjectDetail>;
   getProject(id: string): Promise<ProjectDetail>;
-  confirm(id: string, stage: ConfirmStage): Promise<ProjectDetail>;
+  deleteProject(id: string): Promise<{ ok: true }>;
+  reanalyzeStory(id: string, storyText: string): Promise<ProjectDetail>;
+  setCastCharacter(id: string, castId: string, characterId: string | null): Promise<ProjectDetail>;
+  confirmStory(id: string, quoteId: string | undefined, idempotencyKey: string): Promise<ProjectDetail>;
+  updateCast(id: string, castId: string, patch: { lookVersionId?: string; voiceId?: string }): Promise<ProjectDetail>;
+  regenerateCastLook(id: string, castId: string, quoteId: string, idempotencyKey: string): Promise<ProjectDetail>;
+  confirmCast(id: string, quoteId: string, idempotencyKey: string): Promise<ProjectDetail>;
   pause(id: string): Promise<ProjectDetail>;
   resume(id: string): Promise<ProjectDetail>;
   retry(id: string): Promise<ProjectDetail>;
   cancel(id: string): Promise<ProjectDetail>;
-  updatePlan(id: string, patch: Partial<Pick<Plan, 'title' | 'logline' | 'synopsis' | 'scenes'>>): Promise<Plan>;
-  regeneratePlan(id: string, instruction?: string): Promise<ProjectDetail>;
-  generateAssetVersion(id: string, assetId: string, quoteId: string, idempotencyKey: string): Promise<AssetVersion>;
-  selectAssetVersion(id: string, assetId: string, versionId: string): Promise<Asset>;
-  updateShot(id: string, shotId: string, patch: Partial<Pick<Shot, 'voiceover' | 'description' | 'durationSeconds'>>): Promise<Shot>;
-  generateShotTake(id: string, shotId: string, quoteId: string, idempotencyKey: string): Promise<ShotTake>;
-  selectShotTake(id: string, shotId: string, takeId: string): Promise<Shot>;
-  createRender(id: string, options: RenderOptions, idempotencyKey: string): Promise<Render>;
+  updateSegment(id: string, segmentId: string, plot: string): Promise<ProjectDetail>;
+  regenerateSegment(id: string, segmentId: string, quoteId: string, idempotencyKey: string): Promise<ProjectDetail>;
+  selectTake(id: string, segmentId: string, takeId: string): Promise<ProjectDetail>;
+  downloadUrl(id: string): string;
 }

@@ -1,5 +1,5 @@
-// 真实后端实现：/api/v1 + Cookie 会话 + X-CSRF-Token（docs/API.md 通用约定）。
-import type { ApiError, MivApi, Session } from './types';
+// 真实后端实现：/api/v1 + Cookie 会话 + X-CSRF-Token（docs/API.md §0）。
+import type { ApiError, LoginResult, MivApi, Session } from './types';
 
 const BASE = '/api/v1';
 let csrfToken = '';
@@ -7,12 +7,14 @@ let csrfToken = '';
 export class MivApiError extends Error implements ApiError {
   code: string;
   requestId?: string;
+  details?: unknown;
   status: number;
   constructor(status: number, body: Partial<ApiError>) {
     super(body.message || '网络开小差了，请稍后再试');
     this.status = status;
     this.code = body.code || 'NETWORK_ERROR';
     this.requestId = body.requestId;
+    this.details = body.details;
   }
 }
 
@@ -33,36 +35,60 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T;
 }
 
-function remember(session: Session): Session { csrfToken = session.csrfToken; return session; }
-const q = (cursor?: string) => (cursor ? `?cursor=${encodeURIComponent(cursor)}` : '');
+function remember<T extends Session>(session: T): T { csrfToken = session.csrfToken; return session; }
+function qs(params: Record<string, string | undefined>) {
+  const search = new URLSearchParams(Object.entries(params).filter((e): e is [string, string] => !!e[1]));
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+function upload(path: string, file: File) { const form = new FormData(); form.append('file', file); return request<never>('POST', path, form); }
+const p = (id: string) => `/projects/${encodeURIComponent(id)}`;
+const c = (id: string) => `/characters/${encodeURIComponent(id)}`;
 
 export const httpApi: MivApi = {
   me: async () => remember(await request('GET', '/auth/me')),
   sendSms: (phone) => request('POST', '/auth/sms', { phone }),
-  login: async (phone, code) => remember(await request('POST', '/auth/login', { phone, code, agreeTerms: true })),
+  login: async (phone, code) => remember(await request<LoginResult>('POST', '/auth/login', { phone, code, agreeTerms: true })),
   logout: async () => { await request('POST', '/auth/logout'); csrfToken = ''; },
+  updateOnboarding: (patch) => request('PATCH', '/me/onboarding', patch),
+
   catalog: () => request('GET', '/catalog'),
+  voices: (category) => request('GET', `/voices${qs({ category })}`),
+
   wallet: () => request('GET', '/wallet'),
-  ledger: (cursor) => request('GET', `/wallet/ledger${q(cursor)}`),
+  ledger: (cursor) => request('GET', `/wallet/ledger${qs({ cursor })}`),
   redeem: (code) => request('POST', '/wallet/redeem', { code, idempotencyKey: crypto.randomUUID() }),
+  estimate: (body) => request('POST', '/quotes/estimate', body),
   quote: (body) => request('POST', '/quotes', body),
-  uploadScript: (file) => { const form = new FormData(); form.append('file', file); return request('POST', '/uploads/script', form); },
-  listProjects: (cursor) => request('GET', `/projects${q(cursor)}`),
+
+  uploadStory: (file) => upload('/uploads/story', file),
+  uploadImage: (file) => upload('/uploads/image', file),
+
+  listCharacters: () => request('GET', '/characters'),
+  createCharacter: (body) => request('POST', '/characters', body),
+  getCharacter: (id) => request('GET', c(id)),
+  updateCharacter: (id, body) => request('PATCH', c(id), body),
+  replaceCharacterPhotos: (id, uploadIds) => request('PUT', `${c(id)}/photos`, { uploadIds }),
+  generateLook: (id, styleId, quoteId, idempotencyKey) => request('POST', `${c(id)}/looks/${styleId}/versions`, { quoteId, idempotencyKey }),
+  selectLook: (id, styleId, versionId) => request('PUT', `${c(id)}/looks/${styleId}/selection`, { versionId }),
+  deleteCharacter: (id) => request('DELETE', c(id)),
+
+  listProjects: (group, cursor) => request('GET', `/projects${qs({ group, cursor })}`),
   createProject: (body) => request('POST', '/projects', body),
-  getProject: (id) => request('GET', `/projects/${id}`),
-  confirm: (id, stage) => request('POST', `/projects/${id}/confirm`, { stage }),
-  pause: (id) => request('POST', `/projects/${id}/pause`),
-  resume: (id) => request('POST', `/projects/${id}/resume`),
-  retry: (id) => request('POST', `/projects/${id}/retry`),
-  cancel: (id) => request('POST', `/projects/${id}/cancel`),
-  updatePlan: (id, patch) => request('PATCH', `/projects/${id}/plan`, patch),
-  regeneratePlan: (id, instruction) => request('POST', `/projects/${id}/plan/regenerate`, { instruction }),
-  generateAssetVersion: (id, assetId, quoteId, idempotencyKey) =>
-    request('POST', `/projects/${id}/assets/${assetId}/versions`, { source: 'generated', quoteId, idempotencyKey }),
-  selectAssetVersion: (id, assetId, versionId) => request('PUT', `/projects/${id}/assets/${assetId}/selection`, { versionId }),
-  updateShot: (id, shotId, patch) => request('PATCH', `/projects/${id}/shots/${shotId}`, patch),
-  generateShotTake: (id, shotId, quoteId, idempotencyKey) =>
-    request('POST', `/projects/${id}/shots/${shotId}/takes`, { source: 'generated', quoteId, idempotencyKey }),
-  selectShotTake: (id, shotId, takeId) => request('PUT', `/projects/${id}/shots/${shotId}/selection`, { takeId }),
-  createRender: (id, options, idempotencyKey) => request('POST', `/projects/${id}/renders`, { ...options, idempotencyKey }),
+  getProject: (id) => request('GET', p(id)),
+  deleteProject: (id) => request('DELETE', p(id)),
+  reanalyzeStory: (id, storyText) => request('POST', `${p(id)}/story/reanalyze`, { storyText }),
+  setCastCharacter: (id, castId, characterId) => request('PUT', `${p(id)}/cast/${castId}/character`, { characterId }),
+  confirmStory: (id, quoteId, idempotencyKey) => request('POST', `${p(id)}/confirm-story`, { quoteId, idempotencyKey }),
+  updateCast: (id, castId, patch) => request('PUT', `${p(id)}/cast/${castId}`, patch),
+  regenerateCastLook: (id, castId, quoteId, idempotencyKey) => request('POST', `${p(id)}/cast/${castId}/looks`, { quoteId, idempotencyKey }),
+  confirmCast: (id, quoteId, idempotencyKey) => request('POST', `${p(id)}/confirm-cast`, { quoteId, idempotencyKey }),
+  pause: (id) => request('POST', `${p(id)}/pause`),
+  resume: (id) => request('POST', `${p(id)}/resume`),
+  retry: (id) => request('POST', `${p(id)}/retry`),
+  cancel: (id) => request('POST', `${p(id)}/cancel`),
+  updateSegment: (id, segmentId, plot) => request('PATCH', `${p(id)}/segments/${segmentId}`, { plot }),
+  regenerateSegment: (id, segmentId, quoteId, idempotencyKey) => request('POST', `${p(id)}/segments/${segmentId}/takes`, { quoteId, idempotencyKey }),
+  selectTake: (id, segmentId, takeId) => request('PUT', `${p(id)}/segments/${segmentId}/selection`, { takeId }),
+  downloadUrl: (id) => `${BASE}${p(id)}/download`,
 };

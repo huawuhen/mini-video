@@ -64,7 +64,7 @@ onBeforeUnmount(() => clearInterval(timer));
 .nav { background: transparent; }
 .panel { max-width: 420px; margin: var(--miv-space-5) var(--miv-space-4); display: flex; flex-direction: column; gap: var(--miv-space-3); padding: var(--miv-space-5); }
 .brand { display: flex; align-items: center; gap: var(--miv-space-2); }
-.logo { width: 32px; height: 32px; border-radius: 9px; background: var(--miv-primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
+.logo { width: 32px; height: 32px; border-radius: 9px; background: var(--miv-primary); color: var(--miv-on-primary); display: inline-flex; align-items: center; justify-content: center; font-size: 13px; }
 h1 { font-size: 20px; }
 .field { background: var(--miv-bg); border-radius: var(--miv-radius-md); }
 .agree { margin: var(--miv-space-1) 0; }

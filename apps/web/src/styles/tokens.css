@@ -14,6 +14,12 @@
   --miv-success: #22c55e;
   --miv-warning: #f59e0b;
   --miv-danger: #ef4444;
+  --miv-danger-soft: #fef2f2;
+  --miv-warning-soft: #fff7e6;
+  --miv-on-primary: #ffffff;
+  --miv-overlay: rgba(15, 23, 32, 0.62);
+  --miv-media-bg: #0f1720;
+  --miv-chip-bg: rgba(255, 255, 255, 0.88);
   --miv-radius-sm: 8px;
   --miv-radius-md: 12px;
   --miv-radius-lg: 16px;
@@ -27,6 +33,7 @@
   --miv-sidebar-width: 220px;
   --miv-content-max: 1200px;
   --miv-tabbar-height: 50px;
+  --miv-z-tour: 2000;
   --miv-font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
 
   /* Vant 主题映射 */

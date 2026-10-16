@@ -1,43 +1,62 @@
-import type { GenStatus, ProjectStatus } from '@/api';
+import type { AgeGroup, Gender, ProjectGroup, ProjectStatus, TakeStatus, GenStatus } from '@/api/types';
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'default';
 export const projectStatusMeta: Record<ProjectStatus, { label: string; tone: Tone }> = {
-  draft: { label: '草稿', tone: 'default' },
-  planning: { label: '写剧本中', tone: 'primary' },
-  plan_review: { label: '待确认剧本', tone: 'warning' },
-  assets_generating: { label: '生成角色中', tone: 'primary' },
-  asset_review: { label: '待确认角色', tone: 'warning' },
-  storyboarding: { label: '设计分镜中', tone: 'primary' },
-  shot_review: { label: '待确认分镜', tone: 'warning' },
-  shots_generating: { label: '生成视频中', tone: 'primary' },
-  composing: { label: '合成成片中', tone: 'primary' },
+  understanding: { label: '理解故事中', tone: 'primary' },
+  story_review: { label: '待确认故事', tone: 'warning' },
+  casting: { label: '生成形象中', tone: 'primary' },
+  cast_review: { label: '待确认角色', tone: 'warning' },
+  rendering: { label: '生成视频中', tone: 'primary' },
+  composing: { label: '拼接成片中', tone: 'primary' },
   delivered: { label: '已完成', tone: 'success' },
+  expired: { label: '已过期', tone: 'default' },
   paused: { label: '已暂停', tone: 'warning' },
   failed: { label: '制作失败', tone: 'danger' },
   canceled: { label: '已取消', tone: 'default' },
 };
-export const genStatusLabel: Record<GenStatus, string> = { pending: '排队中', running: '生成中', succeeded: '已完成', failed: '失败' };
+export const genStatusLabel: Record<GenStatus | TakeStatus, string> = {
+  pending: '排队中', running: '生成中', succeeded: '已完成', failed: '失败', unknown: '确认中',
+};
 
-/** 6 个步骤与项目状态的对应关系（StageStepper 使用）。 */
-export const STAGES = [
-  { key: 'input', label: '输入' },
-  { key: 'plan', label: '剧本' },
-  { key: 'assets', label: '角色场景' },
-  { key: 'shots', label: '分镜' },
-  { key: 'generate', label: '生成' },
-  { key: 'deliver', label: '成片' },
-] as const;
-export type StageKey = (typeof STAGES)[number]['key'];
-
-export function stageOf(status: ProjectStatus): StageKey {
+/** docs/API.md §6.1 分组规则（前后端一致）。 */
+export function groupOf(status: ProjectStatus): ProjectGroup {
   switch (status) {
-    case 'draft': return 'input';
-    case 'planning': case 'plan_review': return 'plan';
-    case 'assets_generating': case 'asset_review': return 'assets';
-    case 'storyboarding': case 'shot_review': return 'shots';
-    case 'shots_generating': return 'generate';
-    case 'composing': case 'delivered': return 'deliver';
-    default: return 'input';
+    case 'story_review': case 'cast_review': return 'review';
+    case 'delivered': return 'done';
+    case 'failed': case 'canceled': return 'failed';
+    case 'expired': return 'expired';
+    default: return 'active';
   }
 }
-export const isActiveStatus = (s: ProjectStatus) => !['delivered', 'failed', 'canceled', 'paused'].includes(s) && !s.endsWith('_review');
+export const projectGroups: { key: ProjectGroup; label: string }[] = [
+  { key: 'active', label: '进行中' },
+  { key: 'review', label: '待确认' },
+  { key: 'done', label: '已完成' },
+  { key: 'failed', label: '失败' },
+  { key: 'expired', label: '已过期' },
+];
+
+/** 作品五步（UI.md §5 FlowSteps）。 */
+export const FLOW_STEPS = [
+  { key: 'write', label: '写故事' },
+  { key: 'story', label: '确认故事' },
+  { key: 'cast', label: '确认角色' },
+  { key: 'produce', label: '制作中' },
+  { key: 'deliver', label: '成片' },
+] as const;
+export type FlowStepKey = (typeof FLOW_STEPS)[number]['key'];
+
+export function flowStepOf(status: ProjectStatus): FlowStepKey {
+  switch (status) {
+    case 'understanding': case 'story_review': return 'story';
+    case 'casting': case 'cast_review': return 'cast';
+    case 'rendering': case 'composing': return 'produce';
+    case 'delivered': case 'expired': return 'deliver';
+    default: return 'write';
+  }
+}
+/** 后台正在推进（需要较快刷新）的状态。 */
+export const isWorkingStatus = (s: ProjectStatus) => ['understanding', 'casting', 'rendering', 'composing'].includes(s);
+
+export const genderLabel: Record<Gender, string> = { female: '女', male: '男', unknown: '' };
+export const ageLabel: Record<AgeGroup, string> = { child: '儿童', teen: '少年', young: '青年', middle: '中年', elder: '老人' };

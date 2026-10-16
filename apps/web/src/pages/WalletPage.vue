@@ -1,16 +1,20 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { useRoute } from 'vue-router';
 import { showToast } from 'vant';
 import { api, type LedgerEntry } from '@/api';
 import PriceTag from '@/components/PriceTag.vue';
 import { useWalletStore } from '@/stores/wallet';
 import { formatFen } from '@/utils/money';
 
+const route = useRoute();
 const walletStore = useWalletStore();
+// 从收费弹窗「去充值」过来时，充值后可回到原页面（docs/UI.md §8）
+const back = computed(() => (typeof route.query.back === 'string' && route.query.back.startsWith('/') ? route.query.back : ''));
 const ledger = ref<LedgerEntry[]>([]);
 const code = ref('');
 const redeeming = ref(false);
-const kindLabel: Record<LedgerEntry['kind'], string> = { recharge: '充值', redeem: '兑换', reserve: '预占', settle: '结算', refund: '退回', adjust: '调整' };
+const kindLabel: Record<LedgerEntry['kind'], string> = { recharge: '充值', redeem: '兑换', reserve: '预占', settle: '结算', refund: '退回', charge: '扣费', adjust: '调整' };
 
 async function load() {
   await walletStore.refresh();
@@ -37,6 +41,7 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
       <PriceTag :fen="walletStore.wallet?.availableFen ?? 0" size="lg" />
       <span class="miv-hint">制作中冻结 ¥{{ formatFen(walletStore.wallet?.frozenFen ?? 0) }}，完成后按实际结算</span>
       <van-button type="primary" class="miv-btn-accent" block disabled>在线充值（即将上线）</van-button>
+      <van-button v-if="back" block plain type="primary" :to="back">充好了，返回继续</van-button>
     </section>
     <section class="miv-card">
       <div class="miv-section-title">兑换码</div>

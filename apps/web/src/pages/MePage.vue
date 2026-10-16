@@ -25,8 +25,12 @@ async function logout() {
       <van-button v-else type="primary" size="small" round to="/login">登录 / 注册</van-button>
     </section>
     <van-cell-group inset class="group">
+      <van-cell title="我的数字资产库" icon="friends-o" is-link to="/assets" />
       <van-cell title="我的作品" icon="video-o" is-link to="/projects" />
       <van-cell title="钱包" icon="balance-o" is-link to="/wallet" />
+    </van-cell-group>
+    <van-cell-group inset class="group">
+      <van-cell title="重新查看新手引导" icon="guide-o" is-link :to="{ path: '/', query: { tour: '1' } }" />
     </van-cell-group>
     <van-cell-group inset class="group">
       <van-cell title="用户协议" icon="description-o" is-link />

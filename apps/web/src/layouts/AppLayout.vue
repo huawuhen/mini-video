@@ -7,15 +7,15 @@ import { useAuthStore } from '@/stores/auth';
 const route = useRoute();
 const auth = useAuthStore();
 const { isDesktop } = useBreakpoint();
+// PC 侧栏 5 项；手机 Tabbar 4 项（docs/UI.md §3）
 const nav = [
-  { to: '/', label: '首页', icon: 'home-o' },
-  { to: '/create', label: '新建短片', icon: 'add-o' },
-  { to: '/projects', label: '我的作品', icon: 'video-o' },
-  { to: '/wallet', label: '钱包', icon: 'balance-o' },
-  { to: '/me', label: '我的', icon: 'user-o' },
+  { to: '/', label: '首页', short: '首页', icon: 'home-o', tab: true },
+  { to: '/assets', label: '我的数字资产库', short: '资产库', icon: 'friends-o', tab: true },
+  { to: '/projects', label: '我的作品', short: '作品', icon: 'video-o', tab: true },
+  { to: '/wallet', label: '钱包', short: '钱包', icon: 'balance-o', tab: false },
+  { to: '/me', label: '我的', short: '我的', icon: 'user-o', tab: true },
 ];
-// 手机 Tabbar 只放 3 个主入口（docs/UI.md §3）
-const tabs = nav.filter((n) => ['/', '/projects', '/me'].includes(n.to));
+const tabs = nav.filter((n) => n.tab);
 const active = computed(() => {
   const hit = [...nav].reverse().find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)));
   return hit?.to || '/';
@@ -36,7 +36,7 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
       <router-view />
     </main>
     <van-tabbar v-if="!isDesktop && !hideTabbar" :model-value="active" route safe-area-inset-bottom>
-      <van-tabbar-item v-for="tab in tabs" :key="tab.to" :name="tab.to" :to="tab.to" :icon="tab.icon">{{ tab.label }}</van-tabbar-item>
+      <van-tabbar-item v-for="tab in tabs" :key="tab.to" :name="tab.to" :to="tab.to" :icon="tab.icon">{{ tab.short }}</van-tabbar-item>
     </van-tabbar>
   </div>
 </template>
@@ -48,7 +48,7 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
 .layout.desktop .content { flex: 1; min-width: 0; margin-left: var(--miv-sidebar-width); }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: var(--miv-sidebar-width); background: var(--miv-surface); border-right: 1px solid var(--miv-border); padding: var(--miv-space-5) var(--miv-space-3); display: flex; flex-direction: column; gap: var(--miv-space-1); }
 .brand { display: flex; align-items: center; gap: var(--miv-space-2); font-weight: 700; font-size: 17px; color: var(--miv-text); padding: 0 var(--miv-space-3) var(--miv-space-5); }
-.logo { width: 28px; height: 28px; border-radius: 8px; background: var(--miv-primary); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
+.logo { width: 28px; height: 28px; border-radius: 8px; background: var(--miv-primary); color: var(--miv-on-primary); display: inline-flex; align-items: center; justify-content: center; font-size: 12px; }
 .nav-item { display: flex; align-items: center; gap: var(--miv-space-3); padding: 10px var(--miv-space-3); border-radius: var(--miv-radius-md); color: var(--miv-text-2); font-size: 15px; }
 .nav-item:hover { background: var(--miv-bg); }
 .nav-item.on { background: var(--miv-primary-soft); color: var(--miv-primary-strong); font-weight: 600; }
