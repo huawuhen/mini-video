@@ -7,7 +7,7 @@
 1. 本文件 → 2. `CODEX_HANDOFF.md`（状态看板、认领表、最新决策、待用户确认问题）→ 3. 与你任务相关的 `docs/*.md` → 4. 相关代码。
 不读 handoff 就动手，等于在别人正在改的文件上写代码。
 
-## 1. 产品与技术基线（已由用户确认，2026-10-15）
+## 1. 产品与技术基线（已由用户确认，2026-10-15；产品范围以 2026-10-16 定稿的 PRD v2.2 为准）
 
 - 产品：C 端「剧本/想法 → 一键成片」，**移动端优先，PC 端必须可用**（响应式，不是只做手机）。代号 Mini AI Video，中文名待定。
 - 视觉：**浅色清新风**；样式只用 `apps/web/src/styles/tokens.css` 的设计令牌，禁止散落硬编码色值。
@@ -22,9 +22,9 @@
 | 角色 | 职责 | 拥有（可写）路径 |
 |---|---|---|
 | 主代理 (Lead) | 文档、接口契约、任务拆分、合并、独立验收、与用户沟通 | `AGENTS.md` `docs/**` `CODEX_HANDOFF.md` `README.md` 根配置 |
-| 后端主线 (BE-Core) | 数据库→认证→钱包账本→项目状态机→队列→API→集成测试，**同一 Agent 串行负责**，禁止拆给多人并发猜接口 | `server/src/{db,auth,wallet,projects,queue,api}/**` `server/migrations/**` `server/test/**`（自己模块） |
+| 后端主线 (BE-Core) | 数据库→认证→钱包账本→项目状态机→队列→API→集成测试，**同一 Agent 串行负责**，禁止拆给多人并发猜接口 | `server/src/{config.js,http,db,auth,wallet,catalog,characters,projects,queue,api}/**` `server/migrations/**` `server/test/**`（自己模块） |
 | 引擎迁移 (Engine) | 从超搭云迁移并适配生成引擎（剧本 LLM、渠道适配、转存、网络安全、对象存储），提供纯函数/可注入接口与单测 | `server/src/engine/**` `server/test/engine/**` |
-| 成片合成 (Render) | FFmpeg 拼接、字幕、BGM、AI 生成标识水印、封面 | `server/src/render/**` `server/test/render/**` |
+| 成片合成 (Render) | FFmpeg 拼接、响度统一、尾帧衔接、AI 生成标识（显式+隐式）、封面（**不做字幕、BGM**，PRD §4.4） | `server/src/render/**` `server/test/render/**` |
 | 前端 (Web) | 按 `docs/API.md` + `docs/UI.md` 实现页面；先用 mock，联调时切真实 API | `apps/web/**` |
 | 运维 (Ops) | Dockerfile、Compose、备份脚本、CI | `deploy/**` `Dockerfile*` `.github/**` |
 
@@ -52,7 +52,7 @@
 - 替换类操作（资产版本、镜头 take）一律「新增候选 + 切换选中」，**永不覆盖旧版本**。
 - 数据库写事务短小，禁止在事务内等待上游网络调用。
 - 安全：业务 API 默认要求登录；写操作校验同源 + CSRF；上传/下载过网络安全模块（SSRF、大小、超时）；日志脱敏；密钥只在服务端环境变量，禁止输出 `.env` 内容。
-- 合规（上线前必须完成，见 PRD §8）：内容安全审核、AI 生成内容显式+隐式标识、手机号实名、用户协议与隐私政策。
+- 合规（上线前必须完成，见 PRD §11）：内容安全审核、AI 生成内容显式+隐式标识、手机号实名、用户协议与隐私政策。
 
 ## 6. 测试与验证
 
