@@ -14,7 +14,7 @@
 - 收费：**充值余额 + 按片预估扣费**，金额一律整数「分」（CNY），预占→结算→失败退回的事务账本，禁止浮点金额。
 - 前端：Vue 3 + TypeScript + Vite + Vant 4 + Pinia + Vue Router（`apps/web`）。
 - 后端：Node ≥22 ESM + Express 4 + PostgreSQL（`pg` 连接池，参数化 SQL，不引入 ORM）；PG 任务队列（`FOR UPDATE SKIP LOCKED`）；API 进程与 Worker 进程同仓不同入口；FFmpeg 只在 Worker 运行。M1~M2 不引入 Redis（限流放 PG），需要时再评估。
-- 生成引擎复用超搭云（`/root/chaodayun`，参考提交 `2926b42`）已验证模块，复制进 `server/src/engine/`，**不得修改 `/root/chaodayun` 任何文件、不得连接其数据库或生产环境**。
+- 生成引擎复用超搭云（参考提交 `2926b42`；Lead 服务器上在 `/root/chaodayun`，其他设备按实际路径）已验证模块，复制进 `server/src/engine/`，文件头注明来源；**不得修改超搭云仓库任何文件、不得连接其数据库或生产环境**。迁移代码可进入本仓库（用户确认无需保密），但其中的密钥、内部域名、账号信息必须去除。
 - 借鉴影策（open-ai-canvas, MIT）只借设计与协议；如拷贝任何文本/代码，必须保留版权声明并登记到 `NOTICE`。
 
 ## 2. 角色与文件所有权
