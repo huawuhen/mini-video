@@ -8,7 +8,7 @@
 | ID | 任务 | 产出 |
 |---|---|---|
 | L-01 | PRD 定稿与配套文档 v1.0 | `docs/PRD.md` `API.md` `ARCHITECTURE.md` `UI.md` `TASKS.md` |
-| L-02 | 后端骨架 | `server/`：config、http（错误/requestId/中间件）、db（连接池/事务/迁移）、`001-init.sql` 全量表结构 + 种子数据、`app.js`（健康检查 + 目录/音色只读接口）、`worker.js`（处理器注册 + 循环外壳）、测试辅助 |
+| L-02 | 后端骨架 | `server/`：config、logger、http（错误/requestId/中间件/校验）、db（连接池/事务/迁移/ID）、`001-init.sql` 全量表结构 + 种子数据、PG 队列（领取/租约/退避/去重）、`app.js`（健康检查 + `/catalog` `/voices`）、`worker.js`（处理器注册 + 并发循环）、测试辅助 |
 | L-03 | 测试数据库 | `deploy/compose.test.yml`（项目 `miv-test`，`127.0.0.1:56432`，tmpfs）、`npm run test:db:up/down` |
 | L-04 | 前端骨架 v2 | 按 UI.md 重建路由、页面、组件、`types.ts`、mock；新手引导组件可用 |
 
@@ -25,7 +25,7 @@
 |---|---|---|---|---|
 | M1-BE-01 | BE-Core | 认证：短信验证码（provider 可注入，开发环境打印到控制台）、会话、CSRF + Origin、PG 限流；`PATCH /me/onboarding` | 未登录 401；CSRF 缺失 403；冷却与错误次数上限；新用户 `tourCompletedAt=null` | L-02 |
 | M1-BE-02 | BE-Core | 钱包与计价：账本、SKU/档位映射取价、`/quotes` 四种 kind、`/quotes/estimate`、预占/结算/退回/直接扣费、兑换码（只存哈希） | 并发预占不超扣；幂等重放；同键不同参数 409；调价后旧报价 `QUOTE_MISMATCH` | M1-BE-01 |
-| M1-BE-03 | BE-Core | 队列：jobs 领取（SKIP LOCKED）、租约、退避、去重键、定时任务（expire_sweep / uploads.sweep） | 多 Worker 并发不重复领取；租约过期可重新领取 | L-02 |
+| M1-BE-03 | BE-Core | 定时任务调度（基于 `enqueue` + 去重键按时间窗口入队）：`projects.expire_sweep`、`uploads.sweep`；队列核心已在 L-02 完成 | 多 Worker 同时启动只入队一次；清理任务幂等 | L-02 |
 | M1-BE-04 | BE-Core | 数字资产库与上传：`/uploads/*`、`/characters/**`、形象生成（job `look.generate`，调用 engine 模拟适配器） | 用户隔离（他人资源 404）；版本只增不改；软删除不影响历史作品 | M1-BE-02、M1-BE-03 |
 | M1-BE-05 | BE-Core | 作品状态机与各 job（§4 ARCHITECTURE），engine/render 先用桩实现 | 模拟上游下从创建跑到 delivered；两个确认点；暂停/恢复/取消/重试；重启续跑；免费次数限制；`voicesEnabled` 规则 | M1-BE-04、M1-ENG-01、M1-ENG-02 |
 | M1-BE-06 | BE-Core | 作品 API（API.md §6）+ SSE + 交付后片段替换与重新拼接 + 下载 | 契约测试：响应结构与 `types.ts` 一致；状态不允许时 409 | M1-BE-05 |

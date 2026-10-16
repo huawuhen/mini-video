@@ -23,7 +23,7 @@
 - 幂等：会产生费用或创建资源的 POST 带 `idempotencyKey`（客户端生成的 UUID）。同键同参数返回首次结果；同键不同参数返回 409 `IDEMPOTENCY_CONFLICT`。
 - 错误：HTTP 状态码 + `{ "code": "INSUFFICIENT_BALANCE", "message": "余额不足，请先充值", "requestId": "req_xxx" }`。`message` 是面向用户的中文；可选 `details`（仅技术详情折叠区使用）。
 - 分页：`?cursor=&limit=`（limit 默认 20，最大 50），响应 `{ items, nextCursor }`，`nextCursor` 为 `null` 表示没有更多。
-- 媒体 URL：私有资源返回七牛**签名链接**（有效期 1 小时），前端不要持久化，过期后重新拉取对象即可。
+- 媒体 URL：私有资源返回七牛**签名链接**（有效期 1 小时），前端不要持久化，过期后重新拉取对象即可。素材尚未生成或上传时，对应 `*Url` 字段**缺省**（不返回空字符串）。
 
 ## 1. 认证与用户
 
@@ -53,7 +53,7 @@ type Onboarding = {
 
 ```ts
 type Catalog = {
-  styles: { id: string; name: string; description: string; coverUrl: string }[];        // 6 种，按运营排序
+  styles: { id: string; name: string; description: string; coverUrl?: string }[];       // 6 种，按运营排序；封面未上传时缺省
   qualityTiers: { id: string; name: string; note: string; pricePer30sFen: number }[];   // 「标准 / 高清」；不暴露模型名
   ratios: ('9:16' | '16:9' | '1:1')[];          // 默认 9:16
   limits: {
@@ -71,7 +71,7 @@ type Catalog = {
 
 ```ts
 type VoiceCategory = 'girl' | 'boy' | 'child_f' | 'child_m' | 'young_f' | 'young_m' | 'middle_f' | 'middle_m' | 'elder_f' | 'elder_m';
-type Voice = { id: string; name: string; category: VoiceCategory; categoryName: string; description: string; sampleUrl: string };
+type Voice = { id: string; name: string; category: VoiceCategory; categoryName: string; description: string; sampleUrl?: string };  // 试听素材未上传时缺省
 // 响应：{ items: Voice[] }（全量返回，数量少，不分页）
 ```
 

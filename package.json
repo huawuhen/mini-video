@@ -2,11 +2,19 @@
   "name": "mini-ai-video",
   "private": true,
   "type": "module",
-  "workspaces": ["apps/web"],
-  "engines": { "node": ">=22.12.0" },
+  "workspaces": [
+    "apps/web",
+    "server"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev:web": "npm run dev -w apps/web",
     "check": "npm run check -w apps/web",
-    "build": "npm run build -w apps/web"
+    "build": "npm run build -w apps/web",
+    "test:db:up": "docker compose -f deploy/compose.test.yml up -d --wait",
+    "test:db:down": "docker compose -f deploy/compose.test.yml down -v",
+    "test:server": "npm test -w server"
   }
 }

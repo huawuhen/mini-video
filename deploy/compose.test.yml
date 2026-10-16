@@ -1,0 +1,20 @@
+# 测试专用 PostgreSQL（AGENTS.md §6）：项目名 miv-test，只监听本机 56432，数据在 tmpfs，停止即清空。
+# 启动：npm run test:db:up   停止：npm run test:db:down
+name: miv-test
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: miv
+      POSTGRES_PASSWORD: miv_test_only
+      POSTGRES_DB: miv
+    ports:
+      - "127.0.0.1:56432:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miv -d miv"]
+      interval: 2s
+      timeout: 3s
+      retries: 30

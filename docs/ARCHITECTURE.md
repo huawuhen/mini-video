@@ -97,6 +97,7 @@ look_versions(id, look_id, status, gen_task_id, image_key, view_keys text[], err
 ```
 projects(id, user_id, title, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, ratio,
          status, paused_from, error jsonb, progress jsonb, story jsonb,          -- story = StoryResult + 规划原始输出
+         selected_character_ids text[],                                          -- 首页托盘勾选
          delivered_at, expires_at, deleted_at, created_at, updated_at)
 project_cast(id, project_id, idx, name, description, gender, age_group, character_id, match_source,
              look_version_id, voice_id, voice_source, locked_at)
