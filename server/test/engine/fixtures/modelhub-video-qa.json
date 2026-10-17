@@ -1,0 +1,6 @@
+{
+  "submit": { "task_id": "qa-task-001", "status": "queued" },
+  "running": { "task_id": "qa-task-001", "status": "running" },
+  "succeeded": { "task_id": "qa-task-001", "status": "succeeded", "video_url": "https://media.example.test/videos/qa-task-001.mp4" },
+  "failed": { "task_id": "qa-task-001", "status": "failed", "error": { "message": "模型拒绝生成" } }
+}
