@@ -240,7 +240,8 @@ describe('cron（M1-BE-03）', () => {
 
   test('生产配置未注入存储时 buildHandlers 启动报错（§6 审查 3）', () => {
     const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
-    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
+    // M1-ENG-03 后：未注入 → 按 config.storage.driver 解析，生产默认 qiniu 但密钥缺失 → 配置错误
+    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /存储配置不完整|对象存储/);
     // 非生产环境缺省内存实现可用
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
     assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'look.generate', 'projects.expire_sweep', 'uploads.sweep']);

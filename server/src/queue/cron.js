@@ -47,19 +47,6 @@ export function createScheduler({ config, db, logger }) {
   };
 }
 
-/**
- * engine/storage 就绪前的开发/测试存储实现（接口同 engine/README.md：put / signedUrl / remove）。
- * Worker 主入口缺省使用；测试注入有记录的模拟实现。
- */
-export function createMemoryStorage() {
-  const objects = new Map();
-  return {
-    async put(key, buffer, { contentType } = {}) { objects.set(key, { buffer, contentType }); },
-    async signedUrl(key) { return `memory://${key}`; },
-    async remove(keys) { for (const key of keys) objects.delete(key); },
-  };
-}
-
 /** 分批删除：每批一个短事务，返回删除总数；无行即停，可重复执行。 */
 async function deleteInBatches(db, { table, where, params = [], batchSize }) {
   let total = 0;

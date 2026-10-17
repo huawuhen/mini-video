@@ -3,7 +3,8 @@ import { after, before, describe, test } from 'node:test';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
-import { createMemoryStorage } from '../src/queue/cron.js';
+import { createMemoryStorage } from '../src/engine/storage/memory.js';
+import { extractText } from '../src/engine/extract/index.js';
 import { enqueue } from '../src/queue/index.js';
 import { buildHandlers, createWorker } from '../src/worker.js';
 import { createTestDb } from './helpers/db.js';
@@ -77,7 +78,9 @@ describe('assets（M1-BE-04）', () => {
     sms = captureSmsProvider(); // 登录用与注入 app 的必须是同一实例
     const app = createApp({
       config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger,
-      urlFor: (key) => `https://cdn.test/${key}`, storage, extractText: async () => '提取的正文',
+      urlFor: (key) => `https://cdn.test/${key}`, storage,
+      extractText: async (buffer, mime) => mime === 'text/plain'
+        ? buffer.toString('utf8').replace(/^\uFEFF/, '').trim() : '提取的正文',
       smsProvider: sms,
     });
     server = app.listen(0, '127.0.0.1');
@@ -158,6 +161,27 @@ describe('assets（M1-BE-04）', () => {
 
     const empty = await multipart(base, '/uploads/story', A, 'empty.txt', Buffer.from('   '));
     assert.equal(empty.status, 400);
+  });
+
+  test('损坏 docx 返回 400 UPLOAD_TYPE_INVALID，GBK txt 可提取', async () => {
+    const app = createApp({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db,
+      logger: silentLogger, storage, extractText, smsProvider: sms });
+    const endpoint = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => endpoint.once('listening', resolve));
+    const localBase = `http://127.0.0.1:${endpoint.address().port}/api/v1`;
+    try {
+      const broken = await multipart(localBase, '/uploads/story', A, 'broken.docx',
+        Buffer.from('PK\x03\x04not-a-zip'));
+      assert.equal(broken.status, 400);
+      const error = await broken.json();
+      assert.equal(error.code, 'UPLOAD_TYPE_INVALID');
+      assert.match(error.message, /Word|文档/);
+      const gbk = await multipart(localBase, '/uploads/story', A, '故事.txt', Buffer.from([0xd6, 0xd0, 0xce, 0xc4]));
+      assert.equal(gbk.status, 200);
+      assert.deepEqual(await gbk.json(), { title: '故事', text: '中文' });
+    } finally {
+      await new Promise((resolve) => endpoint.close(resolve));
+    }
   });
 
   test('创建数字人：引用校验、无照片必填描述、非法音色 400', async () => {
@@ -479,7 +503,7 @@ describe('assets（M1-BE-04）', () => {
 
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {
     const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
-    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
+    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储|存储配置不完整/);
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger, storage: {} }), /图片模型/);
     assert.throws(() => createApp({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
   });

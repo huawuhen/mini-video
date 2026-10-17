@@ -6,8 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { createLookGenerateHandler } from './characters/service.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
+import { createStorageFromConfig } from './engine/storage/index.js';
 import { createLogger } from './logger.js';
-import { createMemoryStorage, createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
+import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
 // 开发/测试缺省图片模型：返回 1x1 PNG（生产必须注入真实 provider，见 buildHandlers 守卫）
@@ -31,12 +32,8 @@ function createDevImageProvider() {
  *   storage / imageProvider：engine 完成前测试注入模拟；生产环境缺省时启动报错（同 BE-03 做法）。
  */
 export function buildHandlers({ config, db, logger, storage, imageProvider }) {
-  // §6 审查 3（BE-03）：生产环境不允许缺省内存存储
-  let objectStorage = storage;
-  if (!objectStorage) {
-    if (config.production) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
-    objectStorage = createMemoryStorage();
-  }
+  // §6 审查 3（BE-03）：生产环境不允许缺省内存存储；未注入时按 config.storage.driver 解析
+  const objectStorage = storage ?? createStorageFromConfig(config);
   let imageModel = imageProvider;
   if (!imageModel) {
     if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
@@ -114,7 +111,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, base: { proc: 'worker', workerId: config.worker.id } });
   const db = createDb({ url: config.databaseUrl, max: config.worker.concurrency + 2, logger });
-  const worker = createWorker({ db, logger, handlers: buildHandlers({ config, db, logger }), workerId: config.worker.id, ...config.worker });
+  const storage = createStorageFromConfig(config); // M1-ENG-03：按 config.storage.driver 注入（生产 qiniu，开发 memory）
+  const worker = createWorker({ db, logger, handlers: buildHandlers({ config, db, logger, storage }), workerId: config.worker.id, ...config.worker });
   const scheduler = createScheduler({ config, db, logger });
   worker.start();
   scheduler.start();

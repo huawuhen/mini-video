@@ -9,11 +9,13 @@ import { characterRoutes } from './api/characters.js';
 import { quoteRoutes } from './api/quotes.js';
 import { uploadRoutes } from './api/uploads.js';
 import { walletRoutes } from './api/wallet.js';
+import { extractText } from './engine/extract/index.js';
+import { createStorageFromConfig } from './engine/storage/index.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { errorHandler, notFound, requestId } from './http/middleware.js';
 import { createLogger } from './logger.js';
-import { createMemoryStorage } from './queue/cron.js';
+import { createMemoryStorage } from './engine/storage/memory.js';
 
 /**
  * @param {object} deps
@@ -75,7 +77,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const config = loadConfig();
   const logger = createLogger({ level: config.logLevel, base: { proc: 'api' } });
   const db = createDb({ url: config.databaseUrl, max: config.dbPoolMax, logger });
-  const server = createApp({ config, db, logger }).listen(config.port, config.host, () => {
+  const storage = createStorageFromConfig(config); // M1-ENG-03：按 config.storage.driver 注入（生产 qiniu，开发 memory）
+  const server = createApp({ config, db, logger, storage, extractText }).listen(config.port, config.host, () => {
     logger.info('api_listening', { host: config.host, port: config.port });
   });
   const shutdown = (signal) => {
