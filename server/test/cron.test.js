@@ -130,6 +130,21 @@ describe('cron（M1-BE-03）', () => {
     assert.deepEqual(second, { uploads: 0 });
   });
 
+  test('uploads.sweep 防御（§6 审查 1）：仍被 character_photos 引用的行跳过不删、不报外键错误', async () => {
+    const db = ctx.db;
+    await db.query(
+      `INSERT INTO uploads (id, user_id, kind, storage_key, mime, size_bytes, created_at)
+       VALUES ('upl_skip', 'usr_cron00000001', 'image', 'uploads/skip.jpg', 'image/jpeg', 1, now() - interval '2 days')`,
+    );
+    await db.query(`INSERT INTO characters (id, user_id, name) VALUES ('chr_skip', 'usr_cron00000001', 'C')`);
+    await db.query(`INSERT INTO character_photos (id, character_id, upload_id) VALUES ('cph_skip', 'chr_skip', 'upl_skip')`);
+
+    const result = await runUploadsSweep(db, { storage, batchSize: 10 }); // 不得抛 23503
+    assert.equal(result.uploads, 0);
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM uploads WHERE id = 'upl_skip'`)).rows[0].n, 1, '异常数据跳过不删');
+    assert.ok(!storage.removed.includes('uploads/skip.jpg'), '对象不被删除');
+  });
+
   test('projects.expire_sweep：到期作品改 expired、写事件、删视频对象、清 video_key，封面与记录保留（要点 e/g）', async () => {
     const db = ctx.db;
     const local = recordingStorage(); // 独立记录器，避免被前面用例的删除记录干扰
@@ -228,7 +243,7 @@ describe('cron（M1-BE-03）', () => {
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
     // 非生产环境缺省内存实现可用
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
-    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'projects.expire_sweep', 'uploads.sweep']);
+    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'look.generate', 'projects.expire_sweep', 'uploads.sweep']);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {
