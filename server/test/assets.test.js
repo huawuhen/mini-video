@@ -479,7 +479,7 @@ describe('assets（M1-BE-04）', () => {
 
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {
     const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
-    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
+    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储|存储配置不完整/);
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger, storage: {} }), /图片模型/);
     assert.throws(() => createApp({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
   });
