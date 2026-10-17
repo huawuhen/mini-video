@@ -7,7 +7,8 @@ import { createLookGenerateHandler } from './characters/service.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { createLogger } from './logger.js';
-import { createMemoryStorage, createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
+import { createMemoryStorage } from './engine/storage/memory.js';
+import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
 // 开发/测试缺省图片模型：返回 1x1 PNG（生产必须注入真实 provider，见 buildHandlers 守卫）

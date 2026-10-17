@@ -3,7 +3,7 @@ import { after, before, describe, test } from 'node:test';
 import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
-import { createMemoryStorage } from '../src/queue/cron.js';
+import { createMemoryStorage } from '../src/engine/storage/memory.js';
 import { enqueue } from '../src/queue/index.js';
 import { buildHandlers, createWorker } from '../src/worker.js';
 import { createTestDb } from './helpers/db.js';
