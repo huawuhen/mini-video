@@ -126,6 +126,20 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-03 修复（§6 审查意见 1~3）
+
+- **背景**：Lead 审查（§6）指出 2 条必须修改（上传清理误删被引用照片、到期清理漏删片段视频）+ 1 条建议（生产禁用内存存储）。分支已 `git merge origin/main`（13f933f）后修复，仍在同一分支追加提交。
+- **改动（文件/模块）**：`server/src/queue/cron.js`（意见 1、2）、`server/src/worker.js`（意见 3 与处理器传 logger）、`server/test/cron.test.js`（新增 3 个回归 + 既有断言随返回值语义调整）。
+- **核心实现**：
+  1. uploads.sweep 认领式删除：先在短事务里 `DELETE … WHERE id IN (候选 LIMIT n) AND referenced_at IS NULL … RETURNING storage_key`——与引用操作靠行锁互斥，引用先行则认领不到该行，对象绝不误删；提交后再删存储对象。删对象失败只记 `uploads_sweep_remove_failed` 日志：孤儿对象可接受，误删用户照片不可接受；记录已删，任务照常成功。
+  2. projects.expire_sweep：成片与片段视频 key 分两条查询、以 `project_id = ANY($1)` 为条件（旧实现以 renders 为起点——无成片记录的作品漏删片段视频，且 renders × takes 笛卡尔积重复删除）；`removeAndClearVideoKeys` 事务外删对象、成功后**按 key 精确清空**（只清本次确实已删除对象的 key，`WHERE video_key = ANY($1)`）；删对象失败记日志、返回 0、本次不清 key，补偿循环遇失败即结束本轮留待下次调度（避免空转）。返回值 `cleared` 改为 `clearedKeys`（按 key 计数）。
+  3. `buildHandlers` 在 `config.production` 且未注入 `storage` 时抛错拒绝启动；非生产缺省内存实现不变。处理器把 `ctx.logger` 传入清理函数，失败日志带 jobId 可追溯。
+- **验证（命令与结果）**：
+  - `npm run test:server`：83 通过 0 失败（80 → 83）。新增回归：①模拟删第一批对象期间引用 upl_r3——upl_r3 认领不到不被删除，行保留且 `referenced_at` 已标记，对象不在删除列表；②无 renders 行的到期作品片段视频被删且 key 清空、两成片版本全清且 `removed` 无重复、封面保留；③生产配置未注入存储抛错、非生产四个处理器正常注册。
+  - `npm run check` 0 错误；`npm run build` 成功；连续 6 轮稳定。
+- **未完成 / 风险**：§6「给 BE-04 / BE-05 的约定」与本分支三条约束共同生效：BE-04 引用上传用条件 UPDATE（返回行数不足即 400）；BE-05 写视频 key 前确认作品未过期；`createMemoryStorage` 待 engine/storage 完成后移入 `engine/storage/` 并删除本实现。
+
+### 2026-10-17 · BE-Core · M1-BE-03 定时任务调度
 ### 2026-10-17 · BE-Core · M1-BE-03 定时任务调度
 
 - **背景**：M1 第三个任务，按 §6 M1-BE-03 开工要点 a~g 实现。队列核心（SKIP LOCKED/租约/退避/去重）复用 L-02，无需新迁移、未改 `docs/API.md`。
