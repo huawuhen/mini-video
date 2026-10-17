@@ -1,5 +1,5 @@
-// Source: chaodayun@2926b42 modelhub-models.js, backend/providers.js
-// Wan 3.0 and Seedance 2.5 model adapters for the Modelhub video task API.
+// Source: chaodayun@2926b42 modelhub-models.js, backend/providers.js:154-157, backend/task-routes.js
+// Modelhub-specific paths, fields, model capabilities, and response normalization.
 import { ProviderError, submitSafely } from './transport.js';
 
 const MODELS = Object.freeze({
@@ -24,16 +24,34 @@ function mediaList(value, max, name) {
   return value.map((item) => item.trim());
 }
 
+function validUrl(value) {
+  if (typeof value !== 'string') return null;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
+export function videoUrl(raw) {
+  const candidates = [raw?.url, raw?.video, raw?.video_url, raw?.result_url, raw?.result?.url,
+    raw?.output?.video, raw?.data?.output?.video, raw?.output?.outputs?.[0], raw?.data?.output?.outputs?.[0],
+    raw?.output?.urls?.get, raw?.data?.output?.urls?.get, raw?.outputs?.[0], raw?.content?.video_url,
+    raw?.data?.video_url, raw?.data?.result_url, raw?.data?.result?.url, raw?.data?.content?.video_url,
+    raw?.data?.data?.content?.video_url, raw?.data?.data?.result_url,
+    ...(Array.isArray(raw?.result_urls) ? raw.result_urls : []),
+    ...(Array.isArray(raw?.data?.results) ? raw.data.results.filter((item) => item?.type === 'video').map((item) => item.url) : [])];
+  return candidates.map(validUrl).find(Boolean) ?? null;
+}
+
 export function normalizeVideo(raw) {
-  const data = raw?.data && typeof raw.data === 'object' ? raw.data : raw;
-  const status = String(data?.status ?? data?.state ?? '').toLowerCase();
-  if (['failed', 'error', 'cancelled', 'canceled'].includes(status)) {
-    return { status: 'failed', error: String(data?.error?.message ?? data?.error ?? data?.failMessage ?? data?.message ?? '生成失败') };
+  const status = String(raw?.status ?? raw?.data?.status ?? raw?.state ?? raw?.data?.state ?? '').toLowerCase();
+  if (['failed', 'error', 'rejected', 'expired', 'cancelled', 'canceled', 'blocked', 'timeout'].includes(status)) {
+    return { status: 'failed', error: String(raw?.error?.message ?? raw?.data?.error?.message
+      ?? raw?.error ?? raw?.failMessage ?? raw?.message ?? '生成失败') };
   }
-  const url = data?.video_url ?? data?.result?.url ?? data?.output?.video ?? data?.result_urls?.[0];
-  if (['succeeded', 'completed', 'success'].includes(status) && typeof url === 'string' && /^https?:\/\//.test(url)) {
-    return { status: 'succeeded', outputs: [{ url, kind: 'video' }] };
-  }
+  const url = videoUrl(raw);
+  if (url) return { status: 'succeeded', outputs: [{ url, kind: 'video' }] };
+  if (['succeeded', 'completed', 'success'].includes(status)) return { status: 'unknown' };
   return { status: 'running' };
 }
 
@@ -57,18 +75,14 @@ export function createModelhubVideoAdapter({ model, transport }) {
       if (!capabilities.ratios.includes(ratio) || !['480p', '720p', '1080p'].includes(resolution)) {
         throw new ProviderError('画幅或分辨率不受支持。', { code: 'PROVIDER_INPUT_INVALID', submitted: false });
       }
-      const firstFrame = input.firstFrame;
-      if (firstFrame !== undefined) requiredString(firstFrame, '首帧');
-      const functionMode = input.functionMode ?? 'omni_reference';
-      if (!['omni_reference', 'first_last_frames'].includes(functionMode)
-        || (functionMode === 'first_last_frames' && audios.length)) {
-        throw new ProviderError('首尾帧模式不允许引用音频。', { code: 'PROVIDER_INPUT_INVALID', submitted: false });
-      }
-      const references = firstFrame ? [firstFrame, ...images.filter((ref) => ref !== firstFrame)] : images;
-      if (references.length > capabilities.maxImages || (functionMode === 'first_last_frames' && references.length > 2)) {
+      // tailRef is the previous segment's tail image, placed first as an ordinary
+      // omni_reference image. Best-effort visual continuity; no first-frame guarantee.
+      const references = input.tailRef
+        ? [requiredString(input.tailRef, '上一段尾帧'), ...images.filter((ref) => ref !== input.tailRef)] : images;
+      if (references.length > capabilities.maxImages) {
         throw new ProviderError('图片参考超过模型限制。', { code: 'PROVIDER_INPUT_INVALID', submitted: false });
       }
-      const payload = { model, prompt, resolution, ratio, duration, functionMode };
+      const payload = { model, prompt, resolution, ratio, duration, functionMode: 'omni_reference' };
       references.forEach((ref, index) => { payload[`image_file_${index + 1}`] = ref; });
       audios.forEach((ref, index) => { payload[`audio_file_${index + 1}`] = ref; });
       return payload;

@@ -1,59 +1,8 @@
-// Source: chaodayun@2926b42 dimensio-image-generation.js, backend/image-routes.js
-// Modelhub synchronous image generation/composition; reference assets are passed as multipart files.
-import { ProviderError, submitSafely } from './transport.js';
+// Provider-independent image facade for BE-04's generate() contract.
+import { ProviderError } from './transport.js';
 
-const imageUrl = (raw) => raw?.data?.find?.((item) => typeof item?.url === 'string' && /^https?:\/\//.test(item.url))?.url;
-
-export function createModelhubImageAdapter({ transport, model = 'gpt-image-2', loadReference }) {
-  return {
-    id: `modelhub-${model}`,
-    kind: 'image',
-    prepare(input, sku = {}) {
-      const prompt = [input.promptHint, input.description].filter(Boolean).join('\n').trim();
-      if (!prompt || !Array.isArray(input.referenceKeys ?? [])
-        || (input.referenceKeys ?? []).some((key) => typeof key !== 'string' || !key)) {
-        throw new ProviderError('形象提示词或参考图片不正确。', { code: 'PROVIDER_INPUT_INVALID', submitted: false });
-      }
-      return { model, prompt, ratio: input.ratio ?? '9:16', quality: sku.resolution ?? '2k',
-        referenceKeys: input.referenceKeys ?? [] };
-    },
-    async submit(prepared, { idempotencyKey } = {}) {
-      const { referenceKeys, ...fields } = prepared;
-      let path = '/v1/images/generations';
-      let body = fields;
-      if (referenceKeys.length) {
-        if (!loadReference) throw new ProviderError('图片参考读取器未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
-        path = '/v1/images/compositions';
-        body = new FormData();
-        for (const [key, value] of Object.entries(fields)) body.append(key, String(value));
-        for (const key of referenceKeys) {
-          const media = await loadReference(key);
-          if (!Buffer.isBuffer(media?.buffer)) throw new ProviderError('参考图片不可用。', {
-            code: 'PROVIDER_INPUT_INVALID', submitted: false,
-          });
-          body.append('images', new Blob([media.buffer], { type: media.contentType ?? 'image/png' }), media.name ?? 'reference.png');
-        }
-      }
-      const raw = await submitSafely(transport, path, { method: 'POST', body, idempotencyKey });
-      if (raw.status === 'unknown') return { status: 'unknown' };
-      const normalized = this.normalize(raw);
-      return normalized;
-    },
-    async query() {
-      throw new ProviderError('Modelhub 图片接口同步返回结果，无远端查询接口。', {
-        code: 'PROVIDER_QUERY_UNSUPPORTED', submitted: false,
-      });
-    },
-    normalize(raw) {
-      const url = imageUrl(raw);
-      if (url) return { status: 'succeeded', outputs: [{ url, kind: 'image' }] };
-      if (raw?.error) return { status: 'failed', error: String(raw.error?.message ?? raw.error) };
-      return { status: 'unknown' };
-    },
-  };
-}
-
-export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-2', sku = {}, downloadImage }) {
+export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-2', sku = {}, downloadImage,
+  logger, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) }) {
   const adapter = registry.get(adapterId);
   if (adapter.kind !== 'image' || typeof downloadImage !== 'function') {
     throw new ProviderError('图片适配器或安全下载器未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
@@ -61,21 +10,43 @@ export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-
   return {
     id: adapter.id,
     async generate({ characterId, styleId, promptHint, description, referenceKeys }) {
-      const prepared = adapter.prepare({ characterId, styleId, promptHint, description, referenceKeys }, sku);
-      // BE-04's generate signature has no per-version key. Never reuse characterId:styleId
-      // as an upstream idempotency key: regenerating the same look must create a new take.
-      const submitted = await adapter.submit(prepared);
+      let prepared;
+      try { prepared = adapter.prepare({ characterId, styleId, promptHint, description, referenceKeys }, sku); }
+      catch (error) {
+        if (error.submitted === false && !error.retryable) return { status: 'failed', error: '图片生成参数不符合要求。' };
+        throw error;
+      }
+      let submitted;
+      try { submitted = await adapter.submit(prepared); }
+      catch (error) {
+        if (error.retryable === true) throw error;
+        if (error.submitted === false) {
+          if ([401, 403].includes(error.status)) logger?.error?.('image_provider_auth_rejected', {
+            status: error.status, providerCode: error.providerCode, providerMessage: error.providerMessage,
+          });
+          return { status: 'failed', error: '图片生成请求被渠道拒绝，请稍后重试。',
+            ...(error.providerMessage ? { providerMessage: error.providerMessage } : {}) };
+        }
+        return { status: 'unknown' };
+      }
       if (submitted.status === 'unknown') return { status: 'unknown' };
-      if (submitted.status === 'failed') return { status: 'failed', error: submitted.error };
+      if (submitted.status === 'failed') return { status: 'failed', error: submitted.error,
+        ...(submitted.providerMessage ? { providerMessage: submitted.providerMessage } : {}) };
       const url = submitted.outputs?.[0]?.url;
       if (!url) return { status: 'unknown' };
-      try {
-        const result = await downloadImage(url);
-        if (!Buffer.isBuffer(result?.buffer)) return { status: 'unknown' };
-        return { status: 'succeeded', buffer: result.buffer, contentType: result.contentType ?? 'image/png' };
-      } catch {
-        return { status: 'unknown' }; // 上游已生成但结果转存不确定，不自动重提
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+          const result = await downloadImage(url);
+          if (Buffer.isBuffer(result?.buffer)) {
+            return { status: 'succeeded', buffer: result.buffer, contentType: result.contentType ?? 'image/png',
+              ...(submitted.droppedReferences ? { droppedReferences: submitted.droppedReferences } : {}) };
+          }
+        } catch (error) {
+          logger?.warn?.('image_result_download_failed', { attempt: attempt + 1, message: error?.message });
+        }
+        if (attempt < 2) await sleep(200 * 2 ** attempt); // total delay 600ms, below 10 seconds
       }
+      return { status: 'unknown' }; // URL known, download retries never resubmit the paid generation
     },
   };
 }

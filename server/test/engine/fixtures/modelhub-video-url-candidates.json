@@ -1,0 +1,198 @@
+{
+  "source": "Constructed from chaodayun@2926b42 backend/providers.js getVideoUrl candidate paths; compatibility fixtures, not captured Modelhub responses",
+  "cases": [
+    {
+      "label": "url",
+      "raw": {
+        "url": "https://media.example.test/video.mp4"
+      }
+    },
+    {
+      "label": "video",
+      "raw": {
+        "video": "https://media.example.test/video.mp4"
+      }
+    },
+    {
+      "label": "video_url",
+      "raw": {
+        "video_url": "https://media.example.test/video.mp4"
+      }
+    },
+    {
+      "label": "result_url",
+      "raw": {
+        "result_url": "https://media.example.test/video.mp4"
+      }
+    },
+    {
+      "label": "result.url",
+      "raw": {
+        "result": {
+          "url": "https://media.example.test/video.mp4"
+        }
+      }
+    },
+    {
+      "label": "output.video",
+      "raw": {
+        "output": {
+          "video": "https://media.example.test/video.mp4"
+        }
+      }
+    },
+    {
+      "label": "data.output.video",
+      "raw": {
+        "data": {
+          "output": {
+            "video": "https://media.example.test/video.mp4"
+          }
+        }
+      }
+    },
+    {
+      "label": "output.outputs[0]",
+      "raw": {
+        "output": {
+          "outputs": [
+            "https://media.example.test/video.mp4"
+          ]
+        }
+      }
+    },
+    {
+      "label": "data.output.outputs[0]",
+      "raw": {
+        "data": {
+          "output": {
+            "outputs": [
+              "https://media.example.test/video.mp4"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "label": "output.urls.get",
+      "raw": {
+        "output": {
+          "urls": {
+            "get": "https://media.example.test/video.mp4"
+          }
+        }
+      }
+    },
+    {
+      "label": "data.output.urls.get",
+      "raw": {
+        "data": {
+          "output": {
+            "urls": {
+              "get": "https://media.example.test/video.mp4"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "outputs[0]",
+      "raw": {
+        "outputs": [
+          "https://media.example.test/video.mp4"
+        ]
+      }
+    },
+    {
+      "label": "content.video_url",
+      "raw": {
+        "content": {
+          "video_url": "https://media.example.test/video.mp4"
+        }
+      }
+    },
+    {
+      "label": "data.video_url",
+      "raw": {
+        "data": {
+          "video_url": "https://media.example.test/video.mp4"
+        }
+      }
+    },
+    {
+      "label": "data.result_url",
+      "raw": {
+        "data": {
+          "result_url": "https://media.example.test/video.mp4"
+        }
+      }
+    },
+    {
+      "label": "data.result.url",
+      "raw": {
+        "data": {
+          "result": {
+            "url": "https://media.example.test/video.mp4"
+          }
+        }
+      }
+    },
+    {
+      "label": "data.content.video_url",
+      "raw": {
+        "data": {
+          "content": {
+            "video_url": "https://media.example.test/video.mp4"
+          }
+        }
+      }
+    },
+    {
+      "label": "data.data.content.video_url",
+      "raw": {
+        "data": {
+          "data": {
+            "content": {
+              "video_url": "https://media.example.test/video.mp4"
+            }
+          }
+        }
+      }
+    },
+    {
+      "label": "data.data.result_url",
+      "raw": {
+        "data": {
+          "data": {
+            "result_url": "https://media.example.test/video.mp4"
+          }
+        }
+      }
+    },
+    {
+      "label": "result_urls[0]",
+      "raw": {
+        "result_urls": [
+          "https://media.example.test/video.mp4"
+        ]
+      }
+    },
+    {
+      "label": "data.results[type=video]",
+      "raw": {
+        "data": {
+          "results": [
+            {
+              "type": "image",
+              "url": "https://media.example.test/ignore.png"
+            },
+            {
+              "type": "video",
+              "url": "https://media.example.test/video.mp4"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

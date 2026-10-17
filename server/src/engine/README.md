@@ -8,7 +8,7 @@
 |---|---|---|
 | `story/` | `createStoryAgent({ llm })` → `{ understand, bindPrompts }` | pi agent；时长只取 `allowedDurations`，总时长 ≤ `maxSeconds`；单片段不出音频参考 |
 | `llm/` | `createLlm(config)`、`createMockLlm(script)` | LLM 调用；测试用模拟 |
-| `providers/` | `createRegistry([...adapters])`、`mock` 适配器 | `prepare / submit / query / normalize`；图片 + 音频参考、首帧 |
+| `providers/` | `createRegistry([...adapters])`、Modelhub Wan 3.0 / Seedance 2.5 / 图片适配器、`createImageProvider` | `prepare / submit / query / normalize`；视频固定 `omni_reference`，`tailRef` 作为普通参考图排在最前，尽力而为，不保证首帧衔接；图片参考只取第一张 |
 | `storage/` | `createStorage(config)` → `{ put, signedUrl, remove }`；`memory` 实现 | 七牛 Kodo 私有空间 + 签名链接 |
 | `transfer/` | `transferFromUrl(...)` | 上游临时链接 → 七牛，经 `net` 校验 |
 | `net/` | `safeFetch(url, { maxBytes, timeoutMs })` | SSRF / 大小 / 超时，可注入模拟网络 |

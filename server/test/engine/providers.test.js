@@ -5,6 +5,7 @@ import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { createRegistry, createWan30Adapter, createSeedance25Adapter,
   createModelhubImageAdapter, createImageProvider, createModelhubTransport } from '../../src/engine/providers/index.js';
+import { normalizeVideo } from '../../src/engine/providers/modelhub-video.js';
 import { TINY_PNG } from '../helpers/providers.js';
 
 const fixture = async (name) => JSON.parse(await readFile(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url))));
@@ -61,9 +62,9 @@ describe('engine/providers（M1-ENG-02）', () => {
     assert.throws(() => createRegistry([wan, wan]), /重复/);
   });
 
-  test('Wan/Seedance prepare：图片、音频参考及首帧对应编号字段', () => {
+  test('Wan/Seedance prepare：图片、音频参考与 tailRef 普通参考图', () => {
     const payload = wan.prepare({ prompt: '镜头向前移动', durationSeconds: 10, imageRefs: ['https://media.example.test/character.png'],
-      audioRefs: ['https://media.example.test/voice.wav'], firstFrame: 'https://media.example.test/tail.png', ratio: '9:16' },
+      audioRefs: ['https://media.example.test/voice.wav'], tailRef: 'https://media.example.test/tail.png', ratio: '9:16' },
     { durations: [5, 10, 15], resolution: '720p' });
     assert.deepEqual(payload, { model: 'wan-3.0', prompt: '镜头向前移动', resolution: '720p', ratio: '9:16', duration: 10,
       functionMode: 'omni_reference', image_file_1: 'https://media.example.test/tail.png',
@@ -71,8 +72,11 @@ describe('engine/providers（M1-ENG-02）', () => {
     const other = seedance.prepare({ prompt: '片段', durationSeconds: 30, imageRefs: [], audioRefs: ['https://media.example.test/voice.wav'] });
     assert.equal(other.model, 'seedance-2.5');
     assert.throws(() => wan.prepare({ prompt: '片段', durationSeconds: 31 }), /时长/);
-    assert.throws(() => seedance.prepare({ prompt: '片段', durationSeconds: 10, functionMode: 'first_last_frames',
-      audioRefs: ['https://media.example.test/voice.wav'] }), /音频/);
+    const tailWithAudio = seedance.prepare({ prompt: '片段', durationSeconds: 10, tailRef: 'https://media.example.test/tail.png',
+      audioRefs: ['https://media.example.test/voice.wav'] });
+    assert.equal(tailWithAudio.functionMode, 'omni_reference');
+    assert.equal(tailWithAudio.image_file_1, 'https://media.example.test/tail.png');
+    assert.equal(tailWithAudio.audio_file_1, 'https://media.example.test/voice.wav');
   });
 
   test('HTTP 假服务：视频 submit/query/normalize 与响应夹具一致', async () => {
@@ -93,10 +97,10 @@ describe('engine/providers（M1-ENG-02）', () => {
 
   test('Wan 与 Seedance 均可提交、查询；缺任务 ID 与限流返回 unknown', async () => {
     upstream.setMode('success');
-    const prepared = wan.prepare({ prompt: '云层穿行', durationSeconds: 5, firstFrame: 'https://media.example.test/first.png' });
+    const prepared = wan.prepare({ prompt: '云层穿行', durationSeconds: 5, tailRef: 'https://media.example.test/tail.png' });
     assert.deepEqual(await wan.submit(prepared, { idempotencyKey: 'wan-one' }),
       { status: 'running', upstreamId: 'qa-task-001' });
-    assert.equal(JSON.parse(upstream.requests.at(-1).body).image_file_1, 'https://media.example.test/first.png');
+    assert.equal(JSON.parse(upstream.requests.at(-1).body).image_file_1, 'https://media.example.test/tail.png');
     assert.deepEqual(await wan.query('qa-task-001'), { status: 'succeeded',
       outputs: [{ url: 'https://media.example.test/videos/qa-task-001.mp4', kind: 'video' }] });
     const noId = createWan30Adapter({ request: async () => ({ status: 'queued' }) });
@@ -104,6 +108,47 @@ describe('engine/providers（M1-ENG-02）', () => {
     const rateLimited = createWan30Adapter({ request: async () => { const error = new Error('rate limited');
       error.submitted = true; error.status = 429; throw error; } });
     assert.deepEqual(await rateLimited.submit(prepared), { status: 'unknown' });
+  });
+
+  test('视频每个参考仓库 URL 候选位置与终态均正确归一化', async () => {
+    const cases = await fixture('modelhub-video-url-candidates.json');
+    for (const { label, raw } of cases.cases) {
+      assert.deepEqual(normalizeVideo({ status: 'running', ...raw }), { status: 'succeeded',
+        outputs: [{ url: 'https://media.example.test/video.mp4', kind: 'video' }] }, label);
+    }
+    for (const status of ['failed', 'error', 'rejected', 'expired', 'cancelled', 'canceled', 'blocked', 'timeout']) {
+      assert.equal(normalizeVideo({ status }).status, 'failed', status);
+    }
+    for (const status of ['succeeded', 'completed', 'success']) {
+      assert.deepEqual(normalizeVideo({ status }), { status: 'unknown' }, status);
+    }
+    assert.deepEqual(normalizeVideo({ status: 'succeeded', video_url: 'https://user:pass@media.example.test/video.mp4' }),
+      { status: 'unknown' });
+  });
+
+  test('图片请求字段按模型能力校验，仅取排序第一张参考图', async () => {
+    upstream.setMode('success');
+    const warnings = [];
+    const refs = [];
+    const adapter = createModelhubImageAdapter({ transport,
+      logger: { warn: (name, details) => warnings.push({ name, details }) },
+      loadReference: async (key) => { refs.push(key); return { buffer: TINY_PNG, contentType: 'image/png' }; } });
+    const prepared = adapter.prepare({ promptHint: '绘本', description: '女孩',
+      referenceKeys: ['users/u1/first.png', 'users/u1/second.png', 'users/u1/third.png'] });
+    assert.equal(prepared.quality, '1080p');
+    assert.equal(prepared.detail_level, 'medium');
+    assert.deepEqual(prepared.referenceKeys, ['users/u1/first.png']);
+    assert.equal(prepared.droppedReferences, 2);
+    assert.deepEqual(warnings, [{ name: 'image_references_dropped', details: { model: 'gpt-image-2', droppedReferences: 2 } }]);
+    const result = await adapter.submit(prepared);
+    assert.equal(result.droppedReferences, 2);
+    assert.deepEqual(refs, ['users/u1/first.png']);
+    const body = upstream.requests.at(-1).body.toString();
+    assert.match(body, /name="quality"\r\n\r\n1080p/);
+    assert.match(body, /name="detail_level"\r\n\r\nmedium/);
+    assert.equal((body.match(/name="images"/g) ?? []).length, 1);
+    assert.throws(() => adapter.prepare({ description: '女孩', referenceKeys: [] }, { resolution: '2k' }),
+      (error) => error.code === 'PROVIDER_INPUT_INVALID');
   });
 
   test('图片无参考 JSON 生成，有参考时 multipart compositions；facade 兼容 BE-04', async () => {
@@ -138,14 +183,61 @@ describe('engine/providers（M1-ENG-02）', () => {
     const latest = upstream.requests.slice(-2);
     assert.ok(latest.every((request) => !request.headers['idempotency-key']), '重复生成不能使用固定 characterId:styleId 键');
     upstream.setMode('reject');
-    await assert.rejects(() => facade.generate(input), (error) => error.submitted === false && error.status === 400);
+    assert.deepEqual(await facade.generate(input), { status: 'failed',
+      error: '图片生成请求被渠道拒绝，请稍后重试。', providerMessage: '图片内容不符合要求' });
     upstream.setMode('upstream-failure');
     assert.deepEqual(await facade.generate(input), { status: 'unknown' });
     upstream.setMode('success');
     assert.deepEqual(image.normalize({ data: [] }), { status: 'unknown' });
-    assert.deepEqual(image.normalize(samples.image.failed), { status: 'failed', error: '图片内容不符合要求' });
+    assert.deepEqual(image.normalize(samples.image.failed), { status: 'failed',
+      error: '图片生成失败，请修改内容后重试。', providerMessage: '图片内容不符合要求' });
     assert.deepEqual(wan.normalize({ status: 'succeeded', result: { url: 'https://media.example.test/compat.mp4' } }),
       { status: 'succeeded', outputs: [{ url: 'https://media.example.test/compat.mp4', kind: 'video' }] });
+  });
+
+  test('图片拒绝分类、429 重试、下载最多三次且不重提交', async () => {
+    const registry = createRegistry([image]);
+    const errors = [];
+    let downloads = 0;
+    const facade = createImageProvider(registry, { downloadImage: async () => {
+      downloads += 1;
+      if (downloads < 3) throw new Error('temporary download failure');
+      return { buffer: TINY_PNG, contentType: 'image/png' };
+    }, sleep: async () => {}, logger: { error: (...args) => errors.push(args) } });
+    const input = { characterId: 'chr_a', styleId: 'realistic', promptHint: '写实', description: '女孩', referenceKeys: [] };
+    upstream.setMode('success');
+    const before = upstream.requests.length;
+    assert.equal((await facade.generate(input)).status, 'succeeded');
+    assert.equal(downloads, 3);
+    assert.equal(upstream.requests.length - before, 1, '下载重试不得重新提交模型任务');
+    upstream.setMode('reject');
+    const failed = await facade.generate(input);
+    assert.equal(failed.status, 'failed');
+    assert.ok(!failed.error.includes('图片内容不符合要求'), '用户错误不得含上游原文');
+    assert.equal(failed.providerMessage, '图片内容不符合要求');
+    const rateLimited = createImageProvider(createRegistry([createModelhubImageAdapter({
+      transport: { request: async () => { const error = new Error('429'); error.retryable = true; error.submitted = false;
+        error.retryAfter = '2'; throw error; } },
+    })]), { downloadImage: async () => ({ buffer: TINY_PNG }) });
+    await assert.rejects(() => rateLimited.generate(input), (error) => error.retryable === true
+      && error.submitted === false && error.retryAfter === '2');
+    upstream.setMode('success');
+  });
+
+  test('响应体上限 1MB，拒绝类错误保留截断上游详情并记录鉴权故障', async () => {
+    const transportLogs = [];
+    const authTransport = createModelhubTransport({ baseUrl, apiKey: 'fixture-token', logger: {
+      error: (...args) => transportLogs.push(args),
+    }, fetchImpl: async () => new Response(JSON.stringify({ error: { code: 'AUTH', message: 'x'.repeat(240) } }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } }) });
+    await assert.rejects(() => authTransport.request('/v1/images/generations', { method: 'POST', body: {} }),
+      (error) => error.submitted === false && error.retryable === false && error.providerMessage.length === 200
+        && error.providerCode === 'AUTH');
+    assert.equal(transportLogs.length, 1);
+    const oversized = createModelhubTransport({ baseUrl, apiKey: 'fixture-token', fetchImpl: async () =>
+      new Response(JSON.stringify({ data: 'x'.repeat(1024 * 1024 + 1) }), { status: 200 }) });
+    await assert.rejects(() => oversized.request('/v1/images/generations', { method: 'POST', body: {} }),
+      (error) => error.code === 'SUBMISSION_UNKNOWN');
   });
 
   test('失败分类：明确 4xx/连接拒绝 submitted=false，受理后断开/超时/5xx 返回 unknown', async () => {
