@@ -136,6 +136,14 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-03 第三轮修复（真实 DOCX 与线性标签扫描）
+
+- **背景**：在原分支合并 `origin/main`（0490b92）后处理 §6 第三轮两条必改：真实 Word 段落的 `<w:pPr>` / `<w:pict>` 被当作嵌套段落误拒绝，`<w:br>` / `<w:tab>` 后空白属性仍触发平方回溯。
+- **改动**：`engine/extract/index.js` 改为单遍 `indexOf('<')` / `indexOf('>')` 标签扫描，标签名按字符单向读取；仅对准确的 `w:p` 标签建立段落栈，忽略 `w:pPr`、`w:pict` 等属性标签。`w:t` 仅取下一个 `<` 之前的文本，`w:br` 与 `w:tab` 分别转为换行与空格，不再使用可重叠量词正则。文本框里嵌套段落可提取；LibreOffice 导出的 `mc:Choice` / `mc:Fallback` 两份兼容表示只提取一次。
+- **真实夹具**：提交两份由 LibreOffice 26.8 保存的 `.docx`（均小于 50KB、只含虚构文字）：`server/test/engine/fixtures/miv-word-styles-fixture.docx` 包含标题、粗体、居中、多段落、换行、制表符及实际页眉页脚部件；`miv-textbox-fixture.docx` 含 `w:txbxContent` 文本框。测试对两份正文做精确相等断言，页眉页脚不并入正文，文本框兼容表示不重复。
+- **验证**：1MB 空白属性的 `<w:br/>` 和 `<w:tab/>` 分别在 200ms 内返回正确文本（本机聚焦测试合计约 10ms）；未闭合段落和文本标签继续返回 `ExtractError`。`npm run test:server` 134/134，连续四轮通过；`npm run check` 与 `npm run build` 通过。
+- **未完成 / 风险**：真实 Word/WPS 的更多方言仍需后续夹具扩展；七牛真实桶的中文、空格 key 下载行为留在 M2 授权联调。复审通过前不开始 M1-ENG-02。
+
 ### 2026-10-17 · Engine · M1-ENG-03 复审修复（线性正文解析）
 
 - **背景**：在 `agent/eng/M1-ENG-03-infra` 合并 `origin/main`（462cc19）后，处理 §6 复审唯一必改：未闭合 `<w:p>` / `<w:t>` 使正则平方增长、阻塞 API 事件循环；顺手处理建议项 2（七牛上传 MIME 头注入）。
