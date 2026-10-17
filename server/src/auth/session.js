@@ -45,6 +45,12 @@ function parseCookies(header) {
   return out;
 }
 
+/** 业务路由的登录守卫：挂在路由器上（auth 路由按需挂单个端点）。 */
+export const requireAuth = (req, res, next) => {
+  if (!req.user) return next(appError('UNAUTHENTICATED'));
+  return next();
+};
+
 export function createSessionTools({ config, db }) {
   const cookieOptions = { httpOnly: true, sameSite: 'lax', secure: config.cookieSecure, path: '/' };
 
@@ -103,10 +109,5 @@ export function createSessionTools({ config, db }) {
     return next();
   };
 
-  const requireAuth = (req, res, next) => {
-    if (!req.user) return next(appError('UNAUTHENTICATED'));
-    return next();
-  };
-
-  return { sessionMiddleware, csrfGuard, requireAuth, setSessionCookie, clearSessionCookie };
+  return { sessionMiddleware, csrfGuard, setSessionCookie, clearSessionCookie };
 }

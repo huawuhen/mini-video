@@ -367,6 +367,19 @@ describe('auth（M1-BE-01）', () => {
     assert.ok(logs.some((m) => m.includes('2 分钟内有效')), logs.join(' | '));
   });
 
+  test('冷却拦截不计每日次数（§6 遗留 5）：并发 10 次后日计数仅 1，冷却过后仍能再发', async () => {
+    const phone = '13800000023';
+    const results = await Promise.all(Array.from({ length: 10 }, () => post(base, '/auth/sms', { phone })));
+    assert.equal(results.filter((r) => r.status === 200).length, 1);
+    assert.equal(results.filter((r) => r.status === 429).length, 9);
+    const { rows } = await ctx.db.query(`SELECT count FROM rate_counters WHERE key = $1`, [`sms:daily:${phone}`]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].count, 1, '被冷却拦下的请求不消耗每日次数');
+    await backdateSms(ctx, phone, 61);
+    const resend = await post(base, '/auth/sms', { phone });
+    assert.equal(resend.status, 200, '冷却过后仍能再发（不能被若干请求锁死当日额度）');
+  });
+
   test('独立限流配置：单手机号每日发送上限', async () => {
     const phone = '13900000001';
     assert.equal((await post(limitedBase, '/auth/sms', { phone })).status, 200);

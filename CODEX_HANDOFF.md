@@ -64,7 +64,8 @@
 | L-03 测试数据库 | Lead (Claude) | `main` | `deploy/compose.test.yml` 根 `package.json` | ✅ 完成 | 2026-10-16 |
 | L-04 前端骨架 v2 | Lead (Claude) | `main` | `apps/web/**` | ✅ 完成 | 2026-10-16 |
 | M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | ✅ 完成（Lead 复审通过并合并 `6a741a7`） | 2026-10-17 |
-| M1-BE-02 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
+| M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | 待审查 | 2026-10-17 |
+| M1-BE-03 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
 | M1-ENG-03 | — | — | — | 待认领 | — |
@@ -121,6 +122,46 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-17 · BE-Core · M1-BE-02 修复（§6 审查意见 1~7）
+
+- **背景**：Lead 审查（§6）指出 6 条必须修改 + 1 条建议（兑换码暴力猜解）。分支已 `git merge origin/main`（084e88b）后修复，仍在同一分支追加提交（bb26717）。
+- **改动（文件/模块）**：`server/src/wallet/service.js`（意见 1~4）、`server/src/wallet/pricing.js`（意见 5~6）、`server/src/api/wallet.js`（意见 7）、`server/test/wallet.test.js`（更新 4 处既有断言/调用 + 新增 8 个回归测试）。
+- **核心实现**：
+  1. 流水翻页：游标改用微秒时间戳（`(extract(epoch from created_at) * 1000000)::bigint` + id 作 keyset），修复同事务多条流水 `created_at` 完全相同（`now()` 为事务开始时间）被毫秒游标整段跳过的丢数据问题。回归：同一事务 3 笔扣费，`limit=1` 逐页翻满 3 条不丢不重。
+  2. 金额入口校验：`reserve/settle/refund/charge` 统一 `Number.isSafeInteger(amountFen) && amountFen > 0`，否则 INTERNAL（0 元操作无业务含义，选择直接拒绝并注释，不写流水）。回归：`charge(-500)`、`charge(0)` 均 INTERNAL 且余额不变。
+  3. 幂等键隔离：首次流水命中时 `user_id` 与调用方不同 → 409 `IDEMPOTENCY_CONFLICT`。回归：他人复用同键得 409、双方余额不变。
+  4. 重放比对：`withIdempotency` 查询带出 `frozen_delta_fen`，`reserve/settle/refund` 的 expect 增加该字段。回归：同键结算 100 后再结算 200 → 409。
+  5. 报价归属：`consumeQuote` 必须声明 `{ kind, refType, refId }`，与报价不符抛 `QUOTE_MISMATCH`（占用随事务回滚，已测）；`priceSegmentTake` 校验 segment 属于传入 `projectId`。回归：拿 chr_a1 报价确认 chr_a2、换 kind 声明均 MISMATCH 且占用回滚；跨作品 segment_take 报价 404。**注意：BE-04/05 调用 `consumeQuote` 时必须传三元组**。
+  6. estimate 对齐 PRD §6.3【默认】：下限 = 1 个 30 秒片段（30 取 `min(30, SKU 最长时长)`），上限 = 最长作品时长；形象费按「本风格缺形象的已勾选数字人数」计入上下限（缺形象 = 无该风格形象或选中版本非 succeeded，SQL 用 `NOT EXISTS … selected_version_id → status='succeeded'`）。回归：3 个勾选中 2 个缺形象 → standard {min:700, max:1900}；空勾选 {600, 1800}；hd {1200, 3600}。
+  7.（建议项）兑换码尝试上限：按用户每小时 10 次（`redeem:attempt:<userId>` 固定窗口），事务外预计数（BE-01 登录限流同款，失败回滚不丢计数，并发猜码也计入）。回归：连续 10 次错码 400 后第 11 次 429 `RATE_LIMITED`。
+- **验证（命令与结果）**：`npm run test:server` 74 通过 0 失败（67 → 74，新增 8 个回归 + 调整 4 处既有断言），连续 6 轮稳定；`npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：给 BE-05 的约定（Lead 已记录）继续有效——`priceCastLooks` 以 `look_version_id IS NULL` 为缺形象，故事理解 job 需为已有本风格形象的角色写好该字段；`consumeQuote` 新签名的调用方适配在 BE-04/05 落地。
+
+### 2026-10-17 · BE-Core · M1-BE-02 钱包与计价（含遗留 5 修复）
+### 2026-10-17 · BE-Core · M1-BE-02 钱包与计价（含遗留 5 修复）
+
+- **背景**：M1 第二个任务。分支前两个提交先修 §6 遗留第 5 条（发码冷却拦截不计每日次数），随后按 §6 M1-BE-02 开工要点 a~e 实现钱包与计价。复用现有表结构与错误码，无需新迁移，未改 `docs/API.md`。
+- **改动（文件/模块）**：
+  - 遗留 5：`server/src/auth/sms.js`（每日上限移入手机号级事务锁内、冷却通过后计数）+ `server/test/auth.test.js` 回归。
+  - 新增 `server/src/wallet/service.js`：`reserve/settle/refund/charge/redeem`（接收调用方事务作用域 `t`，要点 a）、`getWallet`、`listLedger`（keyset 分页）。
+  - 新增 `server/src/wallet/pricing.js`：四种 kind 计价函数注册表（要点 b）、`createQuote`、`consumeQuote`（要点 c）、`estimateQuote`、`getActiveTierSku`。
+  - 新增 `server/src/api/wallet.js`（GET /wallet、GET /wallet/ledger、POST /wallet/redeem）、`server/src/api/quotes.js`（POST /quotes、POST /quotes/estimate），逐路由挂 `requireAuth`；`app.js` 接线。
+  - `server/src/auth/session.js`：`requireAuth` 改为模块级导出供业务路由复用（auth/index.js 行为不变）；新增 `server/test/wallet.test.js`（14 用例）。
+- **核心实现**：
+  - 账本（要点 a）：余额用带条件 `UPDATE … WHERE available_fen/frozen_fen >= $amount` 原子增减，影响 0 行即 402（结算/退回的冻结不足属调用方错误，按 INTERNAL 兜底暴露）；幂等键加事务级 advisory 锁后查首次流水，同键重放返回首次结果，同键不同参数（kind/金额/ref）409 `IDEMPOTENCY_CONFLICT`。
+  - 计价（要点 b）：`project_render`/`segment_take` 按作品锁定 `tier_mapping_id` 对应 sku_code 的当前生效版本取价（非当前映射）；形象单价取 `settings.look_image_sku_code` 当前生效 SKU；`cast_looks` 按 `project_cast.look_version_id IS NULL` 计数；四种 kind 的 `project_render`/`cast_looks`/`segment_take` 计价函数已就绪，测试直接插作品/片段行验证，不等 BE-05。
+  - 报价（要点 c）：落库 `params_hash`（结构参数：片段清单、角色/风格、数量）+ `price_snapshot`（含请求参数与 sku 版本单价，供重算）；`consumeQuote` 原子占用（`consumed_at` 条件更新）→ 按当前状态与价格重算 → 比对，不一致 409 `QUOTE_MISMATCH`（占用随调用方事务回滚），过期/已消费 409 `QUOTE_EXPIRED`，他人报价 404。
+  - 兑换码（要点 d）：只存 sha256 哈希；`used_by IS NULL` 条件更新防并发重复兑换；无效/已用统一「兑换码无效或已被使用」（400，不暴露区分）；流水标题中文。
+- **验证（命令与结果）**：
+  - `npm run test:server`：67 通过 0 失败（新增 14 用例覆盖要点 e 全部必测：并发预占不超扣（100 分并发预占 30 分仅 3 次成功、终态 10/90）、幂等重放、同键不同参数 409、调价后旧报价 `QUOTE_MISMATCH` 且占用回滚、参数变化 `QUOTE_MISMATCH`、过期 `QUOTE_EXPIRED`、并发兑换同一码仅一次、流水分页与非法 cursor、他人资源 404、HTTP 契约与登录守卫），连续 6 轮稳定。
+  - `npm run check` 0 错误；`npm run build` 成功。
+  - 遗留 5 回归：冷却期内并发 10 次发码后 `sms:daily` 计数仅 1，冷却过后仍能再发。
+- **未完成 / 风险**：
+  - `estimate` 的 min/max 口径为【默认】实现（min=档位单价×最短单段时长；max=档位单价×最长作品时长+数字人数×形象单价），待用户确认（HANDOFF §4.3 已登记），确认后只改 `estimateQuote` 一个函数。
+  - `quotes` 表未存原始请求 JSON，重算依赖 `price_snapshot.request`；若后续 kind 增加参数需同步两处。
+  - 结算/退回的冻结不足按 500 兜底（正常流程不会出现），供审查确认该取舍。
+  - 充值（`recharge`）真实支付在 M3，当前只有兑换码入账路径。
 
 ### 2026-10-17 · BE-Core · M1-BE-01 修复（§6 审查意见 1~4）
 
