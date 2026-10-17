@@ -18,6 +18,7 @@
 | `vc_` | 平台音色 | `take_` | 片段版本 |
 | `upl_` | 上传文件 | `rnd_` | 成片 |
 | `qt_` | 报价 | `led_` | 账本流水 |
+| `po_` | 充值订单 | | |
 
 - 风格 ID、画质档位 ID 是可读短码（如 `realistic`、`standard`），由 `GET /catalog` 下发。
 - 幂等：会产生费用或创建资源的 POST 带 `idempotencyKey`（客户端生成的 UUID）。同键同参数返回首次结果；同键不同参数返回 409 `IDEMPOTENCY_CONFLICT`。
@@ -112,6 +113,44 @@ type Quote = {
 - 报价锁定价格版本；用报价执行时服务端会重算，参数或价格变化返回 409 `QUOTE_MISMATCH`，前端重新报价并让用户确认，**不静默多扣**。
 - 扣费方式：`cast_looks` / `look_regenerate` 生成前预占、成功结算、失败退回（形象永久归入资产库，作品取消不退）；`project_render` / `segment_take` 同样预占→逐片段结算→失败退回。
 - 提交结果未知（`SUBMISSION_UNKNOWN`）的片段保持冻结，不自动重提，等待对账。
+
+### 3.1 在线充值（易支付，M3；PRD 6.4）
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/wallet/recharge/options` | – | `RechargeOptions` |
+| POST | `/wallet/recharge` | `{ amountFen, payType, device, idempotencyKey }` | `RechargeOrder`（201） |
+| GET | `/wallet/recharge/:orderId` | – | `RechargeOrder`（前端支付后轮询） |
+| GET | `/wallet/recharge` | `?cursor&limit` | `{ items: RechargeOrder[], nextCursor }` |
+
+```ts
+type PayType = 'alipay' | 'wxpay';
+type RechargeOptions = {
+  amountsFen: number[];                       // 预设档位，如 [1000, 3000, 5000, 10000, 20000, 50000]
+  maxAmountFen: number;
+  payTypes: { id: PayType; name: string }[];  // 后台启用的支付方式；为空表示充值暂不可用
+};
+type RechargeOrder = {
+  id: string; status: 'created' | 'paid' | 'expired' | 'failed';
+  amountFen: number; payType: PayType; createdAt: string; expiresAt: string; paidAt?: string;
+  // 仅 created 状态返回：前端按 type 展示
+  pay?: { type: 'jump' | 'html' | 'qrcode' | 'urlscheme'; info: string };
+  wallet?: Wallet;                            // 仅 paid 状态返回，用于结果页直接刷新余额
+};
+```
+
+- `amountFen` 必须是 `amountsFen` 中的值，否则 400 `VALIDATION_FAILED`；`device` 取 `pc`（返回二维码或跳转）或 `mobile`（返回跳转）。
+- 同一 `idempotencyKey` 重放返回同一订单；每用户同时最多 3 笔 `created` 订单，每小时最多创建 10 笔，超出 429 `RATE_LIMITED`。
+- 易支付不可用或下单失败返回 502 `PAYMENT_UNAVAILABLE`，**不留下 `created` 订单**。
+- `return_url` 为 `{WEB_BASE_URL}/wallet/recharge/result?orderId=<id>`；前端结果页只用 `GET /wallet/recharge/:orderId` 轮询，**不以浏览器跳转参数判断是否支付成功**。
+- 到账只由服务端的异步通知（加主动查单核验）和对账任务完成，前端没有「确认已支付」接口。
+- 实现提示：`/wallet/recharge/options` 必须先于 `/wallet/recharge/:orderId` 注册，否则 `options` 会被当成订单号；订单 ID 只接受 `po_` 前缀，其他一律 404。
+
+**易支付异步通知**（不属于前端接口，列出供后端、运维对接）
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/payments/ezfp/notify` | 易支付服务器回调；**不要求登录和 CSRF**，挂载在会话中间件之前；成功（含重复通知）返回 `text/plain` 的 `success`，其余返回其他内容并写审计日志；不记录签名和密钥 |
 
 ## 4. 上传
 
@@ -319,3 +358,4 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | 400 | `SMS_CODE_INVALID` | 验证码错误或过期 |
 | 500 | `INTERNAL` | 服务器错误 |
 | 502 | `UPSTREAM_FAILED` / `SUBMISSION_UNKNOWN` | 上游失败 / 提交结果未知（冻结待对账） |
+| 502 | `PAYMENT_UNAVAILABLE` | 支付通道暂不可用（M3） |
