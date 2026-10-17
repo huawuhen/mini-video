@@ -22,7 +22,7 @@
 | 角色 | 职责 | 拥有（可写）路径 |
 |---|---|---|
 | 主代理 (Lead) | 文档、接口契约、任务拆分、合并、独立验收、与用户沟通 | `AGENTS.md` `docs/**` `CODEX_HANDOFF.md` `README.md` 根配置 |
-| 后端主线 (BE-Core) | 数据库→认证→钱包账本→项目状态机→队列→API→集成测试，**同一 Agent 串行负责**，禁止拆给多人并发猜接口 | `server/src/{config.js,http,db,auth,wallet,catalog,characters,projects,queue,api}/**` `server/migrations/**` `server/test/**`（自己模块） |
+| 后端主线 (BE-Core) | 数据库→认证→钱包账本→项目状态机→队列→API→集成测试，**同一 Agent 串行负责**，禁止拆给多人并发猜接口 | `server/src/{config.js,http,db,auth,wallet,payments,catalog,characters,projects,queue,api}/**` `server/migrations/**` `server/test/**`（自己模块） |
 | 引擎迁移 (Engine) | 从超搭云迁移并适配生成引擎（剧本 LLM、渠道适配、转存、网络安全、对象存储），提供纯函数/可注入接口与单测 | `server/src/engine/**` `server/test/engine/**` |
 | 成片合成 (Render) | FFmpeg 拼接、响度统一、尾帧衔接、AI 生成标识（显式+隐式）、封面（**不做字幕、BGM**，PRD §4.4） | `server/src/render/**` `server/test/render/**` |
 | 前端 (Web) | 按 `docs/API.md` + `docs/UI.md` 实现页面；先用 mock，联调时切真实 API | `apps/web/**` |
