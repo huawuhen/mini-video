@@ -26,19 +26,11 @@ const newCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
 // 哈希掺入手机号：验证码只有 10^6 种，不掺盐时一份库可离线碰撞所有手机号
 const codeHash = (phone, code) => createHash('sha256').update(`${phone}:${code}`).digest('hex');
 
-/** 发送验证码：每日上限走固定窗口限流，冷却在手机号级事务锁内检查。 */
-
+/** 发送验证码：每日上限在手机号级事务锁内、冷却通过后才计数（§6 遗留 5：冷却拦截不消耗每日次数）。 */
 export async function sendSmsCode({ db, config, logger, provider, phone }) {
-  await hitRateLimit(db, {
-    key: `sms:daily:${phone}`,
-    windowSeconds: 86_400,
-    max: config.sms.maxPerPhonePerDay,
-    message: '今天发送的验证码次数已用完，请明天再试',
-  });
-
   const code = newCode();
   const expiresAt = new Date(Date.now() + config.sms.codeTtlSeconds * 1000);
-  // 审查意见 1：「冷却检查 → 作废旧码 → 插入新码」放进带手机号级事务锁的短事务，
+  // 「冷却检查 → 每日上限 → 作废旧码 → 插入新码」放进带手机号级事务锁的短事务，
   // 同手机号并发请求在此串行化，冷却不可被并发绕过；短信发送仍在事务外，不占数据库连接。
   const smsRowId = await db.tx(async (t) => {
     await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`sms:${phone}`]);
@@ -54,6 +46,13 @@ export async function sendSmsCode({ db, config, logger, provider, phone }) {
         }
       }
     }
+    // 每日上限在冷却通过后计数：被冷却拦下的请求不消耗当日次数；达上限抛错连同本次自增一起回滚，计数只反映实际发出的验证码
+    await hitRateLimit(t, {
+      key: `sms:daily:${phone}`,
+      windowSeconds: 86_400,
+      max: config.sms.maxPerPhonePerDay,
+      message: '今天发送的验证码次数已用完，请明天再试',
+    });
     await t.query(`UPDATE sms_codes SET consumed_at = now() WHERE phone = $1 AND consumed_at IS NULL`, [phone]);
     const { rows } = await t.query(
       `INSERT INTO sms_codes (phone, code_hash, expires_at) VALUES ($1, $2, $3) RETURNING id`,
