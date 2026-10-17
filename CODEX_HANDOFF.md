@@ -63,7 +63,7 @@
 | L-02 后端骨架 | Lead (Claude) | `main` | `server/**` | ✅ 完成 | 2026-10-16 |
 | L-03 测试数据库 | Lead (Claude) | `main` | `deploy/compose.test.yml` 根 `package.json` | ✅ 完成 | 2026-10-16 |
 | L-04 前端骨架 v2 | Lead (Claude) | `main` | `apps/web/**` | ✅ 完成 | 2026-10-16 |
-| M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | 进行中 | 2026-10-17 |
+| M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | 待审查 | 2026-10-17 |
 | M1-BE-02 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
@@ -119,6 +119,28 @@
 | — | — | — | — |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-17 · BE-Core · M1-BE-01 认证
+
+- **背景**：M1 骨架跑通的第一个任务。复用 L-02 的 `users` `sms_codes` `sessions` `rate_counters` 表结构与既有错误码，无需新迁移，未改 `docs/API.md`（即无需 §5 变更申请）。
+- **改动（文件/模块）**：
+  - 新增 `server/src/auth/`：`ratelimit.js`（PG 固定窗口限流）、`session.js`（会话中间件 / CSRF 守卫 / 用户序列化）、`sms.js`（验证码发放与校验 + 登录注册 + console provider）、`routes.js`（5 个端点）、`index.js`（`createAuth` 组装）。
+  - `server/src/config.js`：新增 `sms` 配置组（provider、验证码 TTL、冷却、每日上限、错误次数上限、登录限流）+ 生产禁用 console provider 的启动拦截；`server/.env.example` 同步。
+  - `server/src/app.js`：在预留插入点接线 `createAuth`（会话 → CSRF/Origin → 认证路由），`createApp` 新增 `smsProvider` 注入点；新增 `server/test/auth.test.js`（22 个用例）。
+- **核心实现**：
+  - 验证码：6 位码按手机号掺盐 sha256 存储（10^6 空间不掺盐可被离线碰撞）；冷却看最近一次发送时间（避免固定窗口边界连发），每日上限走 `rate_counters`；发新码前作废旧码，登录只认最新一条；发送失败删行、不占冷却，返回 502 `UPSTREAM_FAILED`。
+  - 登录：失败计数（`attempts` 自增、达上限作废）在**事务外自提交**——首版放在事务内，抛错即回滚导致计数永不生效，被本任务测试暴露后修正；成功路径短事务：行锁复核 → 消费验证码 → 建用户 + 钱包行（随注册建好，M1-BE-02 无需懒建）→ 建会话。新用户 `tourCompletedAt=null`（验收点）。
+  - 会话与 CSRF：Cookie `miv_sid`（HttpOnly / SameSite=Lax / 生产 Secure），库中只存 token 哈希；过期或被停用账号的会话在中间件里顺手删除。写请求先校验 Origin 白名单（无 Origin 放行，兼容非浏览器客户端）；存在会话时再校验 `X-CSRF-Token`；`/auth/sms`、`/auth/login` 登录前无 token，由 Origin + SameSite 防护。
+  - `PATCH /me/onboarding`：`tourCompletedAt` 只记首次完成（完成与跳过都传 true，重播不改服务端状态），`tipsSeen` 追加去重，两字段至少一个。
+- **验证（命令与结果）**：
+  - `npm ci` ✓；`npm run test:db:up` ✓（miv-test 容器健康）。
+  - `npm run test:server`：48 通过 0 失败（原 26 + auth 22：未登录 401、CSRF 缺失/错 Origin 403、冷却 429、错 5 次作废、过期码、日发送上限、登录限流、新用户 `tourCompletedAt=null`、onboarding 幂等/去重/参数校验、logout 失效并清 Cookie、provider 故障 502 不占冷却、生产配置拦截）。
+  - `npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：
+  - 短信 provider 仅实现 console（开发/测试把验证码打印到控制台）；生产启动会拦截并要求注入真实 provider（接真实短信放 M2/M3）。
+  - 验证码哈希为 sha256+手机号掺盐 + 5 次错误上限，上线前可评估升级 argon2/bcrypt（需新增依赖）。
+  - 每日上限窗口按 UTC 对齐；如需按北京时间「每天」，后续在运营配置里调整。
+  - 真实短信发送未验证（遵守不产生真实费用的约束）；限流仅按手机号维度，未做按 IP（M2 结合部署形态评估）。
 
 ### 2026-10-16 · Lead · L-01~L-04 PRD 定稿与主体框架
 
