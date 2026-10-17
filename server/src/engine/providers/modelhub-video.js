@@ -46,8 +46,10 @@ export function videoUrl(raw) {
 export function normalizeVideo(raw) {
   const status = String(raw?.status ?? raw?.data?.status ?? raw?.state ?? raw?.data?.state ?? '').toLowerCase();
   if (['failed', 'error', 'rejected', 'expired', 'cancelled', 'canceled', 'blocked', 'timeout'].includes(status)) {
-    return { status: 'failed', error: String(raw?.error?.message ?? raw?.data?.error?.message
-      ?? raw?.error ?? raw?.failMessage ?? raw?.message ?? '生成失败') };
+    const providerMessage = String(raw?.error?.message ?? raw?.data?.error?.message
+      ?? raw?.error ?? raw?.failMessage ?? raw?.message ?? '').slice(0, 200);
+    return { status: 'failed', error: '视频生成失败，请稍后重试。',
+      ...(providerMessage ? { providerMessage } : {}) };
   }
   const url = videoUrl(raw);
   if (url) return { status: 'succeeded', outputs: [{ url, kind: 'video' }] };

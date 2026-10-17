@@ -13,7 +13,12 @@ export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-
       let prepared;
       try { prepared = adapter.prepare({ characterId, styleId, promptHint, description, referenceKeys }, sku); }
       catch (error) {
-        if (error.submitted === false && !error.retryable) return { status: 'failed', error: '图片生成参数不符合要求。' };
+        if (error.submitted === false && !error.retryable) {
+          if (['PROVIDER_CONFIG_INVALID', 'PROVIDER_INPUT_INVALID'].includes(error.code)) {
+            logger?.error?.('image_provider_local_invalid', { code: error.code, message: error.message });
+          }
+          return { status: 'failed', error: '图片生成参数不符合要求。' };
+        }
         throw error;
       }
       let submitted;
@@ -21,6 +26,9 @@ export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-
       catch (error) {
         if (error.retryable === true) throw error;
         if (error.submitted === false) {
+          if (['PROVIDER_CONFIG_INVALID', 'PROVIDER_INPUT_INVALID'].includes(error.code)) {
+            logger?.error?.('image_provider_local_invalid', { code: error.code, message: error.message });
+          }
           if ([401, 403].includes(error.status)) logger?.error?.('image_provider_auth_rejected', {
             status: error.status, providerCode: error.providerCode, providerMessage: error.providerMessage,
           });

@@ -47,7 +47,7 @@ describe('engine/providers（M1-ENG-02）', () => {
     upstream.server.listen(0, '127.0.0.1');
     await new Promise((resolve) => upstream.server.once('listening', resolve));
     baseUrl = `http://127.0.0.1:${upstream.server.address().port}`;
-    transport = createModelhubTransport({ baseUrl, apiKey: 'fixture-token', timeoutMs: 70 });
+    transport = createModelhubTransport({ baseUrl, apiKey: 'fixture-token', timeoutMs: 2500 });
     wan = createWan30Adapter(transport);
     seedance = createSeedance25Adapter(transport);
     image = createModelhubImageAdapter({ transport, loadReference: async () => ({ buffer: TINY_PNG, contentType: 'image/png', name: 'ref.png' }) });
@@ -92,7 +92,8 @@ describe('engine/providers（M1-ENG-02）', () => {
     assert.deepEqual(await seedance.query('qa-task-001'), { status: 'succeeded',
       outputs: [{ url: 'https://media.example.test/videos/qa-task-001.mp4', kind: 'video' }] });
     assert.deepEqual(wan.normalize(samples.video.running), { status: 'running' });
-    assert.deepEqual(wan.normalize(samples.video.failed), { status: 'failed', error: '模型拒绝生成' });
+    assert.deepEqual(wan.normalize(samples.video.failed), { status: 'failed',
+      error: '视频生成失败，请稍后重试。', providerMessage: '模型拒绝生成' });
   });
 
   test('Wan 与 Seedance 均可提交、查询；缺任务 ID 与限流返回 unknown', async () => {
@@ -195,6 +196,49 @@ describe('engine/providers（M1-ENG-02）', () => {
       { status: 'succeeded', outputs: [{ url: 'https://media.example.test/compat.mp4', kind: 'video' }] });
   });
 
+  test('视频失败用户提示固定中文，上游原文只进运维字段；本地输入错误记日志', async () => {
+    const result = wan.normalize({ status: 'failed', error: { message: 'upstream secret details'.repeat(20) } });
+    assert.equal(result.error, '视频生成失败，请稍后重试。');
+    assert.equal(result.providerMessage.length, 200);
+    assert.ok(!result.error.includes('upstream'));
+    const errors = [];
+    const facade = createImageProvider(createRegistry([image]), { sku: { resolution: '2k' },
+      downloadImage: async () => ({ buffer: TINY_PNG }), logger: { error: (...args) => errors.push(args) } });
+    const invalid = await facade.generate({ characterId: 'chr_invalid', styleId: 'realistic',
+      promptHint: '风格', description: '角色', referenceKeys: [] });
+    assert.equal(invalid.status, 'failed');
+    assert.equal(errors[0][0], 'image_provider_local_invalid');
+    assert.equal(errors[0][1].code, 'PROVIDER_INPUT_INVALID');
+  });
+
+  test('参考照片读取失败可重试且未提交，恢复后仅调用上游一次', async () => {
+    upstream.setMode('success');
+    let reads = 0;
+    const before = upstream.requests.length;
+    const adapter = createModelhubImageAdapter({ transport, loadReference: async () => {
+      reads += 1;
+      if (reads === 1) throw new Error('storage 503');
+      return { buffer: TINY_PNG, contentType: 'image/png' };
+    } });
+    const facade = createImageProvider(createRegistry([adapter]), {
+      downloadImage: async () => ({ buffer: TINY_PNG, contentType: 'image/png' }),
+    });
+    const input = { characterId: 'chr_reference', styleId: 'realistic', promptHint: '写实',
+      description: '虚构角色', referenceKeys: ['users/u1/reference.png'] };
+    await assert.rejects(() => facade.generate(input), (error) => error.code === 'PROVIDER_REFERENCE_UNAVAILABLE'
+      && error.submitted === false && error.retryable === true);
+    assert.equal(upstream.requests.length, before, '读取失败前未调用上游');
+    assert.equal((await facade.generate(input)).status, 'succeeded');
+    assert.equal(reads, 2);
+    assert.equal(upstream.requests.length, before + 1, '恢复后只提交一次');
+    const malformed = createModelhubImageAdapter({ transport, loadReference: async () => ({ buffer: 'not-a-buffer' }) });
+    const badFacade = createImageProvider(createRegistry([malformed]), {
+      downloadImage: async () => ({ buffer: TINY_PNG }),
+    });
+    assert.equal((await badFacade.generate(input)).status, 'failed', '非 Buffer 属输入错误，不重试');
+    assert.equal(upstream.requests.length, before + 1);
+  });
+
   test('图片拒绝分类、429 重试、下载最多三次且不重提交', async () => {
     const registry = createRegistry([image]);
     const errors = [];
@@ -249,13 +293,14 @@ describe('engine/providers（M1-ENG-02）', () => {
     upstream.setMode('accepted-disconnect');
     assert.deepEqual(await wan.submit(prepared), { status: 'unknown' });
     upstream.setMode('timeout');
-    assert.deepEqual(await wan.submit(prepared), { status: 'unknown' });
+    const timeoutTransport = createModelhubTransport({ baseUrl, apiKey: 'fixture-token', timeoutMs: 60 });
+    assert.deepEqual(await createWan30Adapter(timeoutTransport).submit(prepared), { status: 'unknown' });
     const closed = createServer();
     closed.listen(0, '127.0.0.1');
     await new Promise((resolve) => closed.once('listening', resolve));
     const closedPort = closed.address().port;
     await new Promise((resolve) => closed.close(resolve));
-    const refused = createModelhubTransport({ baseUrl: `http://127.0.0.1:${closedPort}`, apiKey: 'fixture-token', timeoutMs: 100 });
+    const refused = createModelhubTransport({ baseUrl: `http://127.0.0.1:${closedPort}`, apiKey: 'fixture-token', timeoutMs: 2500 });
     await assert.rejects(() => createWan30Adapter(refused).submit(prepared), (error) => error.submitted === false);
     upstream.setMode('success');
   });

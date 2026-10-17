@@ -57,7 +57,13 @@ export function createModelhubImageAdapter({ transport, model = 'gpt-image-2', l
         body = new FormData();
         for (const [key, value] of Object.entries(fields)) body.append(key, String(value));
         for (const key of referenceKeys) {
-          const media = await loadReference(key);
+          let media;
+          try { media = await loadReference(key); }
+          catch (error) {
+            throw new ProviderError('参考图片暂时无法读取，请稍后重试。', {
+              code: 'PROVIDER_REFERENCE_UNAVAILABLE', submitted: false, retryable: true,
+            });
+          }
           if (!Buffer.isBuffer(media?.buffer)) throw new ProviderError('参考图片不可用。', {
             code: 'PROVIDER_INPUT_INVALID', submitted: false,
           });
