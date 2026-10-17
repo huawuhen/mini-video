@@ -135,6 +135,13 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-03 复审修复（线性正文解析）
+
+- **背景**：在 `agent/eng/M1-ENG-03-infra` 合并 `origin/main`（462cc19）后，处理 §6 复审唯一必改：未闭合 `<w:p>` / `<w:t>` 使正则平方增长、阻塞 API 事件循环；顺手处理建议项 2（七牛上传 MIME 头注入）。
+- **改动**：`engine/extract/index.js` 将解压 XML 上限由 20MB 降为 5MB，正文改为 `indexOf` 单向扫描段落与文本标签，未闭合标签抛 `ExtractError`，并将 `<w:br/>` 转换行、`<w:tab/>` 转空格。`engine/storage/qiniu.js` 在 `put` 入口过滤 `contentType` 中的 CR/LF，不合法时统一回退 `application/octet-stream`，覆盖表单与分片路径。
+- **验证**：构造压缩后小于 20KB、解压后由 70 万个未闭合 `<w:p>` 或 `<w:t>` 组成的 docx，均在 1 秒内返回 `ExtractError`（本机聚焦测试约 39ms）；正常多段落和 `w:br`/`w:tab` 提取通过。表单及分片上传 MIME 换行注入回归通过。`npm run test:server` 132/132，连续四轮通过；`npm run check` 和 `npm run build` 通过。
+- **未验证**：七牛真实桶的中文/空格 key 下载与 `Content-Disposition` 行为列入 M2 授权联调，当前没有访问真实七牛服务或产生模型费用；复审通过前不启动 M1-ENG-02。
+
 ### 2026-10-17 · Engine · M1-ENG-03 审查修复（§6 第 1、2 条及建议项）
 
 - **背景**：在 `agent/eng/M1-ENG-03-infra` 合并 `origin/main`（b5e0823）后，按 §6 审查意见修复；用户决定继续使用七牛原生协议，不改回 S3。
