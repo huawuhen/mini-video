@@ -134,6 +134,14 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-03 审查修复（§6 第 1、2 条及建议项）
+
+- **背景**：在 `agent/eng/M1-ENG-03-infra` 合并 `origin/main`（b5e0823）后，按 §6 审查意见修复；用户决定继续使用七牛原生协议，不改回 S3。
+- **改动**：`engine/storage/qiniu.js` 改为上传凭证 + 小对象表单上传、大对象分片上传 v2；私有下载参数改为 `attname`、`e` 在 `token` 前并参与签名；RS 删除保留旧版 QBox 管理凭证。`engine/extract/index.js` 加 docx 解压大小预检与异步限额解压、ZIP 全路径边界检查、十六进制及非法字符实体处理、GBK txt 兜底。`api/uploads.js` 将 `ExtractError` 转为 400 `UPLOAD_TYPE_INVALID`，txt/docx 统一用注入的 `extractText`。`engine/net/index.js` 只接受 2xx、所有 DNS 结果校验后 IPv4 优先并在连接失败时尝试下一个，单个总截止时间覆盖 DNS、响应头、重定向和响应体。
+- **核心实现**：上传凭证为 `AccessKey:EncodedSign:EncodedPutPolicy`，策略含 `scope=bucket:key` 与 `deadline`；≤8MB 的 Buffer/流使用 `POST /` 表单，较大对象经 `/buckets/<bucket>/objects/<仅对象名的URL-safe Base64>/uploads` 初始化、4MB 分片上传、按服务端返回的 etag 完成，上传或完成失败时 abort。签名下载 URL 同步返回，`token` 永远最后。docx 正文解压上限 20MB，中央目录声明值和 zlib `maxOutputLength` 双重约束，损坏文件不向 API 泄漏 `RangeError`。真实桶联调仍留 M2，需要用户授权，不在本任务访问。
+- **验证**：`npm run test:server` 129/129，通过连续四轮；`npm run check` 0 错误；`npm run build` 成功。新增/调整固定时间上传凭证与私有下载签名向量、QBox 管理签名向量、分片顺序/大小/etag/失败 abort、压缩炸弹/损坏 ZIP/非法及十六进制实体、接口级损坏 docx 400/GBK txt、网络非 2xx/公网地址回退/全程超时测试。测试只使用假 HTTP/模拟存储，未产生真实供应商费用。
+- **未完成 / 风险**：七牛真实桶的上传、分片、删除和 `Content-Disposition` 行为未验证，留 M2 授权联调；本分支保持待审查，复审通过前不开 M1-ENG-02。
+
 ### 2026-10-17 · Engine · M1-ENG-03 net / storage / transfer / extract
 
 - **背景**：引擎迁移第一个任务（§6 要点 b 顺序：ENG-03 → ENG-02 → ENG-01）。按要点 a/c 与 ARCHITECTURE §5/§6、engine/README 实现。源码取自超搭云 `2926b42`（本机 `/Users/wuhen/Documents/New project`，只读未改），全部文件头注明来源与适配点；无新增第三方依赖。
