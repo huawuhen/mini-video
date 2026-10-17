@@ -4,7 +4,7 @@ import { inflateRaw } from 'node:zlib';
 import { promisify } from 'node:util';
 
 const inflateRawAsync = promisify(inflateRaw);
-const MAX_DOCX_XML_BYTES = 20 * 1024 * 1024;
+const MAX_DOCX_XML_BYTES = 5 * 1024 * 1024; // 5MB XML 已远大于允许上传的 2MB 剧本文本
 
 export class ExtractError extends Error {
   constructor(message, code = 'EXTRACT_INVALID') {
@@ -107,11 +107,54 @@ function decodeEntities(value) {
   });
 }
 
+function parseParagraph(fragment) {
+  let text = '';
+  let index = 0;
+  while (index < fragment.length) {
+    const open = fragment.indexOf('<', index);
+    if (open < 0) break;
+    const end = fragment.indexOf('>', open + 1);
+    if (end < 0) throw new ExtractError('Word 文档正文标签未闭合。');
+    const tag = fragment.slice(open + 1, end);
+    if (/^w:br(?:\s[^<>]*)?\s*\/$/.test(tag)) text += '\n';
+    else if (/^w:tab(?:\s[^<>]*)?\s*\/$/.test(tag)) text += ' ';
+    else if (/^w:t(?:\s[^<>]*)?$/.test(tag)) {
+      const close = fragment.indexOf('<', end + 1);
+      if (close < 0 || fragment.slice(close, close + 6) !== '</w:t>') {
+        throw new ExtractError('Word 文档正文标签未闭合。');
+      }
+      text += decodeEntities(fragment.slice(end + 1, close));
+      index = close + 6;
+      continue;
+    }
+    index = end + 1;
+  }
+  return text;
+}
+
 async function extractDocx(buffer) {
   const xml = new TextDecoder('utf-8', { fatal: true }).decode(await readZipEntry(buffer, 'word/document.xml'));
-  const paragraphs = [...xml.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>|<w:p\s*\/>/g)].map((match) =>
-    decodeEntities([...match[0].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)]
-      .map((text) => text[1]).join('')));
+  const paragraphs = [];
+  let index = 0;
+  while (index < xml.length) {
+    const open = xml.indexOf('<w:p', index);
+    if (open < 0) break;
+    const next = xml[open + 4];
+    if (next !== '>' && next !== '/' && !/\s/.test(next ?? '')) { index = open + 4; continue; }
+    const start = xml.indexOf('>', open + 4);
+    if (start < 0) throw new ExtractError('Word 文档段落标签未闭合。');
+    if (xml[start - 1] === '/') {
+      paragraphs.push('');
+      index = start + 1;
+      continue;
+    }
+    const end = xml.indexOf('</w:p>', start + 1);
+    if (end < 0 || xml.indexOf('<w:p', start + 1) >= 0 && xml.indexOf('<w:p', start + 1) < end) {
+      throw new ExtractError('Word 文档段落标签未闭合。');
+    }
+    paragraphs.push(parseParagraph(xml.slice(start + 1, end)));
+    index = end + 6;
+  }
   const text = paragraphs.join('\n').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   if (!text) throw new ExtractError('文档中没有可提取的文字。', 'EXTRACT_EMPTY');
   return text;

@@ -127,9 +127,11 @@ export function createQiniuStorage(
   return {
     driver: 'qiniu',
     async put(key, body, { contentType = 'application/octet-stream' } = {}) {
+      const safeContentType = typeof contentType === 'string' && !/[\r\n]/.test(contentType) && contentType.trim()
+        ? contentType : 'application/octet-stream';
       const token = uploadToken(key);
       if (Buffer.isBuffer(body) && body.length <= FORM_MAX_BYTES) {
-        return formUpload(key, body, contentType, token);
+        return formUpload(key, body, safeContentType, token);
       }
       const reader = chunkReader(body);
       try {
@@ -137,7 +139,7 @@ export function createQiniuStorage(
         // Keep at most 8MB + 1 byte before switching to fixed 4MB parts.
         const prefix = await reader.next(FORM_MAX_BYTES + 1);
         if (!prefix || prefix.length <= FORM_MAX_BYTES) {
-          return await formUpload(key, prefix ?? Buffer.alloc(0), contentType, token);
+          return await formUpload(key, prefix ?? Buffer.alloc(0), safeContentType, token);
         }
         const remaining = {
           prefix,
@@ -160,7 +162,7 @@ export function createQiniuStorage(
             return length ? Buffer.concat(chunks, length) : null;
           },
         };
-        return await multipartUpload(key, remaining, await remaining.next(PART_SIZE), contentType, token);
+        return await multipartUpload(key, remaining, await remaining.next(PART_SIZE), safeContentType, token);
       } finally { await reader.close(); }
     },
     signedUrl(key, { ttlSeconds, download } = {}) {

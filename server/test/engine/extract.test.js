@@ -89,6 +89,26 @@ describe('engine/extract（M1-ENG-03）', () => {
     );
   });
 
+  test('未闭合段落与文本标签：20KB 内压缩 docx 一秒内返回 ExtractError', async () => {
+    for (const [name, malformed] of [
+      ['paragraph', '<w:p>'.repeat(700_000)],
+      ['text', `<w:p>${'<w:t>'.repeat(700_000)}</w:p>`],
+    ]) {
+      const archive = buildZip([{ name: 'word/document.xml', data: Buffer.from(malformed) }]);
+      assert.ok(archive.length < 20 * 1024, `${name} ZIP 需小于 20KB`);
+      const start = performance.now();
+      await assert.rejects(() => extractText(archive, 'application/zip'),
+        (error) => error.name === 'ExtractError', name);
+      assert.ok(performance.now() - start < 1000, `${name} 处理耗时必须小于 1 秒`);
+    }
+  });
+
+  test('段落内 w:br 转换行、w:tab 转空格', async () => {
+    const archive = buildZip([{ name: 'word/document.xml',
+      data: Buffer.from('<w:p><w:r><w:t>第一句</w:t><w:br/><w:t>第二句</w:t><w:tab/><w:t>末尾</w:t></w:r></w:p>') }]);
+    assert.equal(await extractText(archive, 'application/zip'), '第一句\n第二句 末尾');
+  });
+
   test('签名与 app.js 注入点一致：返回 Promise<string>', async () => {
     const result = extractText(Buffer.from('x'), 'text/plain');
     assert.equal(typeof result.then, 'function');

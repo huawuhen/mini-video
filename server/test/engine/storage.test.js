@@ -103,6 +103,30 @@ describe('engine/storage（M1-ENG-03）', () => {
     assert.equal(calls.at(-1)[1], calls.at(-2)[1]);
   });
 
+  test('上传 contentType 带换行时回退 octet-stream，表单和分片均无头注入', async () => {
+    const formCalls = [];
+    const form = createQiniuStorage(CONF, { fetchImpl: async (url, init) => {
+      formCalls.push(init);
+      return ok();
+    } });
+    const small = await form.put('small.png', Buffer.from('x'), { contentType: 'image/png\r\nX-Injected: yes' });
+    assert.equal(small.contentType, 'application/octet-stream');
+    assert.match(formCalls[0].body.toString(), /Content-Type: application\/octet-stream\r\n/);
+    assert.ok(!formCalls[0].body.toString().includes('X-Injected'));
+    const multipartCalls = [];
+    const multipart = createQiniuStorage(CONF, { fetchImpl: async (url, init) => {
+      multipartCalls.push(init);
+      if (url.endsWith('/uploads')) return ok({ uploadId: 'upload-unsafe' });
+      if (init.method === 'PUT') return ok({ etag: `etag-${multipartCalls.length}` });
+      return ok();
+    } });
+    const large = await multipart.put('large.mp4', Buffer.alloc(9 * 1024 * 1024),
+      { contentType: 'video/mp4\nX-Injected: yes' });
+    assert.equal(large.contentType, 'application/octet-stream');
+    assert.equal(multipartCalls.find((call) => call.method === 'PUT').headers['Content-Type'], 'application/octet-stream');
+    assert.equal(JSON.parse(multipartCalls.at(-1).body).mimeType, 'application/octet-stream');
+  });
+
   test('管理凭证 QBox 已知答案、删除 612 幂等', async () => {
     const calls = [];
     const storage = createQiniuStorage(CONF, { fetchImpl: async (url, init) => {
