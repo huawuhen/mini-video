@@ -5,6 +5,7 @@ import busboy from 'busboy';
 import { Router } from 'express';
 import { requireAuth } from '../auth/session.js';
 import { newId } from '../db/ids.js';
+import { ExtractError } from '../engine/extract/index.js';
 import { appError } from '../http/errors.js';
 import { asyncHandler } from '../http/middleware.js';
 
@@ -80,13 +81,19 @@ export function uploadRoutes({ config, db, logger, storage, urlFor, extractText 
 
   router.post('/uploads/story', requireAuth, asyncHandler(async (req, res) => {
     const file = await readSingleFile(req, STORY_MAX_BYTES);
+    const docx = file.buffer.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]));
+    if (docx && !extractText) {
+      throw appError('UPLOAD_TYPE_INVALID', '暂不支持 Word 文档，请粘贴文字或上传 txt 文件');
+    }
     let text;
-    if (file.buffer.subarray(0, 2).toString('latin1') === 'PK') {
-      // docx（ZIP 容器）：提取逻辑在 engine（M1-ENG-03），未注入则明确不支持
-      if (!extractText) throw appError('UPLOAD_TYPE_INVALID', '暂不支持 Word 文档，请粘贴文字或上传 txt 文件');
-      text = await extractText(file.buffer, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-    } else {
-      text = file.buffer.toString('utf8').replace(/^\uFEFF/, ''); // 去 BOM
+    try {
+      text = extractText
+        ? await extractText(file.buffer, docx
+          ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : 'text/plain')
+        : file.buffer.toString('utf8').replace(/^\uFEFF/, '');
+    } catch (error) {
+      if (error instanceof ExtractError) throw appError('UPLOAD_TYPE_INVALID', error.message);
+      throw error;
     }
     text = (text ?? '').trim();
     if (!text) throw appError('VALIDATION_FAILED', '文件内容是空的，请检查后重新上传');

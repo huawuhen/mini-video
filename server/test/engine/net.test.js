@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { Readable } from 'node:stream';
 import { describe, test } from 'node:test';
 import { createSafeFetch, isPublicAddress } from '../../src/engine/net/index.js';
@@ -131,11 +132,63 @@ describe('engine/net（M1-ENG-03）', () => {
     }, expectCode('REMOTE_TIMEOUT'));
   });
 
-  test('HTTP 4xx/5xx → REMOTE_HTTP_ERROR', async () => {
+  test('HTTP 4xx/5xx 及非重定向 3xx 均拒绝', async () => {
+    for (const status of [300, 304, 305, 404, 500]) {
+      const safeFetch = createSafeFetch({
+        resolver: okResolver,
+        httpImpl: async () => fakeResponse(status, {}, [Buffer.from('nope')]),
+      });
+      await assert.rejects(() => safeFetch('https://example.com/missing'), expectCode('REMOTE_HTTP_ERROR'));
+    }
+  });
+
+  test('双栈解析优先 IPv4，所有地址仍须为公网', async () => {
     const safeFetch = createSafeFetch({
-      resolver: okResolver,
-      httpImpl: async () => fakeResponse(404, {}, [Buffer.from('nope')]),
+      resolver: async () => [{ address: '2606:4700::1111', family: 6 }, ...PUBLIC_IP],
+      httpImpl: async ({ pinned }) => {
+        assert.deepEqual(pinned.map((record) => record.family), [4, 6]);
+        return fakeResponse(200, {}, [Buffer.from('ok')]);
+      },
     });
-    await assert.rejects(() => safeFetch('https://example.com/missing'), expectCode('REMOTE_HTTP_ERROR'));
+    const result = await safeFetch('https://example.com/a');
+    for await (const _chunk of result.stream) { /* drain */ }
+    const mixed = createSafeFetch({ resolver: async () => [...PUBLIC_IP, { address: '10.0.0.1', family: 4 }] });
+    await assert.rejects(() => mixed('https://example.com/a'), expectCode('REMOTE_ADDRESS_BLOCKED'));
+  });
+
+  test('首个已验证地址连接失败时尝试下一个公网地址', async () => {
+    const attempts = [];
+    const transport = { request(options, callback) {
+      const req = new EventEmitter();
+      req.end = () => options.lookup(options.host, {}, (_error, address, family) => {
+        attempts.push([address, family]);
+        if (address === '93.184.216.34') queueMicrotask(() => req.emit('error', new Error('ENETUNREACH')));
+        else queueMicrotask(() => callback(fakeResponse(200, {}, [Buffer.from('recovered')])));
+      });
+      return req;
+    } };
+    const safeFetch = createSafeFetch({
+      resolver: async () => [...PUBLIC_IP, { address: '1.1.1.1', family: 4 }], transport,
+    });
+    const response = await safeFetch('https://example.com/a');
+    const chunks = [];
+    for await (const chunk of response.stream) chunks.push(chunk);
+    assert.equal(Buffer.concat(chunks).toString(), 'recovered');
+    assert.deepEqual(attempts, [['93.184.216.34', 4], ['1.1.1.1', 4]]);
+  });
+
+  test('总截止时间涵盖 DNS、响应头及多次重定向', async () => {
+    const never = new Promise(() => {});
+    const dnsStalled = createSafeFetch({ resolver: async () => never });
+    await assert.rejects(() => dnsStalled('https://example.com/a', { timeoutMs: 25 }), expectCode('REMOTE_TIMEOUT'));
+    const headersStalled = createSafeFetch({ resolver: okResolver, httpImpl: async () => never });
+    await assert.rejects(() => headersStalled('https://example.com/a', { timeoutMs: 25 }), expectCode('REMOTE_TIMEOUT'));
+    let redirects = 0;
+    const redirectStalled = createSafeFetch({ resolver: okResolver, httpImpl: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 12));
+      redirects += 1;
+      return fakeResponse(302, { location: `https://example.com/${redirects}` });
+    } });
+    await assert.rejects(() => redirectStalled('https://example.com/start', { timeoutMs: 25 }), expectCode('REMOTE_TIMEOUT'));
   });
 });

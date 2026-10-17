@@ -94,4 +94,32 @@ describe('engine/extract（M1-ENG-03）', () => {
     assert.equal(typeof result.then, 'function');
     assert.equal(typeof await result, 'string');
   });
+
+  test('压缩炸弹：中央目录声明值与伪造声明后的解压上限均拒绝', async () => {
+    const huge = Buffer.alloc(21 * 1024 * 1024, 0x61);
+    const archive = buildZip([{ name: 'word/document.xml', data: huge }]);
+    await assert.rejects(() => extractText(archive, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+      (error) => error.code === 'EXTRACT_TOO_LARGE');
+    const forged = Buffer.from(archive);
+    const central = forged.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    forged.writeUInt32LE(1024, central + 24);
+    await assert.rejects(() => extractText(forged, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+      (error) => ['EXTRACT_TOO_LARGE', 'EXTRACT_INVALID'].includes(error.code));
+  });
+
+  test('损坏偏移、截断 ZIP 及非法实体都不会抛裸异常', async () => {
+    const corrupt = Buffer.from(DOCX);
+    const central = corrupt.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
+    corrupt.writeUInt32LE(0xfffffff0, central + 42);
+    await assert.rejects(() => extractText(corrupt, 'application/zip'), (error) => error.code === 'EXTRACT_INVALID');
+    await assert.rejects(() => extractText(DOCX.subarray(0, 35), 'application/zip'),
+      (error) => error.code === 'EXTRACT_INVALID');
+    const entities = buildZip([{ name: 'word/document.xml',
+      data: Buffer.from('<w:p><w:r><w:t>中&#x4e2d;&#99999999;文</w:t></w:r></w:p>') }]);
+    assert.equal(await extractText(entities, 'application/zip'), '中中&#99999999;文');
+  });
+
+  test('txt 严格 UTF-8 解码失败后 GBK 兜底', async () => {
+    assert.equal(await extractText(Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), 'text/plain'), '中文');
+  });
 });
