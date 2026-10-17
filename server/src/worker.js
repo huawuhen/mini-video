@@ -20,17 +20,23 @@ import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from '
  * @param {{ config: ReturnType<typeof loadConfig>, db: object, logger: object, storage?: object }} deps
  *   storage：engine/storage 就绪前缺省用内存实现（M1-BE-03，Engine 迁移后替换）。
  */
-export function buildHandlers({ config, db, logger, storage = createMemoryStorage() }) {
+export function buildHandlers({ config, db, logger, storage }) {
+  // §6 审查 3：生产环境不允许缺省内存存储——清理任务会「删除」内存对象而真实对象永远留着
+  let objectStorage = storage;
+  if (!objectStorage) {
+    if (config.production) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
+    objectStorage = createMemoryStorage();
+  }
   const cronOpts = { batchSize: config.cron.sweepBatchSize };
   const withLog = (name, run) => async (_payload, ctx) => {
-    const result = await run(ctx.db);
+    const result = await run(ctx.db, ctx);
     ctx.logger.info(name, result);
   };
   return {
-    'auth.sweep': withLog('cron_auth_swept', (db) => runAuthSweep(db, cronOpts)),
-    'uploads.sweep': withLog('cron_uploads_swept', (db) => runUploadsSweep(db, { ...cronOpts, storage })),
-    'projects.expire_sweep': withLog('cron_projects_expired', (db) => runProjectsExpireSweep(db, { ...cronOpts, storage })),
-    'jobs.cleanup': withLog('cron_jobs_cleaned', (db) => runJobsCleanup(db, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
+    'auth.sweep': withLog('cron_auth_swept', (sdb) => runAuthSweep(sdb, cronOpts)),
+    'uploads.sweep': withLog('cron_uploads_swept', (sdb, ctx) => runUploadsSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
+    'projects.expire_sweep': withLog('cron_projects_expired', (sdb, ctx) => runProjectsExpireSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
+    'jobs.cleanup': withLog('cron_jobs_cleaned', (sdb) => runJobsCleanup(sdb, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
     // 'project.understand': understandHandler(deps),   M1-BE-05 + M1-ENG-01
     // 'look.generate': ...,                             M1-BE-04
     // 'project.bind_prompts' / 'segment.generate' / 'gen.poll' / 'project.compose'   M1-BE-05

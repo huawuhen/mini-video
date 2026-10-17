@@ -116,22 +116,31 @@ export async function runJobsCleanup(db, { batchSize, retentionDays }) {
 }
 
 /**
- * uploads.sweep（要点 d）：24 小时未被引用的上传，先在事务外删存储对象、再删记录。
- * 两步都可重复执行：对象已删时 remove 幂等，记录已删时 DELETE 影响 0 行。
+ * uploads.sweep（要点 d）：24 小时未被引用的上传。
+ * §6 审查 1：先在短事务里「认领删除」——只删仍满足条件的行并带出 storage_key（与引用操作靠行锁互斥，
+ * 引用先行则认领不到，对象绝不误删）；提交后再删存储对象。删对象失败只记日志：孤儿对象可接受，误删用户照片不可接受。
  */
-export async function runUploadsSweep(db, { storage, batchSize, olderThanSeconds = 86_400 }) {
+export async function runUploadsSweep(db, { storage, logger, batchSize, olderThanSeconds = 86_400 }) {
   let total = 0;
   for (;;) {
-    const { rows } = await db.query(
-      `SELECT id, storage_key FROM uploads
-        WHERE referenced_at IS NULL AND created_at < now() - make_interval(secs => $1)
-        ORDER BY id LIMIT $2`,
+    const { rows } = await db.tx((t) => t.query(
+      `DELETE FROM uploads
+        WHERE id IN (
+          SELECT id FROM uploads
+           WHERE referenced_at IS NULL AND created_at < now() - make_interval(secs => $1)
+           ORDER BY id LIMIT $2)
+          AND referenced_at IS NULL AND created_at < now() - make_interval(secs => $1)
+        RETURNING storage_key`,
       [olderThanSeconds, batchSize],
-    );
+    ));
     if (!rows.length) break;
-    await storage.remove(rows.map((r) => r.storage_key));
-    const { rowCount } = await db.tx((t) => t.query(`DELETE FROM uploads WHERE id = ANY($1)`, [rows.map((r) => r.id)]));
-    total += rowCount;
+    try {
+      await storage.remove(rows.map((r) => r.storage_key));
+    } catch (err) {
+      // 记录已删、对象留下：等 storage 侧按孤儿对象兜底，不影响任务成功
+      logger?.warn('uploads_sweep_remove_failed', { count: rows.length, err });
+    }
+    total += rows.length;
     if (rows.length < batchSize) break;
   }
   return { uploads: total };
@@ -139,13 +148,15 @@ export async function runUploadsSweep(db, { storage, batchSize, olderThanSeconds
 
 /**
  * projects.expire_sweep（要点 e）：delivered 且 expires_at 到期的作品：
- * ① 短事务：锁定一批 → 状态改 expired、写 project_events；② 事务外删成片与片段视频对象；
- * ③ 清空对应 video_key（封面、尾帧、海报与作品记录保留）。
- * 每批一个短事务，可重复执行；另含一个补偿循环：清理此前中断遗留的 expired 作品视频 key（要点 f：按业务状态幂等）。
+ * ① 短事务：锁定一批 → 状态改 expired、写 project_events，同时带出成片与片段视频 key；
+ * ② 事务外删对象；③ 按 key 精确清空（只清本次确实已删除对象的 key）。
+ * §6 审查 2：成片与片段 key 分两条查询、以 project_id 为条件——以 renders 为起点会在没有成片记录时
+ * 漏掉片段视频，renders × takes 连接还会笛卡尔积重复。删对象失败记日志、本次不清 key，留待下次调度。
+ * 另含补偿循环：清理此前中断遗留的 expired 作品视频 key（要点 f：按业务状态幂等）。
  */
-export async function runProjectsExpireSweep(db, { storage, batchSize }) {
+export async function runProjectsExpireSweep(db, { storage, logger, batchSize }) {
   let expired = 0;
-  let cleared = 0;
+  let clearedKeys = 0;
 
   for (;;) {
     const batch = await db.tx(async (t) => {
@@ -155,7 +166,7 @@ export async function runProjectsExpireSweep(db, { storage, batchSize }) {
           ORDER BY expires_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`,
         [batchSize],
       );
-      if (!rows.length) return { ids: [], videoKeys: [] };
+      if (!rows.length) return { ids: [], keys: [] };
       const ids = rows.map((r) => r.id);
       await t.query(`UPDATE projects SET status = 'expired', updated_at = now() WHERE id = ANY($1)`, [ids]);
       for (const id of ids) {
@@ -164,55 +175,69 @@ export async function runProjectsExpireSweep(db, { storage, batchSize }) {
           [id, JSON.stringify({ percent: 100, message: '作品保存期已结束，视频已清理' })],
         );
       }
-      const { rows: keys } = await t.query(
-        `SELECT r.video_key, st.video_key AS take_video_key
-           FROM renders r
-           LEFT JOIN segments seg ON seg.project_id = r.project_id
-           LEFT JOIN segment_takes st ON st.segment_id = seg.id
-          WHERE r.project_id = ANY($1)`,
-        [ids],
-      );
-      return { ids, videoKeys: keys.flatMap((k) => [k.video_key, k.take_video_key]).filter(Boolean) };
+      return { ids, keys: await collectVideoKeys(t, ids) };
     });
     if (!batch.ids.length) break;
-    if (batch.videoKeys.length) await storage.remove(batch.videoKeys);
-    await clearVideoKeys(db, batch.ids);
     expired += batch.ids.length;
+    clearedKeys += await removeAndClearVideoKeys(db, storage, logger, batch.keys);
     if (batch.ids.length < batchSize) break;
   }
 
   // 补偿：上次执行在删对象后、清 key 前中断的 expired 作品，把剩余视频 key 清干净（业务状态幂等）
   for (;;) {
-    const { rows } = await db.query(
-      `SELECT DISTINCT p.id, r.video_key AS render_key, st.video_key AS take_key
-         FROM projects p
-         JOIN renders r ON r.project_id = p.id
-         LEFT JOIN segments seg ON seg.project_id = p.id
-         LEFT JOIN segment_takes st ON st.segment_id = seg.id
-        WHERE p.status = 'expired' AND (r.video_key IS NOT NULL OR st.video_key IS NOT NULL)
-        LIMIT $1`,
-      [batchSize],
-    );
-    if (!rows.length) break;
-    const ids = [...new Set(rows.map((r) => r.id))];
-    const keys = rows.flatMap((r) => [r.render_key, r.take_key]).filter(Boolean);
-    await storage.remove(keys);
-    await clearVideoKeys(db, ids);
-    cleared += ids.length;
-    if (rows.length < batchSize) break;
+    const keys = await collectStaleVideoKeys(db, batchSize);
+    if (!keys.length) break;
+    const cleared = await removeAndClearVideoKeys(db, storage, logger, keys);
+    clearedKeys += cleared;
+    if (cleared === 0) break; // 删对象失败：本次不清 key，避免同批空转，留待下次调度
   }
 
-  return { expired, cleared };
+  return { expired, clearedKeys };
 }
 
-/** 清空一批作品的成片与片段视频 key（只清视频；封面、尾帧、海报保留）。 */
-async function clearVideoKeys(db, projectIds) {
+/** 一批作品的全部视频对象 key：成片与片段分两条查询（§6 审查 2）。 */
+async function collectVideoKeys(t, projectIds) {
+  const renderKeys = (await t.query(
+    `SELECT video_key FROM renders WHERE project_id = ANY($1) AND video_key IS NOT NULL`,
+    [projectIds],
+  )).rows.map((r) => r.video_key);
+  const takeKeys = (await t.query(
+    `SELECT st.video_key FROM segment_takes st JOIN segments seg ON seg.id = st.segment_id
+      WHERE seg.project_id = ANY($1) AND st.video_key IS NOT NULL`,
+    [projectIds],
+  )).rows.map((r) => r.video_key);
+  return [...renderKeys, ...takeKeys];
+}
+
+/** 补偿候选：已 expired 但视频 key 未清的行（成片与片段分两条，均按作品状态驱动）。 */
+async function collectStaleVideoKeys(db, batchSize) {
+  const renderKeys = (await db.query(
+    `SELECT r.video_key FROM renders r JOIN projects p ON p.id = r.project_id
+      WHERE p.status = 'expired' AND r.video_key IS NOT NULL LIMIT $1`,
+    [batchSize],
+  )).rows.map((r) => r.video_key);
+  const takeKeys = (await db.query(
+    `SELECT st.video_key FROM segment_takes st
+       JOIN segments seg ON seg.id = st.segment_id
+       JOIN projects p ON p.id = seg.project_id
+      WHERE p.status = 'expired' AND st.video_key IS NOT NULL LIMIT $1`,
+    [batchSize],
+  )).rows.map((r) => r.video_key);
+  return [...renderKeys, ...takeKeys];
+}
+
+/** 事务外删对象，成功后按 key 精确清空；失败记日志并返回 0（key 留待下次调度重试）。 */
+async function removeAndClearVideoKeys(db, storage, logger, keys) {
+  if (!keys.length) return 0;
+  try {
+    await storage.remove(keys);
+  } catch (err) {
+    logger?.warn('expire_sweep_remove_failed', { count: keys.length, err });
+    return 0;
+  }
   await db.tx(async (t) => {
-    await t.query(`UPDATE renders SET video_key = NULL WHERE project_id = ANY($1) AND video_key IS NOT NULL`, [projectIds]);
-    await t.query(
-      `UPDATE segment_takes SET video_key = NULL
-        WHERE segment_id IN (SELECT id FROM segments WHERE project_id = ANY($1)) AND video_key IS NOT NULL`,
-      [projectIds],
-    );
+    await t.query(`UPDATE renders SET video_key = NULL WHERE video_key = ANY($1)`, [keys]);
+    await t.query(`UPDATE segment_takes SET video_key = NULL WHERE video_key = ANY($1)`, [keys]);
   });
+  return keys.length;
 }

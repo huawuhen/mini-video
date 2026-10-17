@@ -14,6 +14,27 @@ function recordingStorage() {
 
 const insertUser = (db, id) => db.query(`INSERT INTO users (id, phone, nickname) VALUES ($1, $2, '定时任务测试')`, [id, '159' + id.slice(-8)]);
 
+// —— projects.expire_sweep 的 fixture 助手（多个用例共用）——
+const insertProject = (db, id, status, expiresAt) => db.query(
+  `INSERT INTO projects (id, user_id, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, status, delivered_at, expires_at)
+   VALUES ($1, 'usr_cron00000001', '测试故事', 'text', 'realistic', 'standard', 'tm_standard00000001', $2,
+           CASE WHEN $2 = 'delivered' THEN now() END, $3)`,
+  [id, status, expiresAt],
+);
+const insertRender = (db, id, projectId, videoKey, coverKey) => db.query(
+  `INSERT INTO renders (id, project_id, takes_snapshot, status, video_key, cover_key) VALUES ($1, $2, '[]', 'succeeded', $3, $4)`,
+  [id, projectId, videoKey, coverKey],
+);
+const insertSegment = (db, id, projectId, idx) => db.query(
+  `INSERT INTO segments (id, project_id, idx, duration_seconds, plot) VALUES ($1, $2, $3, 10, '剧情')`,
+  [id, projectId, idx],
+);
+const insertTake = (db, id, projectId, videoKey) => db.query(
+  `INSERT INTO segment_takes (id, segment_id, status, video_key, poster_key, last_frame_key)
+   VALUES ($1, (SELECT id FROM segments WHERE project_id = $2 LIMIT 1), 'succeeded', $3, $4, $5)`,
+  [id, projectId, videoKey, `posters/${id}.jpg`, `frames/${id}.jpg`],
+);
+
 describe('cron（M1-BE-03）', () => {
   let ctx;
   let config;
@@ -112,38 +133,19 @@ describe('cron（M1-BE-03）', () => {
   test('projects.expire_sweep：到期作品改 expired、写事件、删视频对象、清 video_key，封面与记录保留（要点 e/g）', async () => {
     const db = ctx.db;
     const local = recordingStorage(); // 独立记录器，避免被前面用例的删除记录干扰
-    const insertProject = (id, status, expiresAt) => db.query(
-      `INSERT INTO projects (id, user_id, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, status, delivered_at, expires_at)
-       VALUES ($1, 'usr_cron00000001', '测试故事', 'text', 'realistic', 'standard', 'tm_standard00000001', $2,
-               CASE WHEN $2 = 'delivered' THEN now() END, $3)`,
-      [id, status, expiresAt],
-    );
-    const insertRender = (id, projectId, videoKey, coverKey) => db.query(
-      `INSERT INTO renders (id, project_id, takes_snapshot, status, video_key, cover_key) VALUES ($1, $2, '[]', 'succeeded', $3, $4)`,
-      [id, projectId, videoKey, coverKey],
-    );
-    const insertTake = (id, projectId, videoKey) => db.query(
-      `INSERT INTO segment_takes (id, segment_id, status, video_key, poster_key, last_frame_key)
-       VALUES ($1, (SELECT id FROM segments WHERE project_id = $2 LIMIT 1), 'succeeded', $3, $4, $5)`,
-      [id, projectId, videoKey, `posters/${id}.jpg`, `frames/${id}.jpg`],
-    );
-    const insertSegment = (id, projectId, idx) => db.query(
-      `INSERT INTO segments (id, project_id, idx, duration_seconds, plot) VALUES ($1, $2, $3, 10, '剧情')`,
-      [id, projectId, idx],
-    );
 
     // p1：已到期 → 处理；p2：未到期 → 不动；p3：已 expired 但视频 key 未清（模拟上次中断）→ 补偿清理
-    await insertProject('prj_c1', 'delivered', new Date(Date.now() - 86_400_000));
-    await insertSegment('seg_c1', 'prj_c1', 0);
-    await insertRender('rnd_c1', 'prj_c1', 'videos/rnd_c1.mp4', 'covers/rnd_c1.jpg');
-    await insertTake('take_c1', 'prj_c1', 'videos/take_c1.mp4');
-    await insertProject('prj_c2', 'delivered', new Date(Date.now() + 86_400_000));
-    await insertRender('rnd_c2', 'prj_c2', 'videos/rnd_c2.mp4', 'covers/rnd_c2.jpg');
-    await insertProject('prj_c3', 'expired', null);
-    await insertRender('rnd_c3', 'prj_c3', 'videos/rnd_c3.mp4', 'covers/rnd_c3.jpg');
+    await insertProject(db, 'prj_c1', 'delivered', new Date(Date.now() - 86_400_000));
+    await insertSegment(db, 'seg_c1', 'prj_c1', 0);
+    await insertRender(db, 'rnd_c1', 'prj_c1', 'videos/rnd_c1.mp4', 'covers/rnd_c1.jpg');
+    await insertTake(db, 'take_c1', 'prj_c1', 'videos/take_c1.mp4');
+    await insertProject(db, 'prj_c2', 'delivered', new Date(Date.now() + 86_400_000));
+    await insertRender(db, 'rnd_c2', 'prj_c2', 'videos/rnd_c2.mp4', 'covers/rnd_c2.jpg');
+    await insertProject(db, 'prj_c3', 'expired', null);
+    await insertRender(db, 'rnd_c3', 'prj_c3', 'videos/rnd_c3.mp4', 'covers/rnd_c3.jpg');
 
-    const result = await runProjectsExpireSweep(db, { storage: local, batchSize: 2 });
-    assert.deepEqual(result, { expired: 1, cleared: 1 });
+    const result = await runProjectsExpireSweep(db, { storage: local, logger: silentLogger, batchSize: 2 });
+    assert.deepEqual(result, { expired: 1, clearedKeys: 3 }); // p1 的成片 + 片段 2 个 key，p3 补偿 1 个
 
     const p1 = (await db.query(`SELECT status FROM projects WHERE id = 'prj_c1'`)).rows[0];
     assert.equal(p1.status, 'expired', '作品记录保留、状态已过期');
@@ -170,8 +172,63 @@ describe('cron（M1-BE-03）', () => {
     assert.ok(!local.removed.includes('covers/rnd_c1.jpg'), '封面对象保留');
 
     // 可重复执行
-    const second = await runProjectsExpireSweep(db, { storage: local, batchSize: 2 });
-    assert.deepEqual(second, { expired: 0, cleared: 0 });
+    const second = await runProjectsExpireSweep(db, { storage: local, logger: silentLogger, batchSize: 2 });
+    assert.deepEqual(second, { expired: 0, clearedKeys: 0 });
+  });
+
+  test('expire_sweep 漏删修复（§6 审查 2）：无成片记录也删片段视频；多成片版本全清不重复', async () => {
+    const db = ctx.db;
+    const local = recordingStorage();
+    // prj_c4：只有片段视频，没有 renders 行（旧实现以 renders 为起点会漏删它）
+    await insertProject(db, 'prj_c4', 'delivered', new Date(Date.now() - 86_400_000));
+    await insertSegment(db, 'seg_c4', 'prj_c4', 0);
+    await db.query(`INSERT INTO segment_takes (id, segment_id, status, video_key) VALUES ('take_c4', 'seg_c4', 'succeeded', 'videos/take_c4.mp4')`);
+    // prj_c5：多成片版本（重新拼接场景），旧实现笛卡尔积会重复删除
+    await insertProject(db, 'prj_c5', 'delivered', new Date(Date.now() - 86_400_000));
+    await insertRender(db, 'rnd_c5a', 'prj_c5', 'videos/rnd_c5a.mp4', 'covers/rnd_c5a.jpg');
+    await insertRender(db, 'rnd_c5b', 'prj_c5', 'videos/rnd_c5b.mp4', 'covers/rnd_c5b.jpg');
+
+    const result = await runProjectsExpireSweep(db, { storage: local, logger: silentLogger, batchSize: 2 });
+    assert.deepEqual(result, { expired: 2, clearedKeys: 3 });
+
+    assert.equal((await db.query(`SELECT video_key FROM segment_takes WHERE id = 'take_c4'`)).rows[0].video_key, null, '无成片记录的片段视频 key 也被清空');
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM renders WHERE project_id = 'prj_c5' AND video_key IS NOT NULL`)).rows[0].n, 0);
+    assert.deepEqual(local.removed.sort(), ['videos/rnd_c5a.mp4', 'videos/rnd_c5b.mp4', 'videos/take_c4.mp4'], '每个对象只删一次');
+    assert.equal((await db.query(`SELECT count(*)::int AS n FROM renders WHERE project_id = 'prj_c5' AND cover_key IS NOT NULL`)).rows[0].n, 2, '封面保留');
+  });
+
+  test('uploads.sweep 认领式删除（§6 审查 1）：清理期间被引用的上传不会被误删', async () => {
+    const db = ctx.db;
+    const removed = [];
+    const raceStorage = {
+      async remove(keys) {
+        // 模拟：删第一批对象期间，数字人创建引用了尚未清理的 upl_r3（BE-04 的条件引用 UPDATE）
+        if (keys.includes('uploads/upl_r1.jpg')) {
+          await db.query(`UPDATE uploads SET referenced_at = now() WHERE id = 'upl_r3'`);
+        }
+        removed.push(...keys);
+      },
+    };
+    for (const id of ['upl_r1', 'upl_r2', 'upl_r3']) {
+      await db.query(
+        `INSERT INTO uploads (id, user_id, kind, storage_key, mime, size_bytes, created_at)
+         VALUES ($1, 'usr_cron00000001', 'image', $2, 'image/jpeg', 100, now() - interval '2 days')`,
+        [id, `uploads/${id}.jpg`],
+      );
+    }
+    const result = await runUploadsSweep(db, { storage: raceStorage, logger: silentLogger, batchSize: 1 });
+    assert.equal(result.uploads, 2, '被引用的 upl_r3 认领不到、不再删除');
+    assert.deepEqual(removed.sort(), ['uploads/upl_r1.jpg', 'uploads/upl_r2.jpg'], '被引用照片的对象不会被删除');
+    const r3 = (await db.query(`SELECT referenced_at FROM uploads WHERE id = 'upl_r3'`)).rows[0];
+    assert.ok(r3.referenced_at, 'upl_r3 行保留且已标记引用，数字人照片不受影响');
+  });
+
+  test('生产配置未注入存储时 buildHandlers 启动报错（§6 审查 3）', () => {
+    const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
+    assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
+    // 非生产环境缺省内存实现可用
+    const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
+    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'projects.expire_sweep', 'uploads.sweep']);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {
