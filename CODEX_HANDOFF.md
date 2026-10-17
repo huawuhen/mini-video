@@ -140,6 +140,15 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-02 审查修复（终态与图片请求）
+
+- **背景**：在原分支合并 `origin/main`（d673761）后，按 §6 处理必改 1~4 和建议 6、7；用户更正第 5 条：视频固定 `omni_reference`，`tailRef` 只作普通参考图，图片参考只取第一张。
+- **改动**：`engine/providers/modelhub-video.js` 完整覆盖超搭云 `getVideoUrl` 的 21 种候选位置并校验 URL，失败/过期/拒绝等终态为 `failed`，成功无 URL 为 `unknown`；`tailRef` 排在普通图片参考首位，继续携带音频，不实现首尾帧模式。Modelhub 专属能力、字段和路径留在 `modelhub-video.js`、`modelhub-image.js`，注册表和 `image.js` facade 保持渠道无关；`engine/README.md` 写明尽力而为、不保证首帧衔接。
+- **图片与错误**：图片模型能力按参考仓库配置校验（GPT Image 2 默认 `quality=1080p`、`detail_level=medium`，不接受占位 SKU 的 `2k`）；按顺序只取第一张参考图，记录 `droppedReferences` 与警告日志。明确 4xx 拒绝返回面向用户的中文 `failed`（上游原文仅作 `providerMessage`），连接拒绝/DNS/429 抛 `retryable=true, submitted=false`，超时/5xx/受理后断开返回 `unknown`；结果图下载最多三次指数退避，不重提交。共享传输保留截断至 200 字符的上游错误详情，并把响应体限制为 1MB。
+- **跨所有权批准改动**：`server/src/characters/service.js` 的 `look.generate` 抛错处理单独提交（0c07ff4）：仅 `retryable=true` 回退 `created` 交队列重试，其他异常置 `unknown`、费用冻结；对应数据库回归验证任务与钱包状态。
+- **测试**：新增由超搭云 `2926b42` `getVideoUrl` 候选位置构造的逐项 JSON 夹具（非生产抓包），本地 HTTP 假服务验证视频/图片请求、单张参考、拒绝分类、下载重试、429/鉴权详情、响应体上限。`npm run test:server` 146/146 连续四轮通过，`npm run check`、`npm run build` 通过；未调用真实上游。
+- **未完成 / 风险**：当前 Modelhub 目录是按参考项目及本地 QA 形状实现，不代表供应商正式承诺；真实响应、模型档位映射与费用需 M2 授权联调。`tailRef` 只是普通图片参考，不保证片段首帧衔接。复审通过前不开始 M1-ENG-01。
+
 ### 2026-10-17 · Engine · M1-ENG-02 视频与图片渠道适配器
 
 - **背景**：M1 引擎迁移第二个任务。按 §6 d 项与 `docs/ARCHITECTURE.md` §5，从超搭云参考提交 `2926b42` 的 `backend/providers.js`、`modelhub-models.js`、`dimensio-image-generation.js` 适配。只读参考源码，未连接真实供应商或产生模型费用。
