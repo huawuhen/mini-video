@@ -66,7 +66,8 @@
 | M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | ✅ 完成（Lead 复审通过并合并 `6a741a7`） | 2026-10-17 |
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-04 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
+| M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/assets.test.js` | 进行中 | 2026-10-17 |
+| M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
 | M1-ENG-03 | — | — | — | 待认领 | — |
