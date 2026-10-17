@@ -3,11 +3,21 @@
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { createLookGenerateHandler } from './characters/service.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { createLogger } from './logger.js';
 import { createMemoryStorage, createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
+
+// 开发/测试缺省图片模型：返回 1x1 PNG（生产必须注入真实 provider，见 buildHandlers 守卫）
+const DEV_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+function createDevImageProvider() {
+  return {
+    id: 'dev-mock',
+    async generate() { return { status: 'succeeded', buffer: DEV_PNG, contentType: 'image/png' }; },
+  };
+}
 
 /**
  * 处理器签名：async (payload, ctx) => void
@@ -17,15 +27,20 @@ import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from '
  * - 抛出 PermanentJobError 表示不再重试。
  *
  * job 类型与负责模块见 docs/ARCHITECTURE.md §4；各模块就绪后在 buildHandlers 中注册。
- * @param {{ config: ReturnType<typeof loadConfig>, db: object, logger: object, storage?: object }} deps
- *   storage：engine/storage 就绪前缺省用内存实现（M1-BE-03，Engine 迁移后替换）。
+ * @param {{ config, db, logger, storage?, imageProvider? }} deps
+ *   storage / imageProvider：engine 完成前测试注入模拟；生产环境缺省时启动报错（同 BE-03 做法）。
  */
-export function buildHandlers({ config, db, logger, storage }) {
-  // §6 审查 3：生产环境不允许缺省内存存储——清理任务会「删除」内存对象而真实对象永远留着
+export function buildHandlers({ config, db, logger, storage, imageProvider }) {
+  // §6 审查 3（BE-03）：生产环境不允许缺省内存存储
   let objectStorage = storage;
   if (!objectStorage) {
     if (config.production) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
     objectStorage = createMemoryStorage();
+  }
+  let imageModel = imageProvider;
+  if (!imageModel) {
+    if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
+    imageModel = createDevImageProvider();
   }
   const cronOpts = { batchSize: config.cron.sweepBatchSize };
   const withLog = (name, run) => async (_payload, ctx) => {
@@ -37,8 +52,8 @@ export function buildHandlers({ config, db, logger, storage }) {
     'uploads.sweep': withLog('cron_uploads_swept', (sdb, ctx) => runUploadsSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
     'projects.expire_sweep': withLog('cron_projects_expired', (sdb, ctx) => runProjectsExpireSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
     'jobs.cleanup': withLog('cron_jobs_cleaned', (sdb) => runJobsCleanup(sdb, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
+    'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel }), // M1-BE-04
     // 'project.understand': understandHandler(deps),   M1-BE-05 + M1-ENG-01
-    // 'look.generate': ...,                             M1-BE-04
     // 'project.bind_prompts' / 'segment.generate' / 'gen.poll' / 'project.compose'   M1-BE-05
   };
 }

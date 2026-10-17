@@ -35,6 +35,10 @@ export function loadConfig(env = process.env) {
       maxVerifyAttempts: int(env.SMS_MAX_VERIFY_ATTEMPTS, 5),
       loginMaxPerHour: int(env.SMS_LOGIN_MAX_PER_HOUR, 20),
     },
+    // 上传（M1-BE-04）：图片单张 10MB、故事文件 2MB（API.md §4 写死）；未引用图片按用户限量防刷存储
+    uploads: {
+      maxUnreferencedPerUser: int(env.UPLOADS_MAX_UNREFERENCED, 50),
+    },
     worker: {
       id: env.WORKER_ID || `worker-${process.pid}`,
       concurrency: int(env.WORKER_CONCURRENCY, 2),

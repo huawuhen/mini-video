@@ -228,7 +228,7 @@ describe('cron（M1-BE-03）', () => {
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储/);
     // 非生产环境缺省内存实现可用
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
-    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'projects.expire_sweep', 'uploads.sweep']);
+    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'look.generate', 'projects.expire_sweep', 'uploads.sweep']);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {

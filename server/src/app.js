@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createAuth } from './auth/index.js';
 import { catalogRoutes } from './api/catalog.js';
+import { characterRoutes } from './api/characters.js';
 import { quoteRoutes } from './api/quotes.js';
+import { uploadRoutes } from './api/uploads.js';
 import { walletRoutes } from './api/wallet.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { errorHandler, notFound, requestId } from './http/middleware.js';
 import { createLogger } from './logger.js';
+import { createMemoryStorage } from './queue/cron.js';
 
 /**
  * @param {object} deps
@@ -19,8 +22,12 @@ import { createLogger } from './logger.js';
  * @param {ReturnType<typeof createLogger>} deps.logger
  * @param {(key: string) => string | undefined} [deps.urlFor]  媒体签名链接；engine/storage 就绪前返回 undefined
  * @param {{ id: string, send(input: { phone: string, code: string }): Promise<void> }} [deps.smsProvider]  短信发送，测试注入模拟；缺省 console（仅开发/测试）
+ * @param {{ put(key, buffer, opts): Promise<void>, remove(keys): Promise<void> }} [deps.storage]  对象存储；缺省内存实现（生产必须注入真实实现）
+ * @param {(buffer: Buffer, mime: string) => Promise<string>} [deps.extractText]  docx 文本提取（M1-ENG-03）；未注入时 docx 上传返回 UPLOAD_TYPE_INVALID
  */
-export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider }) {
+export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider, storage, extractText }) {
+  if (config.production && !storage) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
+  const objectStorage = storage ?? createMemoryStorage();
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
@@ -50,8 +57,11 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   api.use(walletRoutes({ db }));
   api.use(quoteRoutes({ db }));
 
+  // 上传与数字资产库（M1-BE-04）
+  api.use(uploadRoutes({ config, db, logger, storage: objectStorage, urlFor, extractText }));
+  api.use(characterRoutes({ db, urlFor }));
+
   // ── 以下由 BE-Core 按 docs/TASKS.md 接入 ──
-  // M1-BE-04  api.use(uploadRoutes(...)); api.use(characterRoutes(...));
   // M1-BE-06  api.use(projectRoutes(...));
 
   api.use(notFound());
