@@ -25,9 +25,9 @@
 |---|---|---|---|---|
 | M1-BE-01 | BE-Core | 认证：短信验证码（provider 可注入，开发环境打印到控制台）、会话、CSRF + Origin、PG 限流；`PATCH /me/onboarding` | 未登录 401；CSRF 缺失 403；冷却与错误次数上限；新用户 `tourCompletedAt=null` | L-02 |
 | M1-BE-02 | BE-Core | 钱包与计价：账本、SKU/档位映射取价、`/quotes` 四种 kind、`/quotes/estimate`、预占/结算/退回/直接扣费、兑换码（只存哈希） | 并发预占不超扣；幂等重放；同键不同参数 409；调价后旧报价 `QUOTE_MISMATCH` | M1-BE-01 |
-| M1-BE-03 | BE-Core | 定时任务调度（基于 `enqueue` + 去重键按时间窗口入队）：`projects.expire_sweep`、`uploads.sweep`；队列核心已在 L-02 完成 | 多 Worker 同时启动只入队一次；清理任务幂等 | L-02 |
+| M1-BE-03 | BE-Core | 定时任务调度（基于 `enqueue` + 去重键按时间窗口入队）：`projects.expire_sweep`、`uploads.sweep`、`auth.sweep`（清理过期 `rate_counters` 窗口、已作废/过期 `sms_codes`、过期 `sessions`）、已完成 `jobs` 归档；队列核心已在 L-02 完成 | 多 Worker 同时启动只入队一次；清理任务幂等 | L-02 |
 | M1-BE-04 | BE-Core | 数字资产库与上传：`/uploads/*`、`/characters/**`、形象生成（job `look.generate`，调用 engine 模拟适配器） | 用户隔离（他人资源 404）；版本只增不改；软删除不影响历史作品 | M1-BE-02、M1-BE-03 |
-| M1-BE-05 | BE-Core | 作品状态机与各 job（§4 ARCHITECTURE），engine/render 先用桩实现 | 模拟上游下从创建跑到 delivered；两个确认点；暂停/恢复/取消/重试；重启续跑；免费次数限制；`voicesEnabled` 规则 | M1-BE-04、M1-ENG-01、M1-ENG-02 |
+| M1-BE-05 | BE-Core | 作品状态机与各 job（§4 ARCHITECTURE），engine/render 先用桩实现 | 模拟上游下从创建跑到 delivered；两个确认点；暂停/恢复/取消/重试；重启续跑；免费次数限制（「每天」按北京时间 00:00 切日）；`voicesEnabled` 规则 | M1-BE-04、M1-ENG-01、M1-ENG-02 |
 | M1-BE-06 | BE-Core | 作品 API（API.md §6）+ SSE + 交付后片段替换与重新拼接 + 下载 | 契约测试：响应结构与 `types.ts` 一致；状态不允许时 409 | M1-BE-05 |
 | M1-ENG-01 | Engine | `engine/story`：pi agent 接入、`understand` / `bindPrompts`（ARCHITECTURE §5），时长约束、角色匹配、音色推荐，模拟 LLM | 单测覆盖：时长只取 allowedDurations、总时长 ≤ max、超长精简提示、单片段不出音频参考 | – |
 | M1-ENG-02 | Engine | `engine/providers`：适配器注册表 + wan3.0 / seedance2.5 视频（图片+音频参考、首帧）+ 图片模型适配器 + 模拟上游 | submit/query/normalize 单测；提交结果未知的分类 | – |
