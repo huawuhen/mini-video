@@ -57,7 +57,7 @@ export function uploadRoutes({ config, db, logger, storage, urlFor, extractText 
     const mime = detectImageMime(file.buffer);
     if (!mime) throw appError('UPLOAD_TYPE_INVALID');
 
-    // 未引用图片按用户限量（要点 a：防止刷存储）
+    // 未引用图片按用户限量（要点 a：防止刷存储）。§6 审查 5：检查与插入非原子，并发可略超上限，属可接受的软限制
     const { rows } = await db.query(
       `SELECT count(*)::int AS n FROM uploads WHERE user_id = $1 AND referenced_at IS NULL`,
       [req.user.id],

@@ -163,7 +163,7 @@ describe('assets（M1-BE-04）', () => {
   test('创建数字人：引用校验、无照片必填描述、非法音色 400', async () => {
     const badRef = await post(base, '/characters', { name: '妈妈', photoUploadIds: ['upl_nope'] }, { cookie: A.cookie, csrf: A.csrf });
     assert.equal(badRef.status, 400);
-    assert.equal((await badRef.json()).message, '部分图片不存在或已失效，请重新上传');
+    assert.equal((await badRef.json()).message, '部分图片不存在、已失效或已被其他数字人使用，请重新上传');
 
     const others = await multipart(base, '/uploads/image', B, 'b.png', TINY_PNG);
     const othersId = (await others.json()).uploadId;
@@ -231,7 +231,8 @@ describe('assets（M1-BE-04）', () => {
     // 并发整体替换同一上传：不重复、最终一致（唯一约束兜底）
     const results = await Promise.all(Array.from({ length: 5 }, () =>
       send(base, 'PUT', `/characters/${created.id}/photos`, { uploadIds: [up1] }, { cookie: A.cookie, csrf: A.csrf })));
-    assert.ok(results.every((r) => r.status === 200), '并发替换全部成功');
+    const statuses = await Promise.all(results.map(async (r) => `${r.status}:${JSON.stringify(await r.json()).slice(0, 120)}`));
+    assert.ok(results.every((r) => r.status === 200), `并发替换全部成功，实际 ${statuses.join(' | ')}`);
     const count = (await ctx.db.query(`SELECT count(*)::int AS n FROM character_photos WHERE character_id = $1`, [created.id])).rows[0].n;
     assert.equal(count, 1, '同一上传只关联一行');
     const final = await (await send(base, 'GET', `/characters/${created.id}`, undefined, { cookie: A.cookie })).json();
@@ -247,20 +248,19 @@ describe('assets（M1-BE-04）', () => {
     const chr = await (await post(base, '/characters', { name: '妈妈2', photoUploadIds: [up] }, { cookie: A.cookie, csrf: A.csrf })).json();
     const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: chr.id, styleId: 'realistic' }, { cookie: A.cookie, csrf: A.csrf })).json();
 
-    const failing = mockImageProvider({ result: 'failed' }); // 仅供类型示意；本用例使用共享的成功 provider
-    const version = await (await post(base, `/characters/${chr.id}/looks/realistic/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-key-0001' }, { cookie: A.cookie, csrf: A.csrf })).json();
-    assert.match(version.id, /^lkv_/);
-    assert.equal(version.status, 'pending');
-
-    // 并发重放：同键返回同一版本，不重复扣费
-    const replays = await Promise.all([
+    // 同键并发首发（§6 审查 2）：手机双击场景，两个请求都应返回同一版本，只产生一个版本、只预占一次
+    const created2 = await Promise.all([
       post(base, `/characters/${chr.id}/looks/realistic/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-key-0001' }, { cookie: A.cookie, csrf: A.csrf }),
       post(base, `/characters/${chr.id}/looks/realistic/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-key-0001' }, { cookie: A.cookie, csrf: A.csrf }),
     ]);
-    assert.ok(replays.every((r) => r.status === 202));
-    const replayBodies = await Promise.all(replays.map((r) => r.json()));
-    assert.ok(replayBodies.every((v) => v.id === version.id), '重放返回同一版本');
+    assert.ok(created2.every((r) => r.status === 202), `并发同键都应 202，实际 ${created2.map((r) => r.status)}`);
+    const bodies = await Promise.all(created2.map((r) => r.json()));
+    const version = bodies[0];
+    assert.match(version.id, /^lkv_/);
+    assert.equal(version.status, 'pending');
+    assert.ok(bodies.every((v) => v.id === version.id), '并发同键返回同一版本');
     assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM gen_tasks WHERE idempotency_key LIKE 'look.create:%look-key-0001'`)).rows[0].n, 1);
+    assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM look_versions`)).rows[0].n, 1);
     let wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
     assert.deepEqual(wallet, { available_fen: 950, frozen_fen: 50 }, '只预占一次');
 
@@ -398,6 +398,83 @@ describe('assets（M1-BE-04）', () => {
       [chr.id],
     )).rows;
     assert.deepEqual(joined.map((r) => r.id), ['prj_hist'], '软删除不影响历史作品查询');
+  });
+
+  test('上传引用独占（§6 审查 1）：被其他数字人使用的照片拒绝复用，替换后清理不报错', async () => {
+    const up = (await (await multipart(base, '/uploads/image', A, 'share.png', TINY_PNG)).json()).uploadId;
+    const chr1 = await (await post(base, '/characters', { name: '甲', photoUploadIds: [up] }, { cookie: A.cookie, csrf: A.csrf })).json();
+    // 同用户第二个数字人复用同一张照片 → 400（引用独占）
+    const conflict = await post(base, '/characters', { name: '乙', photoUploadIds: [up] }, { cookie: A.cookie, csrf: A.csrf });
+    assert.equal(conflict.status, 400);
+
+    // 遗留共用数据（绕过 API 直接造）：chr2 的照片行也引用 up，然后 chr1 替换照片
+    await post(base, '/characters', { name: '丙', description: '描述' }, { cookie: A.cookie, csrf: A.csrf });
+    const chr2Id = (await (await send(base, 'GET', '/characters', undefined, { cookie: A.cookie })).json()).items.find((c) => c.name === '丙').id;
+    await ctx.db.query(`INSERT INTO character_photos (id, character_id, upload_id) VALUES ('cph_legacy', $1, $2)`, [chr2Id, up]);
+    const up2 = (await (await multipart(base, '/uploads/image', A, 'share2.png', TINY_PNG)).json()).uploadId;
+    const replaced = await send(base, 'PUT', `/characters/${chr1.id}/photos`, { uploadIds: [up2] }, { cookie: A.cookie, csrf: A.csrf });
+    assert.equal(replaced.status, 200);
+    // up 仍被 chr2 的遗留照片行引用：referenced_at 不得被清空（清了 sweep 会跳过且不会误删）
+    const refRow = (await ctx.db.query(`SELECT referenced_at FROM uploads WHERE id = $1`, [up])).rows[0];
+    assert.ok(refRow.referenced_at, '仍被其他数字人照片行引用的上传不清引用');
+
+    // sweep 防御：即使出现 referenced_at 为 NULL 但被照片行引用的异常数据，也跳过不删、不报 FK 错
+    await ctx.db.query(`UPDATE uploads SET referenced_at = NULL, created_at = now() - interval '2 days' WHERE id = $1`, [up]);
+    const { runUploadsSweep } = await import('../src/queue/cron.js');
+    const swept = await runUploadsSweep(ctx.db, { storage, batchSize: 10 });
+    assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM uploads WHERE id = $1`, [up])).rows[0].n, 1, '被照片行引用的上传跳过不删');
+    assert.ok(!storage.removed.includes(up), '对应对象不被删除');
+  });
+
+  test('submitting 崩溃恢复（§6 审查 3）：重试不重提、停滞转 unknown 保持冻结', async () => {
+    const spy = mockImageProvider();
+    await ctx.db.query(`UPDATE wallets SET available_fen = 500, frozen_fen = 0 WHERE user_id = $1`, [A.userId]);
+    const up = (await (await multipart(base, '/uploads/image', A, 'crash.png', TINY_PNG)).json()).uploadId;
+    const chr = await (await post(base, '/characters', { name: '崩溃测试', photoUploadIds: [up] }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: chr.id, styleId: 'realistic' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const version = await (await post(base, `/characters/${chr.id}/looks/realistic/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-crash-001' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const taskKey = `look.create:${A.userId}:look-crash-001`;
+
+    // 模拟进程在上游已接受请求后崩溃：gen_task 停在 submitting、刚刚更新
+    await ctx.db.query(`UPDATE gen_tasks SET status = 'submitting', updated_at = now() WHERE idempotency_key = $1`, [taskKey]);
+    const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: spy });
+    const worker = createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-crash', concurrency: 1 });
+
+    // 第一次重领取：submitting 且新鲜 → 抛可重试错误，job 重新排队，provider 不被调用
+    assert.equal(await worker.runOne(), true);
+    let job = (await ctx.db.query(`SELECT status FROM jobs WHERE dedupe_key = $1`, [`look:${version.id}`])).rows[0];
+    assert.equal(job.status, 'queued', '抛可重试错误后 job 重新排队');
+    assert.equal(spy.calls.length, 0, 'submitting 期间绝不重提');
+    assert.equal((await ctx.db.query(`SELECT status FROM gen_tasks WHERE idempotency_key = $1`, [taskKey])).rows[0].status, 'submitting');
+
+    // 停滞超过阈值：转 unknown、保持冻结、结束
+    await ctx.db.query(`UPDATE jobs SET run_at = now() WHERE dedupe_key = $1`, [`look:${version.id}`]);
+    await ctx.db.query(`UPDATE gen_tasks SET updated_at = now() - interval '11 minutes' WHERE idempotency_key = $1`, [taskKey]);
+    assert.equal(await worker.runOne(), true);
+    assert.equal((await ctx.db.query(`SELECT status FROM gen_tasks WHERE idempotency_key = $1`, [taskKey])).rows[0].status, 'unknown');
+    assert.equal((await ctx.db.query(`SELECT status FROM look_versions WHERE id = $1`, [version.id])).rows[0].status, 'pending', '版本保持 pending');
+    const wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
+    assert.deepEqual(wallet, { available_fen: 450, frozen_fen: 50 }, '金额保持冻结，等 M2 对账');
+    assert.equal(spy.calls.length, 0, '全程未调用 provider');
+    job = (await ctx.db.query(`SELECT status FROM jobs WHERE dedupe_key = $1`, [`look:${version.id}`])).rows[0];
+    assert.equal(job.status, 'done', '任务正常完成，不自动重提');
+  });
+
+  test('provider 输入（§6 审查 4）：携带照片 key、描述与风格提示词', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 200, frozen_fen = 0 WHERE user_id = $1`, [A.userId]);
+    const up = (await (await multipart(base, '/uploads/image', A, 'input.png', TINY_PNG)).json()).uploadId;
+    const chr = await (await post(base, '/characters', { name: '输入检查', photoUploadIds: [up], description: '5 岁小女孩' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: chr.id, styleId: 'picture_book' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    await post(base, `/characters/${chr.id}/looks/picture_book/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-input-001' }, { cookie: A.cookie, csrf: A.csrf });
+    const local = mockImageProvider();
+    const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: local });
+    await createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-input', concurrency: 1 }).runOne();
+    assert.equal(local.calls.length, 1);
+    assert.deepEqual(local.calls[0].referenceKeys, [`users/${A.userId}/uploads/${up}`]);
+    assert.equal(local.calls[0].description, '5 岁小女孩');
+    assert.equal(local.calls[0].promptHint, 'children picture book, watercolor texture, gentle palette');
+    const task = (await ctx.db.query(`SELECT provider FROM gen_tasks WHERE idempotency_key LIKE '%look-input-001'`)).rows[0];
+    assert.equal(task.provider, 'mock-image', 'provider 记录真实注入实现的 id');
   });
 
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {

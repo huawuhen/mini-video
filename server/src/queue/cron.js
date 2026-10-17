@@ -117,8 +117,9 @@ export async function runJobsCleanup(db, { batchSize, retentionDays }) {
 
 /**
  * uploads.sweep（要点 d）：24 小时未被引用的上传。
- * §6 审查 1：先在短事务里「认领删除」——只删仍满足条件的行并带出 storage_key（与引用操作靠行锁互斥，
- * 引用先行则认领不到，对象绝不误删）；提交后再删存储对象。删对象失败只记日志：孤儿对象可接受，误删用户照片不可接受。
+ * §6 审查 1：先在短事务里「认领删除」——只删仍满足条件且**没有 character_photos 行引用**的行并带出
+ * storage_key（与引用操作靠行锁互斥）；提交后再删存储对象。异常数据（仍被引用）跳过而不是整批失败；
+ * 删对象失败只记日志：孤儿对象可接受，误删用户照片不可接受。
  */
 export async function runUploadsSweep(db, { storage, logger, batchSize, olderThanSeconds = 86_400 }) {
   let total = 0;
@@ -128,8 +129,10 @@ export async function runUploadsSweep(db, { storage, logger, batchSize, olderTha
         WHERE id IN (
           SELECT id FROM uploads
            WHERE referenced_at IS NULL AND created_at < now() - make_interval(secs => $1)
+             AND NOT EXISTS (SELECT 1 FROM character_photos WHERE upload_id = uploads.id)
            ORDER BY id LIMIT $2)
           AND referenced_at IS NULL AND created_at < now() - make_interval(secs => $1)
+          AND NOT EXISTS (SELECT 1 FROM character_photos WHERE upload_id = uploads.id)
         RETURNING storage_key`,
       [olderThanSeconds, batchSize],
     ));

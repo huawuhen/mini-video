@@ -26,18 +26,27 @@ async function requireActiveStyle(t, styleId) {
   if (!rows.length) throw appError('VALIDATION_FAILED', undefined, { fields: { styleId: '取值不正确' } });
 }
 
-/** 引用上传（要点 b）：同事务条件 UPDATE，行数与传入不符 = 不存在/已清理/不属于本人 → 400。 */
+/**
+ * 引用上传（要点 b + §6 审查 1）：同事务条件 UPDATE，行数与传入不符 = 不存在/已清理/不属于本人/已被其他数字人使用 → 400。
+ * 独占语义：一张上传不能被**其他**数字人使用；本数字人重复引用（替换流程先删后加）允许。
+ */
 async function referenceUploads(t, userId, characterId, uploadIds) {
   if (!uploadIds.length) return;
   const { rows } = await t.query(
-    `UPDATE uploads SET referenced_at = now() WHERE id = ANY($1) AND user_id = $2 RETURNING id`,
-    [uploadIds, userId],
+    `UPDATE uploads SET referenced_at = now()
+      WHERE id = ANY($1) AND user_id = $2
+        AND NOT EXISTS (
+          SELECT 1 FROM character_photos cp WHERE cp.upload_id = uploads.id AND cp.character_id <> $3)
+      RETURNING id`,
+    [uploadIds, userId, characterId],
   );
-  if (rows.length !== uploadIds.length) throw appError('VALIDATION_FAILED', '部分图片不存在或已失效，请重新上传');
+  if (rows.length !== uploadIds.length) {
+    throw appError('VALIDATION_FAILED', '部分图片不存在、已失效或已被其他数字人使用，请重新上传');
+  }
   for (const [index, uploadId] of uploadIds.entries()) {
     await t.query(
       `INSERT INTO character_photos (id, character_id, upload_id, sort) VALUES ($1, $2, $3, $4)`,
-      [newId('chr'), characterId, uploadId, index],
+      [newId('cph'), characterId, uploadId, index],
     );
   }
 }
@@ -196,11 +205,13 @@ export async function replacePhotos(db, { userId, id, uploadIds, maxPhotos, urlF
     );
     await t.query(`DELETE FROM character_photos WHERE character_id = $1`, [id]);
     await referenceUploads(t, userId, id, uploadIds);
-    // 旧照片解除引用；新旧共用同一张照片时不清（新引用已生效）
+    // 旧照片解除引用；仅当没有任何其他数字人的照片行还在使用时才清（§6 审查 1，防御遗留共用数据）
     await t.query(
       `UPDATE uploads SET referenced_at = NULL
-        WHERE id = ANY($1) AND NOT (id = ANY($2))`,
-      [oldPhotos.map((p) => p.upload_id), uploadIds],
+        WHERE id = ANY($1) AND NOT (id = ANY($2))
+          AND NOT EXISTS (
+            SELECT 1 FROM character_photos cp WHERE cp.upload_id = uploads.id AND cp.character_id <> $3)`,
+      [oldPhotos.map((p) => p.upload_id), uploadIds, id],
     );
     return getCharacterDetail(t, { userId, id, urlFor });
   });
@@ -214,6 +225,9 @@ export async function replacePhotos(db, { userId, id, uploadIds, maxPhotos, urlF
 export async function createLookVersion(db, { userId, characterId, styleId, quoteId, idempotencyKey, urlFor }) {
   return db.tx(async (t) => {
     const replayKey = `look.create:${userId}:${idempotencyKey}`;
+    // §6 审查 2：同键并发（手机双击）先按「用户+请求键」串行化——否则两个事务都查不到重放，
+    // 第二个会在 consumeQuote 上误报 QUOTE_EXPIRED，而实际已在生成
+    await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [replayKey]);
     const { rows: replayed } = await t.query(
       `SELECT lv.* FROM look_versions lv JOIN gen_tasks gt ON gt.id = lv.gen_task_id
         WHERE gt.idempotency_key = $1`,
@@ -221,7 +235,7 @@ export async function createLookVersion(db, { userId, characterId, styleId, quot
     );
     if (replayed.length) return { replayed: true, version: serializeLookVersion(replayed[0], urlFor) };
 
-    await requireCharacter(t, userId, characterId);
+    const character = await requireCharacter(t, userId, characterId);
     await requireActiveStyle(t, styleId);
     const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'look_regenerate', refType: 'character', refId: characterId });
     const amountFen = quote.amount_fen;
@@ -245,11 +259,22 @@ export async function createLookVersion(db, { userId, characterId, styleId, quot
       [characterId, styleId],
     );
     const genTaskId = newId('gt');
+    // §6 审查 4：把外貌描述、风格提示词与照片 key 一起交给 provider；provider 在处理器提交时写入 imageProvider.id
+    const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [styleId]);
+    const { rows: photoRows } = await t.query(
+      `SELECT up.storage_key FROM character_photos cp JOIN uploads up ON up.id = cp.upload_id
+        WHERE cp.character_id = $1 ORDER BY cp.sort, cp.id`,
+      [characterId],
+    );
     await t.query(
       `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
-       VALUES ($1, $2, 'image', $3, $4, 'mock-image', 'created', $5, $6)`,
+       VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
       [genTaskId, userId, quote.price_snapshot.image.skuCode, quote.price_snapshot.image.version,
-        JSON.stringify({ versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}`, amountFen }), replayKey],
+        JSON.stringify({
+          versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}`, amountFen,
+          promptHint: styleRows[0]?.prompt_hint ?? '', description: character.description ?? '',
+          referenceKeys: photoRows.map((r) => r.storage_key),
+        }), replayKey],
     );
     await t.query(
       `INSERT INTO look_versions (id, look_id, gen_task_id, status) VALUES ($1, $2, $3, 'pending')`,
@@ -294,7 +319,11 @@ export async function deleteCharacter(db, { userId, id }) {
  * 重复执行、租约被抢都不能重复结算或重复退回（金额操作全部带 look:<versionId>:settle|refund 幂等键，
  * 且版本状态迁移带 `AND status = 'pending'` 守卫，输掉竞争的一方不动钱）。
  * 提交结果未知：版本保持 pending、金额保持冻结、gen_tasks 置 unknown，不自动重提。
+ * §6 审查 3：只有 created 才允许提交——submitting 时上游可能已接受请求，重提会重复生成/重复计费；
+ * 刚提交过的抛可重试错误交队列退避后再看；停滞超阈值置 unknown（保持冻结）等 M2 对账，绝不调 provider。
  */
+const SUBMIT_STALE_MS = 10 * 60 * 1000;
+
 export function createLookGenerateHandler({ db, logger, storage, imageProvider }) {
   return async function lookGenerate(payload, ctx) {
     const versionId = payload.versionId;
@@ -307,33 +336,53 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
     const version = rows[0];
     if (!version) throw new PermanentJobError('形象版本不存在');
     if (version.status === 'succeeded' || version.status === 'failed') return; // 已终态：幂等空转
-    const request = version.request; // { versionId, characterId, styleId, storageKey, amountFen }
+    const request = version.request; // { versionId, characterId, styleId, storageKey, amountFen, promptHint, description, referenceKeys }
 
-    // 提交守卫：created → submitting；submitting 超过 10 分钟视为上次执行已死，允许重新提交
-    const claim = await db.tx((t) => t.query(
-      `UPDATE gen_tasks SET status = 'submitting', updated_at = now()
-        WHERE id = $1
-          AND (status = 'created' OR (status = 'submitting' AND updated_at < now() - interval '10 minutes'))
-        RETURNING id`,
-      [version.gen_task_id],
-    ));
-    if (!claim.rows.length) {
-      ctx.logger.info('look_generate_skip_in_flight', { versionId, taskStatus: version.task_status });
-      return; // 另一次执行正在处理，本 job 正常结束
+    // 提交守卫：只有 created → submitting；其余状态按下面分派，绝不重提
+    const claim = await db.tx(async (t) => {
+      const created = await t.query(
+        `UPDATE gen_tasks SET status = 'submitting', provider = $2, updated_at = now()
+          WHERE id = $1 AND status = 'created' RETURNING id`,
+        [version.gen_task_id, imageProvider.id], // §6 审查 4：provider 记录真实注入实现
+      );
+      if (created.rows.length) return { claimed: true };
+      const { rows: cur } = await t.query(`SELECT status, updated_at FROM gen_tasks WHERE id = $1`, [version.gen_task_id]);
+      return { claimed: false, status: cur[0].status, updatedAt: cur[0].updated_at };
+    });
+    if (!claim.claimed) {
+      if (claim.status === 'submitting' && Date.now() - claim.updatedAt.getTime() < SUBMIT_STALE_MS) {
+        // 刚提交过、可能仍在执行：抛可重试错误，队列退避后再看（不调 provider、不动 job 结果）
+        throw new Error('形象任务正在处理中，等待下次检查');
+      }
+      if (claim.status === 'submitting') {
+        // 停滞：上次执行在上游接受请求后崩溃 → 提交结果未知：置 unknown、保持冻结、不重提，等 M2 对账
+        await db.tx((t) => t.query(
+          `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1`,
+          [version.gen_task_id],
+        ));
+        ctx.logger.error('look_generate_stale_submitting', { versionId });
+        return;
+      }
+      ctx.logger.info('look_generate_skip', { versionId, taskStatus: claim.status });
+      return; // succeeded/failed/unknown 等状态：无事可做
     }
 
+    await ctx.extendLease?.(); // 长耗时调用前续租，避免被误判租约过期后重复领取
     let result;
     try {
       result = await imageProvider.generate({
         characterId: request.characterId,
         styleId: request.styleId,
-        referenceKeys: [], // 参考照片 key（形象生成支持图片参考，ENG-02 接入后由 bindPrompts 传入）
+        promptHint: request.promptHint,
+        description: request.description,
+        referenceKeys: request.referenceKeys ?? [], // 该数字人的参考照片 key（§6 审查 4）
       });
     } catch (err) {
       // 上游调用异常（非业务失败）：回退状态，交队列退避重试
       await db.tx((t) => t.query(`UPDATE gen_tasks SET status = 'created', updated_at = now() WHERE id = $1`, [version.gen_task_id]));
       throw err;
     }
+    await ctx.extendLease?.();
 
     if (result.status === 'unknown') {
       await db.tx((t) => t.query(
