@@ -69,7 +69,7 @@
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（最后做，建议顺序 ENG-03 ✅ → ENG-02 → ENG-01，各一个分支） | — |
-| M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | 进行中 | 2026-10-17 |
+| M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | 待审查 | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-RND-01 | — | — | — | 待认领 | — |
 | M1-WEB-01 | — | — | — | 待认领 | — |
@@ -136,6 +136,14 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-17 · Engine · M1-ENG-02 视频与图片渠道适配器
+
+- **背景**：M1 引擎迁移第二个任务。按 §6 d 项与 `docs/ARCHITECTURE.md` §5，从超搭云参考提交 `2926b42` 的 `backend/providers.js`、`modelhub-models.js`、`dimensio-image-generation.js` 适配。只读参考源码，未连接真实供应商或产生模型费用。
+- **改动**：新增 `server/src/engine/providers/`：注册表、共享 Modelhub HTTP 传输、Wan 3.0 / Seedance 2.5 视频适配器、同步图片生成/参考图合成适配器和兼容 BE-04 的 `createImageProvider`。新增 `server/test/engine/providers.test.js`，使用本地 HTTP 假服务；`fixtures/modelhub-{video,image}-qa.json` 与 `modelhub-provenance.md` 分别保存参考项目 QA 形状及证据等级。
+- **核心实现**：视频按 `model/prompt/resolution/ratio/duration/functionMode` 和 `image_file_N`、`audio_file_N` 字段白名单提交，首帧占 `image_file_1`；注册表对重复 ID 和契约缺失失败。图片无参考走 JSON `/v1/images/generations`，有参考走 multipart `/v1/images/compositions`；facade 返回 BE-04 所需的 `succeeded {buffer,contentType}`、`failed` 或 `unknown`，不使用固定 `characterId:styleId` 上游幂等键，以免阻断重新生成。明确拒绝的 4xx 和连接拒绝标 `submitted=false` 并抛出；超时、5xx、受理后断开、成功却缺任务 ID 归为 `unknown`，不自动重提。
+- **验证**：本地 HTTP 假服务覆盖视频 submit/query/normalize、图片 JSON 与 multipart、成功/业务失败/超时/连接拒绝/受理后断开。`npm run test:server` 141/141，连续四轮通过；`npm run check` 与 `npm run build` 通过。仓库敏感信息扫描与 `git diff --check` 无异常。
+- **未完成 / 风险**：公开 Modelhub quick-start 确认视频接口路径，但没有响应 JSON；夹具是超搭云 `2926b42` 的本地 QA 形状或按其解析代码构造，**不是官方响应或生产抓包**。真实渠道能力、响应差异、费用和参考图签名 URL 有效期需 M2 授权联调。当前 `createImageProvider` 仍通过注入的安全下载器获取结果，生产接线留待 BE-05；复审通过前不开始 M1-ENG-01。
 
 ### 2026-10-17 · Engine · M1-ENG-03 第三轮修复（真实 DOCX 与线性标签扫描）
 
