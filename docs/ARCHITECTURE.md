@@ -223,7 +223,7 @@ extractLastFrame(videoPath) → imagePath     // 尾帧衔接
 | `modelhub-models.js` 等渠道代码 | `engine/providers/<id>.js` | 统一适配器接口，注册表管理；支持图片 + 音频参考、首帧 |
 | `backend/video-transfer.js` `media-proxy.js` | `engine/transfer/` | 上游结果转存七牛 |
 | `network-safety.js` | `engine/net/` | SSRF/大小/超时，可注入模拟网络 |
-| `backend/object-storage.js` `storage/qiniu-kodo.js` | `engine/storage/` | 七牛 Kodo（S3 兼容）+ 签名链接 |
+| `backend/object-storage.js` `storage/qiniu-kodo.js`（仅参考） | `engine/storage/` | **七牛原生协议**（用户 2026-10-17 决定：比 S3 兼容更轻量、零额外依赖）：小对象表单上传（上传凭证）、大对象分片上传 v2（有界内存）、管理凭证删除、私有空间签名下载链接（同步生成）；官方文档：上传凭证 `kodo/1208/upload-token`、表单上传 `kodo/1272/form-upload`、管理凭证 `kodo/1201/access-token`、下载凭证 `kodo/1202/download-token`、分片上传 v2 `kodo/6364/multipartupload-interface` |
 | `backend/screenwriter/editor.js`（concat） | `render/` | 扩展响度、尾帧、AI 标识、封面 |
 | `backend/billing.js`（思想） | `wallet/` | 按本项目表结构重写，只沿用规则 |
 | `backend/screenwriter/one-click.js`（思想） | `projects/` + `queue/` | 重写为带两个确认点的状态机 |
