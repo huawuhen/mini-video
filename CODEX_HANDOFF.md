@@ -66,7 +66,7 @@
 | M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | ✅ 完成（Lead 复审通过并合并 `6a741a7`） | 2026-10-17 |
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,helpers/providers.js}` | 待审查 | 2026-10-17 |
+| M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | 待审查（已修复 §6 三条，等复审） | 2026-10-17 |
 | M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
@@ -131,6 +131,20 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-04 修复（§6 审查意见 1~5）
+
+- **背景**：Lead 审查（§6）指出 3 条必须修改 + 2 条建议（BE-05 前补上）。分支已 `git merge origin/main`（75900d4，含 PRD v2.3 文档）后修复，仍在同一分支追加提交（1fc2c25）。
+- **改动（文件/模块）**：`server/src/characters/service.js`（意见 1、2、3、4）、`server/src/queue/cron.js`（意见 1③）、`server/src/api/uploads.js`（意见 5 注释）、`server/src/db/ids.js`（意见 5：新增 `cph` 前缀）、`server/test/{assets,cron}.test.js`（新增 4 组回归 + 同键并发改为真并发首发）。
+- **核心实现**：
+  1. 上传引用独占：`referenceUploads` 条件改为「没有被**其他**数字人的照片行引用」（`NOT EXISTS (… cp.character_id <> 本数字人)`）——被其他数字人使用返回 400；本数字人替换流程先删后加不受影响（首轮实现误用 `referenced_at IS NULL` 条件导致并发替换 400，被测试抓住后修正语义）。解除旧引用前确认无其他照片行使用；`runUploadsSweep` 删除条件加 `NOT EXISTS (character_photos)`，异常遗留数据跳过不删、不再报 23503 整批失败。
+  2. 同键并发：`createLookVersion` 事务开头对 `replayKey`（用户 id+请求键）加 `pg_advisory_xact_lock`——双击场景第二个事务串行后能查到重放返回同一版本，不再误报 409 `QUOTE_EXPIRED`。回归：同键并发首发 2 请求 → 都 202、同一版本、1 条 gen_tasks/look_versions、只预占一次。
+  3. submitting 策略：只有 `created` 允许提交；遇 `submitting` 且刚更新（可能仍在执行）→ 抛可重试错误让队列退避后再看；停滞超 10 分钟 → 置 `unknown`、保持冻结、记 error 日志、job 正常完成，**绝不调 provider**（等 M2 对账）。调用 provider 前后 `ctx.extendLease()` 续租。回归：模拟提交后崩溃（gen_task=submitting）→ 重领取后 provider 零调用、job 重新排队；停滞 11 分钟后转 unknown、版本 pending、金额保持冻结、job done。
+  4. provider 输入补全：`generate` 入参携带该数字人照片 storage key、外貌描述、风格 `prompt_hint`；`gen_tasks.provider` 创建时暂为 `unassigned`，处理器提交时写 `imageProvider.id`。回归断言三项入参与 provider id。
+  5. `character_photos` 主键改用新增 `cph` 前缀；上传上限检查处注明「检查与插入非原子、并发可略超，属可接受软限制」。
+- **验证（命令与结果）**：`npm run test:server` 100 通过 0 失败（96 → 100），连续 6 轮稳定；`npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：接口层面 `referenceUploads` 的独占语义为「跨数字人不可共用」，产品如需「多数字人共用照片」需走 §5 变更申请调整条件与 sweep 防御；上游重复提交窗口已由 submitting 策略收敛到「provider 调用进行中进程崩溃」一种（M2 对账工具兜底）；下一个任务是 **M1-ENG-01/02/03**（Lead 已指定顺序，BE-05 等 ENG 与 RND-01 完成后再开工）。
+
+### 2026-10-17 · BE-Core · M1-BE-04 数字资产库与上传
 ### 2026-10-17 · BE-Core · M1-BE-04 数字资产库与上传
 
 - **背景**：M1 第四个任务，按 §6 M1-BE-04 开工要点 a~g 实现。依赖 M1-BE-02（报价/钱包）与 M1-BE-03（uploads.sweep）均已就绪。无需新迁移、未改 `docs/API.md`；新增依赖 `busboy@1.6.0`（版本写死）。
