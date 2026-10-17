@@ -1,0 +1,12 @@
+{
+  "title": "春天的野餐",
+  "synopsis": "妈妈带宝宝到公园野餐，宝宝发现风吹动树叶，两人分享食物并开心回家。",
+  "cast": [
+    { "name": "妈妈", "description": "温柔耐心", "gender": "female", "ageGroup": "middle" },
+    { "name": "宝宝", "description": "好奇活泼", "gender": "female", "ageGroup": "child" }
+  ],
+  "segments": [
+    { "durationSeconds": 30, "sceneId": "park_grass", "plot": "公园里铺开野餐垫，宝宝追逐飘落的树叶。", "cameraNotes": "广角建立场景后跟拍宝宝", "dialogue": [{ "castIndex": 0, "line": "慢一点，看看树叶。" }], "ambience": "风声和鸟鸣", "transition": "hard_cut", "castIndexes": [0, 1] },
+    { "durationSeconds": 30, "sceneId": "park_grass", "plot": "同一片草地上，两人分享水果并相视而笑。", "cameraNotes": "从手部特写缓慢拉到双人中景", "dialogue": [{ "castIndex": 1, "line": "这个苹果真甜！" }], "ambience": "轻微风声", "transition": "prev_tail", "castIndexes": [0, 1] }
+  ]
+}

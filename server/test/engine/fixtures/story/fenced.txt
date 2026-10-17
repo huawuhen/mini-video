@@ -1,0 +1,3 @@
+```json
+{"title":"午后散步","synopsis":"父亲和孩子在河边散步，孩子发现小船。","cast":[{"name":"爸爸","gender":"male","ageGroup":"middle","description":"稳重"}],"segments":[{"durationSeconds":30,"plot":"河边散步与发现小船。","dialogue":[],"castIndexes":[0],"transition":"hard_cut"}]}
+```
