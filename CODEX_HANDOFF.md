@@ -141,6 +141,14 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-02 复审修复（参考图读取与测试稳定性）
+
+- **背景**：在原分支合并 `origin/main`（bb0cf8a）后处理 §6 复审必改 1、2，顺手处理建议 3、4。
+- **改动**：`engine/providers/modelhub-image.js` 捕获 `loadReference` 抛错，包装为 `PROVIDER_REFERENCE_UNAVAILABLE`、`submitted=false`、`retryable=true` 的 `ProviderError`，交 BE-04 队列重试；拿到参考图但不是 Buffer 时仍是 `PROVIDER_INPUT_INVALID`，作为终态失败。`providers.test.js` 共用本地 HTTP 假服务超时由 70ms 调至 2500ms；仅专门的超时用例创建 60ms 独立传输层，连接拒绝用例使用 2500ms。
+- **建议项**：Modelhub 视频失败返回固定中文用户提示，最多 200 字的上游原文仅放 `providerMessage`；图片 facade 对本地 `PROVIDER_CONFIG_INVALID`、`PROVIDER_INPUT_INVALID` 也记录 error 日志，鉴权 401/403 日志保留。
+- **验证**：新增参考图存储首次失败、第二次成功的回归：首次抛可重试且未提交、上游请求数为零，恢复后仅调用上游一次；非 Buffer 走失败不重试。视频失败脱敏和本地参数错误日志均有断言。`npm run test:server` 148/148 连续四轮通过；`npm run check`、`npm run build` 通过；未访问真实上游。
+- **未完成 / 风险**：图片适配器分辨率由 `createImageProvider` 创建时的 SKU 固定，M2-BE-01 真实渠道集成需按 `gen_tasks.sku_code` 配置每次任务的分辨率（§6 已登记）；复审通过前不开始 M1-ENG-01。
+
 ### 2026-10-17 · Engine · M1-ENG-02 审查修复（终态与图片请求）
 
 - **背景**：在原分支合并 `origin/main`（d673761）后，按 §6 处理必改 1~4 和建议 6、7；用户更正第 5 条：视频固定 `omni_reference`，`tailRef` 只作普通参考图，图片参考只取第一张。
