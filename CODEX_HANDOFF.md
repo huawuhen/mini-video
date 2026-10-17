@@ -65,7 +65,8 @@
 | L-04 前端骨架 v2 | Lead (Claude) | `main` | `apps/web/**` | ✅ 完成 | 2026-10-16 |
 | M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | ✅ 完成（Lead 复审通过并合并 `6a741a7`） | 2026-10-17 |
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-03 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
+| M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | 待审查 | 2026-10-17 |
+| M1-BE-04 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
 | M1-ENG-03 | — | — | — | 待认领 | — |
@@ -125,6 +126,41 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-03 修复（§6 审查意见 1~3）
+
+- **背景**：Lead 审查（§6）指出 2 条必须修改（上传清理误删被引用照片、到期清理漏删片段视频）+ 1 条建议（生产禁用内存存储）。分支已 `git merge origin/main`（13f933f）后修复，仍在同一分支追加提交。
+- **改动（文件/模块）**：`server/src/queue/cron.js`（意见 1、2）、`server/src/worker.js`（意见 3 与处理器传 logger）、`server/test/cron.test.js`（新增 3 个回归 + 既有断言随返回值语义调整）。
+- **核心实现**：
+  1. uploads.sweep 认领式删除：先在短事务里 `DELETE … WHERE id IN (候选 LIMIT n) AND referenced_at IS NULL … RETURNING storage_key`——与引用操作靠行锁互斥，引用先行则认领不到该行，对象绝不误删；提交后再删存储对象。删对象失败只记 `uploads_sweep_remove_failed` 日志：孤儿对象可接受，误删用户照片不可接受；记录已删，任务照常成功。
+  2. projects.expire_sweep：成片与片段视频 key 分两条查询、以 `project_id = ANY($1)` 为条件（旧实现以 renders 为起点——无成片记录的作品漏删片段视频，且 renders × takes 笛卡尔积重复删除）；`removeAndClearVideoKeys` 事务外删对象、成功后**按 key 精确清空**（只清本次确实已删除对象的 key，`WHERE video_key = ANY($1)`）；删对象失败记日志、返回 0、本次不清 key，补偿循环遇失败即结束本轮留待下次调度（避免空转）。返回值 `cleared` 改为 `clearedKeys`（按 key 计数）。
+  3. `buildHandlers` 在 `config.production` 且未注入 `storage` 时抛错拒绝启动；非生产缺省内存实现不变。处理器把 `ctx.logger` 传入清理函数，失败日志带 jobId 可追溯。
+- **验证（命令与结果）**：
+  - `npm run test:server`：83 通过 0 失败（80 → 83）。新增回归：①模拟删第一批对象期间引用 upl_r3——upl_r3 认领不到不被删除，行保留且 `referenced_at` 已标记，对象不在删除列表；②无 renders 行的到期作品片段视频被删且 key 清空、两成片版本全清且 `removed` 无重复、封面保留；③生产配置未注入存储抛错、非生产四个处理器正常注册。
+  - `npm run check` 0 错误；`npm run build` 成功；连续 6 轮稳定。
+- **未完成 / 风险**：§6「给 BE-04 / BE-05 的约定」与本分支三条约束共同生效：BE-04 引用上传用条件 UPDATE（返回行数不足即 400）；BE-05 写视频 key 前确认作品未过期；`createMemoryStorage` 待 engine/storage 完成后移入 `engine/storage/` 并删除本实现。
+
+### 2026-10-17 · BE-Core · M1-BE-03 定时任务调度
+### 2026-10-17 · BE-Core · M1-BE-03 定时任务调度
+
+- **背景**：M1 第三个任务，按 §6 M1-BE-03 开工要点 a~g 实现。队列核心（SKIP LOCKED/租约/退避/去重）复用 L-02，无需新迁移、未改 `docs/API.md`。
+- **改动（文件/模块）**：新增 `server/src/queue/cron.js`（调度器 + 四个清理任务 + 内存存储实现）；`server/src/worker.js`（注册 4 个 cron 处理器，主入口启动/停止调度器）；`server/src/config.js` 与 `.env.example`（`cron` 配置组：调度间隔、各任务周期、done 保留天数、批量）；新增 `server/test/cron.test.js`（6 用例）。
+- **核心实现**：
+  - 调度（要点 a）：`createScheduler` 按 `cron.tickSeconds`（默认 60s）循环、启动先调一次；每任务入队键 `cron:<类型>:<窗口起点 ISO>`，窗口起点 `floor(now/周期)×周期` 对齐——多 Worker 并发调度同窗口只入队一次。周期：auth.sweep / uploads.sweep 1h，projects.expire_sweep 5min，jobs.cleanup 1d（均可配）。
+  - 分批（要点 b）：统一 `deleteInBatches`（`ctid IN (… LIMIT 批量)`，每批一个短事务，无行即停）；uploads/expire 为「选批 → 事务外动作 → 短事务收尾」结构；单批失败抛错交队列退避重试，全部可重复执行。
+  - auth.sweep（要点 c）：过期限流窗口（1 天最长窗口 + 1 天缓冲）、作废或过期超 1 天的 `sms_codes`、过期 `sessions`。
+  - uploads.sweep（要点 d）：24h 未引用上传先事务外 `storage.remove(keys)` 再删记录；存储为注入接口（engine/README `storage.remove`），缺省 `createMemoryStorage()`，Engine 迁移（M1-ENG-03）后替换为七牛实现。
+  - projects.expire_sweep（要点 e）：短事务锁批（`FOR UPDATE SKIP LOCKED`）把 delivered 且到期的作品改 `expired` 并写 `project_events`，事务外删成片与片段视频对象，再清空 `renders.video_key` / `segment_takes.video_key`；封面、尾帧、海报与作品记录保留。另含补偿循环：清理上次中断遗留的 expired 作品视频 key。
+  - jobs.cleanup（要点 f）：只删超过 `jobsDoneRetentionDays`（默认 30 天）的 done 行；删后同去重键可再入队，因此各处理器按业务状态幂等（到期清理的补偿路径即该原则的落实）。
+- **验证（命令与结果）**：
+  - `npm run test:server`：80 通过 0 失败（74 → 80，新增 6 用例覆盖要点 g 全部必测：两个调度器并发 tick 同窗口每任务仅 1 条 job 且重复调度不再新增；auth.sweep 清理/保留规则与可重复执行；uploads.sweep 分批边界 batchSize=2 五行删净、已引用与 24h 内保留；到期作品状态/事件/视频对象删除/`video_key` 清空/封面海报尾帧保留/未到期不动/补偿路径/可重复；jobs.cleanup 只删超期 done 行；调度入队 → `buildHandlers` 注册 → Worker `runOne` 端到端执行成功）。
+  - `npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：
+  - `storage` 缺省为进程内内存实现（开发/测试用），生产需等 M1-ENG-03 的七牛实现并在 worker 主入口注入；接口已按 engine/README 对齐。
+  - `projects.expire_sweep` 的状态迁移暂写在 cron 模块，BE-05 做作品状态机时可把它挪进 projects 模块复用统一的状态迁移函数（结构变化走变更申请）。
+  - 各清理周期为【默认】值（已做成 config 可调），上线前可按数据量调整；到期的 SSE 事件依赖 `project_events` 表补发，前端 SSE 在 M1-BE-06 接入。
+  - 未在长时运行的 Worker 真机上验证调度循环（测试直接驱动 `tick()`）；`setInterval` 已 `unref`，不阻塞进程退出。
+
+### 2026-10-17 · BE-Core · M1-BE-02 修复（§6 审查意见 1~7）
 ### 2026-10-17 · BE-Core · M1-BE-02 修复（§6 审查意见 1~7）
 
 - **背景**：Lead 审查（§6）指出 6 条必须修改 + 1 条建议（兑换码暴力猜解）。分支已 `git merge origin/main`（084e88b）后修复，仍在同一分支追加提交（bb26717）。
