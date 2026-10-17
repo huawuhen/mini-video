@@ -26,6 +26,15 @@ export function loadConfig(env = process.env) {
     allowedOrigins: list(env.ALLOWED_ORIGINS).length ? list(env.ALLOWED_ORIGINS) : production ? [] : ['http://localhost:5173', 'http://127.0.0.1:5173'],
     cookieSecure: bool(env.COOKIE_SECURE, production),
     sessionTtlDays: int(env.SESSION_TTL_DAYS, 30),
+    // 短信验证码：console provider 仅限开发/测试（把验证码打印到控制台，生产启动即报错）
+    sms: {
+      provider: env.SMS_PROVIDER || 'console',
+      codeTtlSeconds: int(env.SMS_CODE_TTL_SECONDS, 300),
+      sendCooldownSeconds: int(env.SMS_SEND_COOLDOWN_SECONDS, 60),
+      maxPerPhonePerDay: int(env.SMS_MAX_PER_PHONE_PER_DAY, 10),
+      maxVerifyAttempts: int(env.SMS_MAX_VERIFY_ATTEMPTS, 5),
+      loginMaxPerHour: int(env.SMS_LOGIN_MAX_PER_HOUR, 20),
+    },
     worker: {
       id: env.WORKER_ID || `worker-${process.pid}`,
       concurrency: int(env.WORKER_CONCURRENCY, 2),
@@ -48,6 +57,7 @@ export function loadConfig(env = process.env) {
   if (production) {
     if (!env.DATABASE_URL) throw new Error('生产环境必须设置 DATABASE_URL');
     if (!config.allowedOrigins.length) throw new Error('生产环境必须设置 ALLOWED_ORIGINS');
+    if (config.sms.provider === 'console') throw new Error('生产环境必须配置真实短信 provider（SMS_PROVIDER）');
   }
   return Object.freeze(config);
 }

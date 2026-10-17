@@ -3,6 +3,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import { createAuth } from './auth/index.js';
 import { catalogRoutes } from './api/catalog.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
@@ -15,8 +16,9 @@ import { createLogger } from './logger.js';
  * @param {ReturnType<typeof createDb>} deps.db
  * @param {ReturnType<typeof createLogger>} deps.logger
  * @param {(key: string) => string | undefined} [deps.urlFor]  媒体签名链接；engine/storage 就绪前返回 undefined
+ * @param {{ id: string, send(input: { phone: string, code: string }): Promise<void> }} [deps.smsProvider]  短信发送，测试注入模拟；缺省 console（仅开发/测试）
  */
-export function createApp({ config, db, logger, urlFor = () => undefined }) {
+export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
@@ -36,8 +38,13 @@ export function createApp({ config, db, logger, urlFor = () => undefined }) {
   });
   api.use(catalogRoutes({ db, urlFor }));
 
-  // ── 以下由 BE-Core 按 docs/TASKS.md 接入（顺序固定：会话 → CSRF/Origin → 业务路由）──
-  // M1-BE-01  api.use(sessionMiddleware(...)); api.use(csrfGuard(...)); api.use(authRoutes(...));
+  // 认证（M1-BE-01）：顺序固定，会话 → CSRF/Origin → 认证路由；后续业务路由接在其后
+  const auth = createAuth({ config, db, logger, smsProvider, urlFor });
+  api.use(auth.sessionMiddleware);
+  api.use(auth.csrfGuard);
+  api.use(auth.routes);
+
+  // ── 以下由 BE-Core 按 docs/TASKS.md 接入 ──
   // M1-BE-02  api.use(walletRoutes(...)); api.use(quoteRoutes(...));
   // M1-BE-04  api.use(uploadRoutes(...)); api.use(characterRoutes(...));
   // M1-BE-06  api.use(projectRoutes(...));

@@ -63,7 +63,7 @@
 | L-02 后端骨架 | Lead (Claude) | `main` | `server/**` | ✅ 完成 | 2026-10-16 |
 | L-03 测试数据库 | Lead (Claude) | `main` | `deploy/compose.test.yml` 根 `package.json` | ✅ 完成 | 2026-10-16 |
 | L-04 前端骨架 v2 | Lead (Claude) | `main` | `apps/web/**` | ✅ 完成 | 2026-10-16 |
-| M1-BE-01 | — | — | — | 待认领 | — |
+| M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | 待审查 | 2026-10-17 |
 | M1-BE-02 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
@@ -119,6 +119,42 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-17 · BE-Core · M1-BE-01 修复（§6 审查意见 1~4）
+
+- **背景**：Lead 审查（§6）指出 2 个并发竞态必须修复，另 2 条建议顺手改。本分支已 `git merge origin/main`（67fb2f5）后修复，仍在同一分支追加提交。
+- **改动（文件/模块）**：`server/src/auth/sms.js`（意见 1、2、3）、`server/src/auth/routes.js`（意见 4）、`server/src/auth/index.js`（console provider 接收 config）、`server/test/auth.test.js`（新增 4 个用例并调整 logout 401 断言）。
+- **核心实现**：
+  1. 发码竞态：「冷却检查 → 作废旧码 → 插入新码」放进带 `pg_advisory_xact_lock(hashtext('sms:' || phone))` 的短事务，同手机号并发请求在此串行化，冷却不可被并发绕过；短信 provider 发送仍在事务外，发送失败按行 id 删除、不占冷却。
+  2. 错误次数竞态：改为**先原子占用一次尝试再比对哈希**（`UPDATE … SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < 上限 RETURNING id`，无返回行即拒绝），占用语句自带行锁，并发提交不再读到旧值；错达上限即作废；正确路径保留短事务行锁复核，防并发同码双登录。
+  3. console provider 文案按 `codeTtlSeconds` 向上取整到分钟输出，不再写死「10 分钟」。
+  4. `POST /auth/logout` 去掉 `requireAuth`：无会话（含已过期 Cookie）也清 Cookie 并返回 `{ ok: true }`，与 API.md §1 一致；有会话时仍校验 CSRF 并删除会话行。
+- **验证（命令与结果）**：
+  - `npm run test:server`：52 通过 0 失败，连续 4 轮稳定。新增并发回归：同手机号并发 10 次发码仅 1 次 200、仅发 1 条短信、未作废码仅 1 条（其余 9 次 429 `SMS_COOLDOWN`）；并发 15 个错误验证码 `attempts=5`（比对次数不超上限）且已作废。另新增无会话 logout 200+清 Cookie、console 文案 5 分钟/2 分钟两例。
+  - `npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：同上一条记录；`rate_counters`/过期 `sms_codes`/过期 `sessions` 清理已由 Lead 登记进 M1-BE-03，免费次数按北京时间切日登记在 M1-BE-05，本分支不处理。
+
+### 2026-10-17 · BE-Core · M1-BE-01 认证
+
+- **背景**：M1 骨架跑通的第一个任务。复用 L-02 的 `users` `sms_codes` `sessions` `rate_counters` 表结构与既有错误码，无需新迁移，未改 `docs/API.md`（即无需 §5 变更申请）。
+- **改动（文件/模块）**：
+  - 新增 `server/src/auth/`：`ratelimit.js`（PG 固定窗口限流）、`session.js`（会话中间件 / CSRF 守卫 / 用户序列化）、`sms.js`（验证码发放与校验 + 登录注册 + console provider）、`routes.js`（5 个端点）、`index.js`（`createAuth` 组装）。
+  - `server/src/config.js`：新增 `sms` 配置组（provider、验证码 TTL、冷却、每日上限、错误次数上限、登录限流）+ 生产禁用 console provider 的启动拦截；`server/.env.example` 同步。
+  - `server/src/app.js`：在预留插入点接线 `createAuth`（会话 → CSRF/Origin → 认证路由），`createApp` 新增 `smsProvider` 注入点；新增 `server/test/auth.test.js`（22 个用例）。
+- **核心实现**：
+  - 验证码：6 位码按手机号掺盐 sha256 存储（10^6 空间不掺盐可被离线碰撞）；冷却看最近一次发送时间（避免固定窗口边界连发），每日上限走 `rate_counters`；发新码前作废旧码，登录只认最新一条；发送失败删行、不占冷却，返回 502 `UPSTREAM_FAILED`。
+  - 登录：失败计数（`attempts` 自增、达上限作废）在**事务外自提交**——首版放在事务内，抛错即回滚导致计数永不生效，被本任务测试暴露后修正；成功路径短事务：行锁复核 → 消费验证码 → 建用户 + 钱包行（随注册建好，M1-BE-02 无需懒建）→ 建会话。新用户 `tourCompletedAt=null`（验收点）。
+  - 会话与 CSRF：Cookie `miv_sid`（HttpOnly / SameSite=Lax / 生产 Secure），库中只存 token 哈希；过期或被停用账号的会话在中间件里顺手删除。写请求先校验 Origin 白名单（无 Origin 放行，兼容非浏览器客户端）；存在会话时再校验 `X-CSRF-Token`；`/auth/sms`、`/auth/login` 登录前无 token，由 Origin + SameSite 防护。
+  - `PATCH /me/onboarding`：`tourCompletedAt` 只记首次完成（完成与跳过都传 true，重播不改服务端状态），`tipsSeen` 追加去重，两字段至少一个。
+- **验证（命令与结果）**：
+  - `npm ci` ✓；`npm run test:db:up` ✓（miv-test 容器健康）。
+  - `npm run test:server`：48 通过 0 失败（原 26 + auth 22：未登录 401、CSRF 缺失/错 Origin 403、冷却 429、错 5 次作废、过期码、日发送上限、登录限流、新用户 `tourCompletedAt=null`、onboarding 幂等/去重/参数校验、logout 失效并清 Cookie、provider 故障 502 不占冷却、生产配置拦截）。
+  - `npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：
+  - 短信 provider 仅实现 console（开发/测试把验证码打印到控制台）；生产启动会拦截并要求注入真实 provider（接真实短信放 M2/M3）。
+  - 验证码哈希为 sha256+手机号掺盐 + 5 次错误上限，上线前可评估升级 argon2/bcrypt（需新增依赖）。
+  - 每日上限窗口按 UTC 对齐；如需按北京时间「每天」，后续在运营配置里调整。
+  - 真实短信发送未验证（遵守不产生真实费用的约束）；限流仅按手机号维度，未做按 IP（M2 结合部署形态评估）。
 
 ### 2026-10-16 · Lead · L-01~L-04 PRD 定稿与主体框架
 
