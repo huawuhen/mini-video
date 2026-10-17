@@ -123,6 +123,22 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-02 修复（§6 审查意见 1~7）
+
+- **背景**：Lead 审查（§6）指出 6 条必须修改 + 1 条建议（兑换码暴力猜解）。分支已 `git merge origin/main`（084e88b）后修复，仍在同一分支追加提交（bb26717）。
+- **改动（文件/模块）**：`server/src/wallet/service.js`（意见 1~4）、`server/src/wallet/pricing.js`（意见 5~6）、`server/src/api/wallet.js`（意见 7）、`server/test/wallet.test.js`（更新 4 处既有断言/调用 + 新增 8 个回归测试）。
+- **核心实现**：
+  1. 流水翻页：游标改用微秒时间戳（`(extract(epoch from created_at) * 1000000)::bigint` + id 作 keyset），修复同事务多条流水 `created_at` 完全相同（`now()` 为事务开始时间）被毫秒游标整段跳过的丢数据问题。回归：同一事务 3 笔扣费，`limit=1` 逐页翻满 3 条不丢不重。
+  2. 金额入口校验：`reserve/settle/refund/charge` 统一 `Number.isSafeInteger(amountFen) && amountFen > 0`，否则 INTERNAL（0 元操作无业务含义，选择直接拒绝并注释，不写流水）。回归：`charge(-500)`、`charge(0)` 均 INTERNAL 且余额不变。
+  3. 幂等键隔离：首次流水命中时 `user_id` 与调用方不同 → 409 `IDEMPOTENCY_CONFLICT`。回归：他人复用同键得 409、双方余额不变。
+  4. 重放比对：`withIdempotency` 查询带出 `frozen_delta_fen`，`reserve/settle/refund` 的 expect 增加该字段。回归：同键结算 100 后再结算 200 → 409。
+  5. 报价归属：`consumeQuote` 必须声明 `{ kind, refType, refId }`，与报价不符抛 `QUOTE_MISMATCH`（占用随事务回滚，已测）；`priceSegmentTake` 校验 segment 属于传入 `projectId`。回归：拿 chr_a1 报价确认 chr_a2、换 kind 声明均 MISMATCH 且占用回滚；跨作品 segment_take 报价 404。**注意：BE-04/05 调用 `consumeQuote` 时必须传三元组**。
+  6. estimate 对齐 PRD §6.3【默认】：下限 = 1 个 30 秒片段（30 取 `min(30, SKU 最长时长)`），上限 = 最长作品时长；形象费按「本风格缺形象的已勾选数字人数」计入上下限（缺形象 = 无该风格形象或选中版本非 succeeded，SQL 用 `NOT EXISTS … selected_version_id → status='succeeded'`）。回归：3 个勾选中 2 个缺形象 → standard {min:700, max:1900}；空勾选 {600, 1800}；hd {1200, 3600}。
+  7.（建议项）兑换码尝试上限：按用户每小时 10 次（`redeem:attempt:<userId>` 固定窗口），事务外预计数（BE-01 登录限流同款，失败回滚不丢计数，并发猜码也计入）。回归：连续 10 次错码 400 后第 11 次 429 `RATE_LIMITED`。
+- **验证（命令与结果）**：`npm run test:server` 74 通过 0 失败（67 → 74，新增 8 个回归 + 调整 4 处既有断言），连续 6 轮稳定；`npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：给 BE-05 的约定（Lead 已记录）继续有效——`priceCastLooks` 以 `look_version_id IS NULL` 为缺形象，故事理解 job 需为已有本风格形象的角色写好该字段；`consumeQuote` 新签名的调用方适配在 BE-04/05 落地。
+
+### 2026-10-17 · BE-Core · M1-BE-02 钱包与计价（含遗留 5 修复）
 ### 2026-10-17 · BE-Core · M1-BE-02 钱包与计价（含遗留 5 修复）
 
 - **背景**：M1 第二个任务。分支前两个提交先修 §6 遗留第 5 条（发码冷却拦截不计每日次数），随后按 §6 M1-BE-02 开工要点 a~e 实现钱包与计价。复用现有表结构与错误码，无需新迁移，未改 `docs/API.md`。
