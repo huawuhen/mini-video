@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { deflateRawSync } from 'node:zlib';
 import { describe, test } from 'node:test';
 import { extractText } from '../../src/engine/extract/index.js';
@@ -107,6 +109,25 @@ describe('engine/extract（M1-ENG-03）', () => {
     const archive = buildZip([{ name: 'word/document.xml',
       data: Buffer.from('<w:p><w:r><w:t>第一句</w:t><w:br/><w:t>第二句</w:t><w:tab/><w:t>末尾</w:t></w:r></w:p>') }]);
     assert.equal(await extractText(archive, 'application/zip'), '第一句\n第二句 末尾');
+  });
+
+  test('LibreOffice 保存的样式、页眉页脚与文本框 DOCX 精确提取', async () => {
+    const fixture = (name) => readFile(fileURLToPath(new URL(`./fixtures/${name}`, import.meta.url)));
+    const styled = await extractText(await fixture('miv-word-styles-fixture.docx'), 'application/zip');
+    assert.equal(styled, 'Story Fixture Title\nCentered Scene: Morning Garden\nNarrator: Mira looks up and sees daylight.\nDialogue: First line\nSecond line pause.');
+    const textBox = await extractText(await fixture('miv-textbox-fixture.docx'), 'application/zip');
+    assert.equal(textBox, '旁白：窗边的纸条。\n文本框：虚构的地图标记。\n结尾：大家向山谷出发。');
+  });
+
+  test('1MB 空白属性的 br/tab 标签在 200ms 内完成', async () => {
+    for (const tag of ['w:br', 'w:tab']) {
+      const xml = `<w:p><w:t>前</w:t><${tag}${' '.repeat(1024 * 1024)}/><w:t>后</w:t></w:p>`;
+      const docx = buildZip([{ name: 'word/document.xml', data: Buffer.from(xml) }]);
+      const start = performance.now();
+      const result = await extractText(docx, 'application/zip');
+      assert.equal(result, tag === 'w:br' ? '前\n后' : '前 后');
+      assert.ok(performance.now() - start < 200, `${tag} 超过 200ms`);
+    }
   });
 
   test('签名与 app.js 注入点一致：返回 Promise<string>', async () => {

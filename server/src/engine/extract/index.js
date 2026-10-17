@@ -107,55 +107,63 @@ function decodeEntities(value) {
   });
 }
 
-function parseParagraph(fragment) {
-  let text = '';
-  let index = 0;
-  while (index < fragment.length) {
-    const open = fragment.indexOf('<', index);
-    if (open < 0) break;
-    const end = fragment.indexOf('>', open + 1);
-    if (end < 0) throw new ExtractError('Word 文档正文标签未闭合。');
-    const tag = fragment.slice(open + 1, end);
-    if (/^w:br(?:\s[^<>]*)?\s*\/$/.test(tag)) text += '\n';
-    else if (/^w:tab(?:\s[^<>]*)?\s*\/$/.test(tag)) text += ' ';
-    else if (/^w:t(?:\s[^<>]*)?$/.test(tag)) {
-      const close = fragment.indexOf('<', end + 1);
-      if (close < 0 || fragment.slice(close, close + 6) !== '</w:t>') {
-        throw new ExtractError('Word 文档正文标签未闭合。');
-      }
-      text += decodeEntities(fragment.slice(end + 1, close));
-      index = close + 6;
-      continue;
-    }
-    index = end + 1;
-  }
-  return text;
+function tagAt(xml, start) {
+  const end = xml.indexOf('>', start + 1);
+  if (end < 0) throw new ExtractError('Word 文档正文标签未闭合。');
+  let nameStart = start + 1;
+  const closing = xml[nameStart] === '/';
+  if (closing) nameStart += 1;
+  let nameEnd = nameStart;
+  while (nameEnd < end && xml[nameEnd] !== '/' && !/\s/.test(xml[nameEnd])) nameEnd += 1;
+  let last = end - 1;
+  while (last > nameEnd && /\s/.test(xml[last])) last -= 1;
+  return { name: xml.slice(nameStart, nameEnd), closing, selfClosing: xml[last] === '/', end };
 }
 
 async function extractDocx(buffer) {
   const xml = new TextDecoder('utf-8', { fatal: true }).decode(await readZipEntry(buffer, 'word/document.xml'));
   const paragraphs = [];
+  const stack = [];
+  const alternatives = [];
   let index = 0;
   while (index < xml.length) {
-    const open = xml.indexOf('<w:p', index);
+    const open = xml.indexOf('<', index);
     if (open < 0) break;
-    const next = xml[open + 4];
-    if (next !== '>' && next !== '/' && !/\s/.test(next ?? '')) { index = open + 4; continue; }
-    const start = xml.indexOf('>', open + 4);
-    if (start < 0) throw new ExtractError('Word 文档段落标签未闭合。');
-    if (xml[start - 1] === '/') {
-      paragraphs.push('');
-      index = start + 1;
+    const tag = tagAt(xml, open);
+    index = tag.end + 1;
+    if (tag.name === 'mc:AlternateContent') {
+      if (tag.closing) alternatives.pop();
+      else alternatives.push({ choiceSeen: false });
       continue;
     }
-    const end = xml.indexOf('</w:p>', start + 1);
-    if (end < 0 || xml.indexOf('<w:p', start + 1) >= 0 && xml.indexOf('<w:p', start + 1) < end) {
-      throw new ExtractError('Word 文档段落标签未闭合。');
+    if (tag.name === 'mc:Choice' && !tag.closing && alternatives.length) {
+      alternatives.at(-1).choiceSeen = true;
     }
-    paragraphs.push(parseParagraph(xml.slice(start + 1, end)));
-    index = end + 6;
+    if (tag.name === 'mc:Fallback' && !tag.closing && alternatives.at(-1)?.choiceSeen) {
+      const end = xml.indexOf('</mc:Fallback>', index);
+      if (end < 0) throw new ExtractError('Word 文档文本框标签未闭合。');
+      index = end + '</mc:Fallback>'.length;
+      continue;
+    }
+    if (tag.name === 'w:p') {
+      if (tag.closing) {
+        if (!stack.length) throw new ExtractError('Word 文档段落标签未闭合。');
+        paragraphs.push(stack.pop().join(''));
+      } else if (tag.selfClosing) paragraphs.push('');
+      else stack.push([]);
+    } else if (stack.length && !tag.closing && tag.name === 'w:t') {
+      if (tag.selfClosing) continue;
+      const textEnd = xml.indexOf('<', index);
+      if (textEnd < 0) throw new ExtractError('Word 文档正文标签未闭合。');
+      const closing = tagAt(xml, textEnd);
+      if (!closing.closing || closing.name !== 'w:t') throw new ExtractError('Word 文档正文标签未闭合。');
+      stack.at(-1).push(decodeEntities(xml.slice(index, textEnd)));
+      index = closing.end + 1;
+    } else if (stack.length && !tag.closing && tag.name === 'w:br') stack.at(-1).push('\n');
+    else if (stack.length && !tag.closing && tag.name === 'w:tab') stack.at(-1).push(' ');
   }
-  const text = paragraphs.join('\n').replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+  if (stack.length) throw new ExtractError('Word 文档段落标签未闭合。');
+  const text = paragraphs.join('\n').replace(/\r\n/g, '\n').replace(/\n{2,}/g, '\n').trim();
   if (!text) throw new ExtractError('文档中没有可提取的文字。', 'EXTRACT_EMPTY');
   return text;
 }
