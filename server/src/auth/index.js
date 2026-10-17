@@ -12,7 +12,7 @@ import { createSessionTools } from './session.js';
  *   短信发送实现，测试注入模拟；缺省用 console provider（仅开发/测试，生产启动即报错）。
  */
 export function createAuth({ config, db, logger, smsProvider, urlFor = () => undefined }) {
-  const provider = smsProvider ?? consoleSmsProvider();
+  const provider = smsProvider ?? consoleSmsProvider(config);
   if (config.production && provider.id === 'console') {
     throw new Error('生产环境必须注入真实短信 provider');
   }

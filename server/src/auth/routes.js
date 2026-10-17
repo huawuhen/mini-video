@@ -45,10 +45,13 @@ export function buildAuthRoutes({ config, db, logger, provider, requireAuth, set
     res.json({ user: serializeUser(user, { urlFor }), csrfToken, isNewUser });
   }));
 
-  routes.post('/auth/logout', requireAuth, asyncHandler(async (req, res) => {
-    await db.query(`DELETE FROM sessions WHERE token_hash = $1`, [req.session.tokenHash]);
+  // 审查意见 4：logout 不要求登录态（API.md §1 未要求）——有会话则删除并记日志，无会话（含已过期）也清 Cookie，统一返回 ok
+  routes.post('/auth/logout', asyncHandler(async (req, res) => {
+    if (req.session) {
+      await db.query(`DELETE FROM sessions WHERE token_hash = $1`, [req.session.tokenHash]);
+      logger.info('user_logout', { userId: req.user.id });
+    }
     clearSessionCookie(res);
-    logger.info('user_logout', { userId: req.user.id });
     res.json({ ok: true });
   }));
 

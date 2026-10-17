@@ -120,6 +120,20 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-01 修复（§6 审查意见 1~4）
+
+- **背景**：Lead 审查（§6）指出 2 个并发竞态必须修复，另 2 条建议顺手改。本分支已 `git merge origin/main`（67fb2f5）后修复，仍在同一分支追加提交。
+- **改动（文件/模块）**：`server/src/auth/sms.js`（意见 1、2、3）、`server/src/auth/routes.js`（意见 4）、`server/src/auth/index.js`（console provider 接收 config）、`server/test/auth.test.js`（新增 4 个用例并调整 logout 401 断言）。
+- **核心实现**：
+  1. 发码竞态：「冷却检查 → 作废旧码 → 插入新码」放进带 `pg_advisory_xact_lock(hashtext('sms:' || phone))` 的短事务，同手机号并发请求在此串行化，冷却不可被并发绕过；短信 provider 发送仍在事务外，发送失败按行 id 删除、不占冷却。
+  2. 错误次数竞态：改为**先原子占用一次尝试再比对哈希**（`UPDATE … SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < 上限 RETURNING id`，无返回行即拒绝），占用语句自带行锁，并发提交不再读到旧值；错达上限即作废；正确路径保留短事务行锁复核，防并发同码双登录。
+  3. console provider 文案按 `codeTtlSeconds` 向上取整到分钟输出，不再写死「10 分钟」。
+  4. `POST /auth/logout` 去掉 `requireAuth`：无会话（含已过期 Cookie）也清 Cookie 并返回 `{ ok: true }`，与 API.md §1 一致；有会话时仍校验 CSRF 并删除会话行。
+- **验证（命令与结果）**：
+  - `npm run test:server`：52 通过 0 失败，连续 4 轮稳定。新增并发回归：同手机号并发 10 次发码仅 1 次 200、仅发 1 条短信、未作废码仅 1 条（其余 9 次 429 `SMS_COOLDOWN`）；并发 15 个错误验证码 `attempts=5`（比对次数不超上限）且已作废。另新增无会话 logout 200+清 Cookie、console 文案 5 分钟/2 分钟两例。
+  - `npm run check` 0 错误；`npm run build` 成功。
+- **未完成 / 风险**：同上一条记录；`rate_counters`/过期 `sms_codes`/过期 `sessions` 清理已由 Lead 登记进 M1-BE-03，免费次数按北京时间切日登记在 M1-BE-05，本分支不处理。
+
 ### 2026-10-17 · BE-Core · M1-BE-01 认证
 
 - **背景**：M1 骨架跑通的第一个任务。复用 L-02 的 `users` `sms_codes` `sessions` `rate_counters` 表结构与既有错误码，无需新迁移，未改 `docs/API.md`（即无需 §5 变更申请）。

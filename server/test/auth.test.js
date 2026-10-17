@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { createApp } from '../src/app.js';
+import { consoleSmsProvider } from '../src/auth/sms.js';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
 import { createTestDb } from './helpers/db.js';
@@ -83,7 +84,7 @@ describe('auth（M1-BE-01）', () => {
   });
 
   test('未登录访问受保护接口返回 401 UNAUTHENTICATED', async () => {
-    for (const [method, path] of [['GET', '/auth/me'], ['POST', '/auth/logout'], ['PATCH', '/me/onboarding']]) {
+    for (const [method, path] of [['GET', '/auth/me'], ['PATCH', '/me/onboarding']]) {
       const res = await request(base, method, path, { body: method === 'GET' ? undefined : {} });
       assert.equal(res.status, 401);
       assert.equal((await res.json()).code, 'UNAUTHENTICATED');
@@ -294,6 +295,14 @@ describe('auth（M1-BE-01）', () => {
     assert.equal(me.status, 401);
   });
 
+  test('无会话 logout 也返回 200 并清除 Cookie（审查意见 4）', async () => {
+    const res = await post(base, '/auth/logout', undefined, { cookie: 'miv_sid=stale-token' });
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { ok: true });
+    const cleared = res.headers.getSetCookie().find((c) => c.startsWith('miv_sid='));
+    assert.ok(cleared && /Expires=Thu, 01 Jan 1970|Max-Age=0/.test(cleared), '应下发清除 Cookie');
+  });
+
   test('无 Origin 头的写请求放行（非浏览器客户端）', async () => {
     const phone = '13800000016';
     const sms = await post(base, '/auth/sms', { phone }, { origin: undefined });
@@ -313,6 +322,49 @@ describe('auth（M1-BE-01）', () => {
     assert.ok(!provider.sent.some((s) => s.phone === phone), '失败的发送不应记录');
     const retry = await post(base, '/auth/sms', { phone });
     assert.equal(retry.status, 200, '发送失败不应触发冷却');
+  });
+
+  test('并发回归（审查意见 1）：同手机号并发 10 次发码只成功 1 次、只发 1 条、未作废码仅 1 条', async () => {
+    const phone = '13800000020';
+    const results = await Promise.all(Array.from({ length: 10 }, () => post(base, '/auth/sms', { phone })));
+    const ok = results.filter((r) => r.status === 200);
+    const cooled = results.filter((r) => r.status === 429);
+    assert.equal(ok.length, 1, '冷却只允许 1 次成功');
+    assert.equal(cooled.length, 9);
+    for (const r of cooled) assert.equal((await r.json()).code, 'SMS_COOLDOWN');
+    assert.equal(provider.sent.filter((s) => s.phone === phone).length, 1, '只应实际发送 1 条短信');
+    const { rows } = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM sms_codes WHERE phone = $1 AND consumed_at IS NULL`,
+      [phone],
+    );
+    assert.equal(rows[0].n, 1, '未作废验证码只应有 1 条');
+  });
+
+  test('并发回归（审查意见 2）：并发 15 个错误验证码，被占用的尝试不超过 5 次且作废', async () => {
+    const phone = '13800000021';
+    await post(base, '/auth/sms', { phone });
+    const results = await Promise.all(
+      Array.from({ length: 15 }, () => post(base, '/auth/login', { phone, code: '000000', agreeTerms: true })),
+    );
+    assert.equal(results.filter((r) => r.status === 400).length, 15, '全部拒绝');
+    const { rows } = await ctx.db.query(`SELECT attempts, consumed_at FROM sms_codes WHERE phone = $1`, [phone]);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].attempts, 5, '哈希比对次数不应超过上限');
+    assert.ok(rows[0].consumed_at, '达上限应作废');
+  });
+
+  test('console provider 文案按配置显示有效期（审查意见 3）', async () => {
+    const logs = [];
+    const original = console.log;
+    console.log = (msg) => logs.push(msg);
+    try {
+      await consoleSmsProvider(loadConfig({ NODE_ENV: 'test', SMS_CODE_TTL_SECONDS: '300' })).send({ phone: '13800000022', code: '123456' });
+      await consoleSmsProvider(loadConfig({ NODE_ENV: 'test', SMS_CODE_TTL_SECONDS: '90' })).send({ phone: '13800000022', code: '123456' });
+    } finally {
+      console.log = original;
+    }
+    assert.ok(logs.some((m) => m.includes('5 分钟内有效')), logs.join(' | '));
+    assert.ok(logs.some((m) => m.includes('2 分钟内有效')), logs.join(' | '));
   });
 
   test('独立限流配置：单手机号每日发送上限', async () => {
