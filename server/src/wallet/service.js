@@ -20,17 +20,21 @@ async function insertLedger(t, { userId, kind, amountFen, frozenDeltaFen, title,
 }
 
 /**
- * 幂等包装：先锁幂等键再查首次流水。命中时按 expect（snake 列名 → 期望值，undefined 字段跳过）
- * 逐项比对，不一致抛 409；一致返回首次结果，不再执行 fn。
+ * 幂等包装：先锁幂等键再查首次流水（§6 审查 3：幂等键是客户端生成的，命中他人流水视为冲突）。
+ * 命中时按 expect（snake 列名 → 期望值，undefined 字段跳过；§6 审查 4：settle/refund/reserve
+ * 的 amount_fen 恒 0 或单一值，必须连 frozen_delta_fen 一起比对）逐项核对，不一致抛 409；
+ * 一致返回首次结果，不再执行 fn。
  */
-async function withIdempotency(t, { idempotencyKey, expect }, fn) {
+async function withIdempotency(t, { userId, idempotencyKey, expect }, fn) {
   await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`miv:wallet:${idempotencyKey}`]);
   const { rows } = await t.query(
-    `SELECT id, kind, amount_fen, title, ref_type, ref_id, created_at FROM ledger WHERE idempotency_key = $1`,
+    `SELECT id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, created_at
+       FROM ledger WHERE idempotency_key = $1`,
     [idempotencyKey],
   );
   if (rows.length) {
     const first = rows[0];
+    if (first.user_id !== userId) throw appError('IDEMPOTENCY_CONFLICT');
     for (const [column, expected] of Object.entries(expect)) {
       if (expected !== undefined && first[column] !== expected) throw appError('IDEMPOTENCY_CONFLICT');
     }
@@ -39,11 +43,18 @@ async function withIdempotency(t, { idempotencyKey, expect }, fn) {
   return fn();
 }
 
+/** 金额入口校验（§6 审查 2）：账本操作金额恒为正整数；0 或负数说明调用方有 bug，直接拒绝（不写流水、不动余额）。 */
+function assertAmount(amountFen) {
+  if (!Number.isSafeInteger(amountFen) || amountFen <= 0) throw appError('INTERNAL', '金额参数非法');
+}
+
 /** 预占：可用 → 冻结。余额不足 402 INSUFFICIENT_BALANCE。 */
-export async function reserve(t, { userId, amountFen, refType, refId, idempotencyKey, title }) {
+export async function reserve(t, op) {
+  assertAmount(op.amountFen);
+  const { userId, amountFen, refType, refId, idempotencyKey, title } = op;
   const result = await withIdempotency(
     t,
-    { idempotencyKey, expect: { kind: 'reserve', amount_fen: -amountFen, ref_type: refType, ref_id: refId } },
+    { userId, idempotencyKey, expect: { kind: 'reserve', amount_fen: -amountFen, frozen_delta_fen: amountFen, ref_type: refType, ref_id: refId } },
     async () => {
       const { rowCount } = await t.query(
         `UPDATE wallets SET available_fen = available_fen - $2, frozen_fen = frozen_fen + $2, updated_at = now()
@@ -59,10 +70,12 @@ export async function reserve(t, { userId, amountFen, refType, refId, idempotenc
 }
 
 /** 结算：冻结 → 扣除。冻结不足属调用方状态错误，按 500 兜底暴露。 */
-export async function settle(t, { userId, amountFen, refType, refId, idempotencyKey, title }) {
+export async function settle(t, op) {
+  assertAmount(op.amountFen);
+  const { userId, amountFen, refType, refId, idempotencyKey, title } = op;
   const result = await withIdempotency(
     t,
-    { idempotencyKey, expect: { kind: 'settle', amount_fen: 0, ref_type: refType, ref_id: refId } },
+    { userId, idempotencyKey, expect: { kind: 'settle', amount_fen: 0, frozen_delta_fen: -amountFen, ref_type: refType, ref_id: refId } },
     async () => {
       const { rowCount } = await t.query(
         `UPDATE wallets SET frozen_fen = frozen_fen - $2, updated_at = now()
@@ -78,10 +91,12 @@ export async function settle(t, { userId, amountFen, refType, refId, idempotency
 }
 
 /** 退回：冻结 → 可用。失败退回与取消退回共用。 */
-export async function refund(t, { userId, amountFen, refType, refId, idempotencyKey, title }) {
+export async function refund(t, op) {
+  assertAmount(op.amountFen);
+  const { userId, amountFen, refType, refId, idempotencyKey, title } = op;
   const result = await withIdempotency(
     t,
-    { idempotencyKey, expect: { kind: 'refund', amount_fen: amountFen, ref_type: refType, ref_id: refId } },
+    { userId, idempotencyKey, expect: { kind: 'refund', amount_fen: amountFen, frozen_delta_fen: -amountFen, ref_type: refType, ref_id: refId } },
     async () => {
       const { rowCount } = await t.query(
         `UPDATE wallets SET available_fen = available_fen + $2, frozen_fen = frozen_fen - $2, updated_at = now()
@@ -97,10 +112,12 @@ export async function refund(t, { userId, amountFen, refType, refId, idempotency
 }
 
 /** 直接扣费：从可用余额扣除（不走冻结）。余额不足 402。 */
-export async function charge(t, { userId, amountFen, refType, refId, idempotencyKey, title }) {
+export async function charge(t, op) {
+  assertAmount(op.amountFen);
+  const { userId, amountFen, refType, refId, idempotencyKey, title } = op;
   const result = await withIdempotency(
     t,
-    { idempotencyKey, expect: { kind: 'charge', amount_fen: -amountFen, ref_type: refType, ref_id: refId } },
+    { userId, idempotencyKey, expect: { kind: 'charge', amount_fen: -amountFen, frozen_delta_fen: 0, ref_type: refType, ref_id: refId } },
     async () => {
       const { rowCount } = await t.query(
         `UPDATE wallets SET available_fen = available_fen - $2, updated_at = now()
@@ -120,7 +137,7 @@ export async function redeem(t, { userId, code, idempotencyKey }) {
   const hash = redeemCodeHash(code);
   const result = await withIdempotency(
     t,
-    { idempotencyKey, expect: { kind: 'redeem', ref_type: 'redeem_code', ref_id: hash } },
+    { userId, idempotencyKey, expect: { kind: 'redeem', ref_type: 'redeem_code', ref_id: hash } },
     async () => {
       const { rows } = await t.query(
         `UPDATE redeem_codes SET used_by = $1, used_at = now()
@@ -150,25 +167,33 @@ function serializeEntry(row) {
   return { id: row.id, kind: row.kind, amountFen: row.amount_fen, title: row.title, createdAt: row.created_at.toISOString() };
 }
 
-/** 流水分页：keyset（created_at DESC, id DESC），cursor 为 `ISO~led_xxx`。 */
+/**
+ * 流水分页：keyset（created_at DESC, id DESC）。
+ * §6 审查 1：游标用微秒时间戳——toISOString 只有毫秒，而库内 created_at 是微秒，
+ * 同一事务内多条流水 created_at 完全相同（now() 是事务开始时间），毫秒游标会整段跳过它们。
+ */
 export async function listLedger(db, { userId, cursor, limit }) {
   const values = [userId, limit + 1];
   let where = 'user_id = $1';
   if (cursor) {
     const sep = cursor.lastIndexOf('~');
-    const createdAt = sep > 0 ? new Date(cursor.slice(0, sep)) : null;
+    const createdUs = sep > 0 ? Number(cursor.slice(0, sep)) : NaN;
     const id = sep > 0 ? cursor.slice(sep + 1) : '';
-    if (!createdAt || Number.isNaN(createdAt.getTime()) || !id) throw appError('VALIDATION_FAILED', undefined, { fields: { cursor: '格式不正确' } });
-    values.push(createdAt, id);
-    where += ' AND (created_at, id) < ($3, $4)';
+    if (!Number.isSafeInteger(createdUs) || createdUs < 0 || !id) throw appError('VALIDATION_FAILED', undefined, { fields: { cursor: '格式不正确' } });
+    values.push(createdUs, id);
+    where += ' AND ((extract(epoch from created_at) * 1000000)::bigint, id) < ($3, $4)';
   }
   const { rows } = await db.query(
-    `SELECT id, kind, amount_fen, title, created_at FROM ledger WHERE ${where}
+    `SELECT id, kind, amount_fen, title, created_at, (extract(epoch from created_at) * 1000000)::bigint AS created_us
+       FROM ledger WHERE ${where}
       ORDER BY created_at DESC, id DESC LIMIT $2`,
     values,
   );
   const hasMore = rows.length > limit;
-  const items = rows.slice(0, limit).map(serializeEntry);
-  const last = items.at(-1);
-  return { items, nextCursor: hasMore && last ? `${last.createdAt}~${last.id}` : null };
+  const page = rows.slice(0, limit);
+  const lastRow = page.at(-1);
+  return {
+    items: page.map(serializeEntry),
+    nextCursor: hasMore && lastRow ? `${lastRow.created_us}~${lastRow.id}` : null,
+  };
 }

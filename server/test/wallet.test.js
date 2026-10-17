@@ -132,15 +132,16 @@ describe('wallet（M1-BE-02）', () => {
   });
 
   test('并发兑换同一码（不同幂等键）只成功一次', async () => {
+    const f = await signUp(base, provider, '15800000006'); // 独立用户，避免与兑换码尝试上限计数互相干扰
     await insertRedeemCode(ctx.db, 'MIV-TEST-CODE-0003', 777);
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, i) =>
-        post(base, '/wallet/redeem', { code: 'MIV-TEST-CODE-0003', idempotencyKey: `idem-race-000${i}` }, { cookie, csrf })),
+        post(base, '/wallet/redeem', { code: 'MIV-TEST-CODE-0003', idempotencyKey: `idem-race-000${i}` }, { cookie: f.cookie, csrf: f.body.csrfToken })),
     );
     assert.equal(results.filter((r) => r.status === 200).length, 1);
     assert.equal(results.filter((r) => r.status === 400).length, 7);
-    const wallet = await (await request(base, 'GET', '/wallet', { cookie })).json();
-    assert.equal(wallet.availableFen, 1777);
+    const wallet = await (await request(base, 'GET', '/wallet', { cookie: f.cookie })).json();
+    assert.equal(wallet.availableFen, 777);
   });
 
   test('流水分页：keyset 翻页与非法 cursor', async () => {
@@ -164,19 +165,30 @@ describe('wallet（M1-BE-02）', () => {
     assert.ok((await bad.json()).details.fields.cursor);
   });
 
-  test('报价估算：默认口径 min/max，档位或风格非法 400，他人数字人 404', async () => {
+  test('报价估算：PRD 默认口径（30 秒下限，缺形象计入上下限），档位或风格非法 400，他人数字人 404', async () => {
     await insertCharacter(ctx.db, 'chr_a1', userA);
     await insertCharacter(ctx.db, 'chr_a2', userA);
+    await ctx.db.query(`INSERT INTO characters (id, user_id, name) VALUES ('chr_a3', $1, '测试角色')`, [userA]);
+    // chr_a1：本风格已有 succeeded 选中形象（不计缺形象）；chr_a3：选中形象 failed（计缺形象）
+    // selected_version_id 的 FK 是 DEFERRABLE，须在同一事务内插入环引用的两表
+    await ctx.db.tx(async (t) => {
+      await t.query(`INSERT INTO character_looks (id, character_id, style_id, selected_version_id) VALUES ('cl_a1', 'chr_a1', 'realistic', 'lkv_a1')`);
+      await t.query(`INSERT INTO look_versions (id, look_id, status) VALUES ('lkv_a1', 'cl_a1', 'succeeded')`);
+      await t.query(`INSERT INTO character_looks (id, character_id, style_id, selected_version_id) VALUES ('cl_a3', 'chr_a3', 'realistic', 'lkv_a3')`);
+      await t.query(`INSERT INTO look_versions (id, look_id, status) VALUES ('lkv_a3', 'cl_a3', 'failed')`);
+    });
     const estimate = (body) => post(base, '/quotes/estimate', body, { cookie, csrf });
     let res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { minFen: 100, maxFen: 1800 });
+    assert.deepEqual(await res.json(), { minFen: 600, maxFen: 1800 });
 
-    res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: ['chr_a1', 'chr_a2'] });
-    assert.deepEqual(await res.json(), { minFen: 100, maxFen: 1900 });
+    res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: ['chr_a1', 'chr_a2', 'chr_a3'] });
+    assert.equal(res.status, 200);
+    // 3 个勾选中 2 个缺形象：min = 20×30 + 2×50，max = 20×90 + 2×50
+    assert.deepEqual(await res.json(), { minFen: 700, maxFen: 1900 });
 
     res = await estimate({ qualityTierId: 'hd', styleId: 'realistic', characterIds: [] });
-    assert.deepEqual(await res.json(), { minFen: 200, maxFen: 3600 });
+    assert.deepEqual(await res.json(), { minFen: 1200, maxFen: 3600 });
 
     res = await estimate({ qualityTierId: 'nope', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 400);
@@ -248,26 +260,54 @@ describe('wallet（M1-BE-02）', () => {
 
   test('consumeQuote：原子占用成功后再次使用返回 QUOTE_EXPIRED；未知报价 NOT_FOUND', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
-    const first = await ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId }));
+    const ref = { kind: 'look_regenerate', refType: 'character', refId: 'chr_a1' };
+    const first = await ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, ...ref }));
     assert.equal(first.quote.id, created.quoteId);
     assert.equal(first.priced.amountFen, 50);
     const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
     assert.ok(rows[0].consumed_at);
     await assert.rejects(
-      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId })),
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, ...ref })),
       (err) => err.code === 'QUOTE_EXPIRED',
     );
     await assert.rejects(
-      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: 'qt_nope' })),
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: 'qt_nope', ...ref })),
       (err) => err.code === 'NOT_FOUND',
     );
+  });
+
+  test('consumeQuote 归属校验（§6 审查 5）：声明与报价不符返回 QUOTE_MISMATCH，占用回滚', async () => {
+    const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
+    // 拿 chr_a1 的报价去确认 chr_a2
+    await assert.rejects(
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, kind: 'look_regenerate', refType: 'character', refId: 'chr_a2' })),
+      (err) => err.code === 'QUOTE_MISMATCH',
+    );
+    // 换一个 kind 声明
+    await assert.rejects(
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, kind: 'project_render', refType: 'project', refId: 'chr_a1' })),
+      (err) => err.code === 'QUOTE_MISMATCH',
+    );
+    const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
+    assert.equal(rows[0].consumed_at, null, '归属不符的占用应随事务回滚');
+  });
+
+  test('segment_take 跨作品报价 404（§6 审查 5）', async () => {
+    await insertProject(ctx.db, 'prj_b1', userA);
+    await insertSegment(ctx.db, 'seg_b1', 'prj_b1', 0, 20);
+    // seg_b1 属于 prj_b1，却声明 prj_a1 → 404
+    const bad = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_a1', segmentId: 'seg_b1' }, { cookie, csrf });
+    assert.equal(bad.status, 404);
+    const ok = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_b1', segmentId: 'seg_b1' }, { cookie, csrf });
+    assert.equal(ok.status, 200);
+    assert.equal((await ok.json()).amountFen, 400);
   });
 
   test('过期报价使用返回 QUOTE_EXPIRED', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
     await ctx.db.query(`UPDATE quotes SET expires_at = now() - interval '1 second' WHERE id = $1`, [created.quoteId]);
     await assert.rejects(
-      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId })),
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, kind: 'look_regenerate', refType: 'character', refId: 'chr_a1' })),
       (err) => err.code === 'QUOTE_EXPIRED',
     );
   });
@@ -281,7 +321,7 @@ describe('wallet（M1-BE-02）', () => {
     );
     try {
       await assert.rejects(
-        () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId })),
+        () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, kind: 'look_regenerate', refType: 'character', refId: 'chr_a1' })),
         (err) => err.code === 'QUOTE_MISMATCH',
       );
       const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
@@ -295,7 +335,7 @@ describe('wallet（M1-BE-02）', () => {
     const created = await (await post(base, '/quotes', { kind: 'project_render', projectId: 'prj_a1' }, { cookie, csrf })).json();
     await insertSegment(ctx.db, 'seg_a3', 'prj_a1', 2, 15);
     await assert.rejects(
-      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId })),
+      () => ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, kind: 'project_render', refType: 'project', refId: 'prj_a1' })),
       (err) => err.code === 'QUOTE_MISMATCH',
     );
   });
@@ -367,5 +407,77 @@ describe('wallet（M1-BE-02）', () => {
       })),
       (err) => err.code === 'INTERNAL',
     );
+  });
+
+  test('金额入口校验（§6 审查 2）：负数与 0 一律 INTERNAL 且不动余额', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 500, frozen_fen = 0 WHERE user_id = $1`, [userA]);
+    for (const amountFen of [-500, 0]) {
+      await assert.rejects(
+        () => ctx.db.tx((t) => charge(t, { userId: userA, amountFen, refType: 'test', refId: 'amt', idempotencyKey: `test-amt-c-${amountFen}`, title: '测试' })),
+        (err) => err.code === 'INTERNAL',
+      );
+      await assert.rejects(
+        () => ctx.db.tx((t) => reserve(t, { userId: userA, amountFen, refType: 'test', refId: 'amt', idempotencyKey: `test-amt-r-${amountFen}`, title: '测试' })),
+        (err) => err.code === 'INTERNAL',
+      );
+    }
+    const wallet = await (await request(base, 'GET', '/wallet', { cookie })).json();
+    assert.deepEqual(wallet, { availableFen: 500, frozenFen: 0 });
+  });
+
+  test('幂等键跨用户冲突（§6 审查 3）：他人复用同键返回 409 且不动余额', async () => {
+    await ctx.db.tx((t) => charge(t, { userId: userA, amountFen: 10, refType: 'test', refId: 'k1', idempotencyKey: 'test-cross-user-1', title: '测试' }));
+    const before = await (await request(base, 'GET', '/wallet', { cookie })).json();
+    await assert.rejects(
+      () => ctx.db.tx((t) => charge(t, { userId: 'usr_other00000001', amountFen: 10, refType: 'test', refId: 'k1', idempotencyKey: 'test-cross-user-1', title: '测试' })),
+      (err) => err.code === 'IDEMPOTENCY_CONFLICT',
+    );
+    const after = await (await request(base, 'GET', '/wallet', { cookie })).json();
+    assert.deepEqual(after, before, '他人复用幂等键不得影响任何一方余额');
+  });
+
+  test('重放比对含 frozen_delta_fen（§6 审查 4）：同键不同结算金额返回 409', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 300, frozen_fen = 0 WHERE user_id = $1`, [userA]);
+    await ctx.db.tx((t) => reserve(t, { userId: userA, amountFen: 100, refType: 'test', refId: 'fd', idempotencyKey: 'test-fd-r', title: '测试' }));
+    await ctx.db.tx((t) => settle(t, { userId: userA, amountFen: 100, refType: 'test', refId: 'fd', idempotencyKey: 'test-fd-s', title: '测试' }));
+    await assert.rejects(
+      () => ctx.db.tx((t) => settle(t, { userId: userA, amountFen: 200, refType: 'test', refId: 'fd', idempotencyKey: 'test-fd-s', title: '测试' })),
+      (err) => err.code === 'IDEMPOTENCY_CONFLICT',
+    );
+  });
+
+  test('同事务多条流水翻页不丢不重（§6 审查 1）', async () => {
+    const d = await signUp(base, provider, '15800000004');
+    const userIdD = d.body.user.id;
+    await ctx.db.query(`UPDATE wallets SET available_fen = 100, frozen_fen = 0 WHERE user_id = $1`, [userIdD]);
+    // 同一事务内 3 笔流水：created_at 完全相同（now() 为事务开始时间），毫秒游标会整段跳过
+    await ctx.db.tx(async (t) => {
+      for (let i = 0; i < 3; i += 1) {
+        await charge(t, { userId: userIdD, amountFen: 1, refType: 'test', refId: `t${i}`, idempotencyKey: `test-page-${i}`, title: '测试扣费' });
+      }
+    });
+    const seen = [];
+    let cursor = '';
+    for (let page = 0; page < 6; page += 1) {
+      const res = await request(base, 'GET', `/wallet/ledger?limit=1${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`, { cookie: d.cookie });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      seen.push(...body.items.map((i) => i.id));
+      if (!body.nextCursor) break;
+      cursor = body.nextCursor;
+    }
+    assert.equal(seen.length, 3, `应逐页翻满 3 条，实际 ${seen.length}`);
+    assert.equal(new Set(seen).size, 3, '翻页不得重复');
+  });
+
+  test('兑换码尝试上限（§6 审查 7）：同一用户 1 小时内最多 10 次', async () => {
+    const e = await signUp(base, provider, '15800000005');
+    for (let i = 0; i < 10; i += 1) {
+      const res = await post(base, '/wallet/redeem', { code: 'MIV-GUESS', idempotencyKey: `test-guess-${i}` }, { cookie: e.cookie, csrf: e.body.csrfToken });
+      assert.equal(res.status, 400, `第 ${i + 1} 次应为验证失败`);
+    }
+    const limited = await post(base, '/wallet/redeem', { code: 'MIV-GUESS', idempotencyKey: 'test-guess-11' }, { cookie: e.cookie, csrf: e.body.csrfToken });
+    assert.equal(limited.status, 429);
+    assert.equal((await limited.json()).code, 'RATE_LIMITED');
   });
 });

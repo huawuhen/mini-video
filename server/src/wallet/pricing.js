@@ -124,14 +124,14 @@ async function priceProjectRender(t, { userId, projectId }) {
   };
 }
 
-/** 交付后重生成单个片段；同样按作品锁定的 tier_mapping_id 取价。 */
-async function priceSegmentTake(t, { userId, segmentId }) {
+/** 交付后重生成单个片段；同样按作品锁定的 tier_mapping_id 取价。§6 审查 5：校验 segment 属于传入的作品。 */
+async function priceSegmentTake(t, { userId, projectId, segmentId }) {
   const { rows } = await t.query(
     `SELECT s.id, s.idx, s.duration_seconds, p.tier_mapping_id
        FROM segments s
-       JOIN projects p ON p.id = s.project_id AND p.user_id = $2 AND p.deleted_at IS NULL
-      WHERE s.id = $1`,
-    [segmentId, userId],
+       JOIN projects p ON p.id = s.project_id AND p.deleted_at IS NULL
+      WHERE s.id = $1 AND p.id = $2 AND p.user_id = $3`,
+    [segmentId, projectId, userId],
   );
   if (!rows.length) throw appError('NOT_FOUND');
   const segment = rows[0];
@@ -140,8 +140,8 @@ async function priceSegmentTake(t, { userId, segmentId }) {
   return {
     amountFen,
     breakdown: [{ label: `片段 ${segment.idx + 1} · ${segment.duration_seconds} 秒 · ${sku.tier_name}`, amountFen }],
-    paramsHash: sha256(JSON.stringify({ kind: 'segment_take', segmentId, durationSeconds: segment.duration_seconds })),
-    priceSnapshot: { request: { segmentId }, video: { skuCode: sku.sku_code, version: sku.version, unitFen: sku.price_fen } },
+    paramsHash: sha256(JSON.stringify({ kind: 'segment_take', projectId, segmentId, durationSeconds: segment.duration_seconds })),
+    priceSnapshot: { request: { projectId, segmentId }, video: { skuCode: sku.sku_code, version: sku.version, unitFen: sku.price_fen } },
     refType: 'segment',
     refId: segmentId,
   };
@@ -170,8 +170,13 @@ export async function createQuote(t, { userId, request }) {
   return { quoteId: row.id, kind: row.kind, amountFen: row.amount_fen, breakdown: row.breakdown, expiresAt: row.expires_at.toISOString() };
 }
 
-/** 原子占用报价并按当前状态与价格重算（要点 c）。MISMATCH/EXPIRED 抛错时占用随调用方事务回滚。 */
-export async function consumeQuote(t, { userId, quoteId }) {
+/**
+ * 原子占用报价并按当前状态与价格重算（要点 c）。
+ * §6 审查 5：调用方必须声明正在确认的资源（kind/refType/refId），与报价不一致抛 QUOTE_MISMATCH，
+ * 防止「拿 A 作品的便宜报价确认 B 作品」；MISMATCH/EXPIRED 抛错时占用随调用方事务回滚。
+ */
+export async function consumeQuote(t, { userId, quoteId, kind, refType, refId }) {
+  if (!kind || !refType || !refId) throw appError('INTERNAL', 'consumeQuote 缺少 kind/refType/refId');
   const { rows } = await t.query(
     `UPDATE quotes SET consumed_at = now()
       WHERE id = $1 AND user_id = $2 AND consumed_at IS NULL AND expires_at > now()
@@ -184,6 +189,9 @@ export async function consumeQuote(t, { userId, quoteId }) {
     throw appError('QUOTE_EXPIRED');
   }
   const quote = rows[0];
+  if (quote.kind !== kind || quote.ref_type !== refType || quote.ref_id !== refId) {
+    throw appError('QUOTE_MISMATCH');
+  }
   const priced = await QUOTE_KINDS[quote.kind].fn(t, { userId, ...quote.price_snapshot.request });
   if (priced.paramsHash !== quote.params_hash || priced.amountFen !== quote.amount_fen) {
     throw appError('QUOTE_MISMATCH');
@@ -210,9 +218,10 @@ export async function getActiveTierSku(t, tierId) {
 }
 
 /**
- * 首页价格区间估算（不生成报价单）。
- * 【默认口径，待用户确认（HANDOFF §4.3）】：min = 档位单价 × SKU 最短单段时长 × 1 段（不含形象费）；
- * max = 档位单价 × 最长作品时长 + 勾选数字人数 × 形象单价。
+ * 首页价格区间估算（不生成报价单）。PRD §6.3【默认口径，§6 审查 6 已对齐】：
+ * 下限 = 1 个 30 秒片段的视频费（30 取 min(30, SKU 最长单段时长)）；
+ * 上限 = 最长作品时长的视频费；
+ * 形象费按「本风格缺形象的已勾选数字人数」计入上下限（缺形象 = 无该风格形象，或选中版本不是 succeeded）。
  */
 export async function estimateQuote(t, { userId, qualityTierId, styleId, characterIds }) {
   const { rows: styles } = await t.query(`SELECT id FROM styles WHERE id = $1 AND status = 'active'`, [styleId]);
@@ -228,9 +237,22 @@ export async function estimateQuote(t, { userId, qualityTierId, styleId, charact
   if (!tier) throw appError('VALIDATION_FAILED', undefined, { fields: { qualityTierId: '取值不正确' } });
   const imageSku = await getImageSku(t);
   const maxSeconds = getSettingNumber(await getSettingValue(t, 'max_duration_seconds'), 90);
-  const durations = Array.isArray(tier.durations) && tier.durations.length ? tier.durations : [5];
+  const durations = Array.isArray(tier.durations) && tier.durations.length ? tier.durations : [30];
+  const baseSeconds = Math.min(30, Math.max(...durations));
+  const { rows: missing } = await t.query(
+    `SELECT count(*)::int AS n
+       FROM characters c
+      WHERE c.id = ANY($1) AND c.user_id = $2 AND c.deleted_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+            FROM character_looks cl
+            JOIN look_versions lv ON lv.id = cl.selected_version_id
+           WHERE cl.character_id = c.id AND cl.style_id = $3 AND lv.status = 'succeeded')`,
+    [characterIds, userId, styleId],
+  );
+  const looksFen = missing[0].n * imageSku.price_fen;
   return {
-    minFen: tier.price_fen * Math.min(...durations),
-    maxFen: tier.price_fen * maxSeconds + imageSku.price_fen * characterIds.length,
+    minFen: tier.price_fen * baseSeconds + looksFen,
+    maxFen: tier.price_fen * maxSeconds + looksFen,
   };
 }
