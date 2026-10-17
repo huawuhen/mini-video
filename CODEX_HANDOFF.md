@@ -66,7 +66,7 @@
 | M1-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-01-auth` | `server/src/auth/**` `server/src/config.js` `server/src/app.js` `server/test/auth.test.js` `server/.env.example` | ✅ 完成（Lead 复审通过并合并 `6a741a7`） | 2026-10-17 |
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/assets.test.js` | 进行中 | 2026-10-17 |
+| M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,helpers/providers.js}` | 待审查 | 2026-10-17 |
 | M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（开发 Agent，可与 BE 并行） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
@@ -128,6 +128,26 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · BE-Core · M1-BE-04 数字资产库与上传
+
+- **背景**：M1 第四个任务，按 §6 M1-BE-04 开工要点 a~g 实现。依赖 M1-BE-02（报价/钱包）与 M1-BE-03（uploads.sweep）均已就绪。无需新迁移、未改 `docs/API.md`；新增依赖 `busboy@1.6.0`（版本写死）。
+- **改动（文件/模块）**：新增 `server/src/characters/service.js`、`server/src/api/{uploads,characters}.js`、`server/test/helpers/providers.js`（模拟图片模型）；`app.js`（挂载路由 + `storage`/`extractText` 注入，生产缺省报错）、`worker.js`（注册 `look.generate`，生产未注入 `imageProvider` 报错）、`config.js`/`.env.example`（`UPLOADS_MAX_UNREFERENCED=50`）；新增 `server/test/assets.test.js`（12 用例），cron.test.js 期望的处理器清单加 `look.generate`。
+- **核心实现**：
+  - 上传（要点 a）：busboy 流式解析（`defParamCharset: 'utf8'` 修正中文文件名）；图片按**文件头**识别 jpg/png/webp，>10MB 立即中断返回 `UPLOAD_TOO_LARGE`；key `users/<uid>/uploads/<uplId>`；未引用图片按用户限量（默认 50，超出 `RATE_LIMITED`）。故事 txt UTF-8 去 BOM 提取，docx（PK 头）走注入的 `extractText`，未注入返回 `UPLOAD_TYPE_INVALID`；只提取不落库，标题取文件名去扩展名。
+  - 引用（要点 b）：创建/替换照片在同一事务条件 UPDATE 引用上传（`RETURNING id` 行数不符 400，覆盖他人/已清理/不存在）；整体替换先删旧关联行再引用新照片，被替换旧照片**解除引用**交由 uploads.sweep 回收；同数字人并发替换用 advisory 锁串行化（并发全 200、最终一致）。
+  - 数字人（要点 c）：全部查询带 `user_id`、他人 404；无照片必填描述（description 列 NOT NULL，空串表示无）；`defaultVoiceId` 须为上架音色、显式 `null` 清除；软删除不动形象版本与历史作品引用；`avatarUrl` 优先最近成功选中形象、`styleIds` 只算成功选中版本、`worksCount` 按未删除作品计；媒体地址一律走注入 `urlFor`，缺素材省略字段。
+  - 生成形象（要点 d）：一个事务完成 `consumeQuote({kind:'look_regenerate', refType:'character', refId})`（按 BE-02 三元组约定）→ `reserve`（金额 0 跳过，钱包约定）→ `character_looks` 补行 → `look_versions(pending)` + `gen_tasks` → `enqueue look.generate`，202 返回 LookVersion；幂等键 `look.create:<uid>:<key>`，重放返回同一版本、不重复扣费；余额不足 402 且不留版本（报价消费随事务回滚）。
+  - look.generate（要点 e）：`created→submitting` 提交守卫（submitting 超 10 分钟视为上次已死，允许重提）；上游调用与转存全在事务外，异常回退状态交队列重试；`unknown` 保持 pending + 冻结 + `gen_tasks=unknown`，job 正常完成不重提；成功转存 `users/<uid>/looks/<versionId>`、**自动选中新版本**（旧版本保留）、结算；失败置 failed、全额退回。结算/退回走 `look:<versionId>:settle|refund` 幂等键，且版本状态迁移带 `AND status='pending'` 守卫——重复执行、租约被抢都不会重复动钱。
+- **验证（命令与结果）**：
+  - `npm run test:server`：96 通过 0 失败（83 → 96，新增 12 用例覆盖要点 g 全部必测：文件头伪装/超大/上限 429、引用他人与已清理上传 400、并发替换最终一致、并发重放只扣一次、402 不留版本、失败全额退回对账、unknown 冻结不重提、重复执行不重复结算/退回、软删除后历史作品 join 可用、生产守卫）。
+  - `npm run check` 0 错误；`npm run build` 成功；连续 6 轮稳定。
+- **未完成 / 风险**：
+  - 图片 provider 与 storage 为注入接口：测试用 `test/helpers/providers.js` 与内存实现；ENG-02/ENG-03 完成后由 Worker/API 主入口替换注入（生产缺省已拦截）。
+  - `gen_tasks.provider` 暂记 `'mock-image'`，ENG-02 接入后写真实渠道；`look_versions.view_keys` 多视角图字段已序列化但生成端暂不产出。
+  - 上游重复提交的窗口：租约过期（>120s）后另一 Worker 可能重复调用 provider（gen_tasks 状态守卫只能挡住状态层面的重放）；M1 无真实费用，M2 接真实渠道时按上游幂等键（`gen_tasks.idempotency_key` 透传）兜底。
+  - description 列 NOT NULL（L-02 迁移即如此），「无描述」用空串表示，API 输出时空串省略字段；如需严谨可后续迁移改 nullable（需走变更申请）。
+
+### 2026-10-17 · BE-Core · M1-BE-03 修复（§6 审查意见 1~3）
 ### 2026-10-17 · BE-Core · M1-BE-03 修复（§6 审查意见 1~3）
 
 - **背景**：Lead 审查（§6）指出 2 条必须修改（上传清理误删被引用照片、到期清理漏删片段视频）+ 1 条建议（生产禁用内存存储）。分支已 `git merge origin/main`（13f933f）后修复，仍在同一分支追加提交。
