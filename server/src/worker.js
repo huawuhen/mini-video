@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { createLogger } from './logger.js';
+import { createMemoryStorage, createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
 /**
@@ -16,13 +17,23 @@ import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from '
  * - 抛出 PermanentJobError 表示不再重试。
  *
  * job 类型与负责模块见 docs/ARCHITECTURE.md §4；各模块就绪后在 buildHandlers 中注册。
+ * @param {{ config: ReturnType<typeof loadConfig>, db: object, logger: object, storage?: object }} deps
+ *   storage：engine/storage 就绪前缺省用内存实现（M1-BE-03，Engine 迁移后替换）。
  */
-export function buildHandlers(/* deps */) {
+export function buildHandlers({ config, db, logger, storage = createMemoryStorage() }) {
+  const cronOpts = { batchSize: config.cron.sweepBatchSize };
+  const withLog = (name, run) => async (_payload, ctx) => {
+    const result = await run(ctx.db);
+    ctx.logger.info(name, result);
+  };
   return {
+    'auth.sweep': withLog('cron_auth_swept', (db) => runAuthSweep(db, cronOpts)),
+    'uploads.sweep': withLog('cron_uploads_swept', (db) => runUploadsSweep(db, { ...cronOpts, storage })),
+    'projects.expire_sweep': withLog('cron_projects_expired', (db) => runProjectsExpireSweep(db, { ...cronOpts, storage })),
+    'jobs.cleanup': withLog('cron_jobs_cleaned', (db) => runJobsCleanup(db, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
     // 'project.understand': understandHandler(deps),   M1-BE-05 + M1-ENG-01
     // 'look.generate': ...,                             M1-BE-04
     // 'project.bind_prompts' / 'segment.generate' / 'gen.poll' / 'project.compose'   M1-BE-05
-    // 'projects.expire_sweep' / 'uploads.sweep'        定时任务，见 startSchedules
   };
 }
 
@@ -83,10 +94,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const logger = createLogger({ level: config.logLevel, base: { proc: 'worker', workerId: config.worker.id } });
   const db = createDb({ url: config.databaseUrl, max: config.worker.concurrency + 2, logger });
   const worker = createWorker({ db, logger, handlers: buildHandlers({ config, db, logger }), workerId: config.worker.id, ...config.worker });
+  const scheduler = createScheduler({ config, db, logger });
   worker.start();
+  scheduler.start();
   const shutdown = async (signal) => {
     logger.info('worker_shutdown', { signal });
     setTimeout(() => process.exit(1), 60_000).unref();
+    scheduler.stop();
     await worker.stop();
     await db.close();
     process.exit(0);
