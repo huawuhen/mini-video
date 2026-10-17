@@ -70,7 +70,7 @@
 | M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
 | M1-ENG-01 | — | — | — | 待认领（下一步，建议顺序 ENG-03 → ENG-02 → ENG-01，各一个分支） | — |
 | M1-ENG-02 | — | — | — | 待认领 | — |
-| M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js}` `server/test/engine/**` | 进行中 | 2026-10-17 |
+| M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | 待审查 | 2026-10-17 |
 | M1-RND-01 | — | — | — | 待认领 | — |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
@@ -132,6 +132,28 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-17 · Engine · M1-ENG-03 net / storage / transfer / extract
+
+- **背景**：引擎迁移第一个任务（§6 要点 b 顺序：ENG-03 → ENG-02 → ENG-01）。按要点 a/c 与 ARCHITECTURE §5/§6、engine/README 实现。源码取自超搭云 `2926b42`（本机 `/Users/wuhen/Documents/New project`，只读未改），全部文件头注明来源与适配点；无新增第三方依赖。
+- **改动（文件/模块）**：
+  - 单独提交（5a8d195）：`createMemoryStorage` 从 `queue/cron.js` 迁至 `engine/storage/memory.js`（要点 c 批准的跨所有权改动），app.js/worker.js/assets.test.js 同步引用。
+  - 新增 `engine/net/index.js`（Source: network-safety.js 简化适配）、`engine/storage/qiniu.js`（Source: qiniu-kodo.js + object-storage.js，S3 SDK → 原生协议）、`engine/storage/index.js`、`engine/transfer/index.js`（Source: video-transfer.js 简化）、`engine/extract/index.js`（Source: screenwriter/extract.js，mammoth → 零依赖解 ZIP）。
+  - 接线：`app.js` / `worker.js` 主入口按 `config.storage.driver` 经 `createStorageFromConfig` 注入存储，API 主入口注入 `extractText`；`buildHandlers` 未注入存储时也走该解析。无新环境变量（复用 config.storage 既有配置）。
+- **核心实现**：
+  - `net.safeFetch(url, { maxBytes, timeoutMs })`：只允许无凭证 http(s)；DNS 预解析并校验全部结果为公网（`isPublicAddress`：v4 私网/回环/链路本地/CGNAT/保留段，v6 仅 2000::/3 且剔除 IETF 协议、Teredo、文档段，IPv4 映射因不在公网段天然拒绝），经 node:http(s) 的 `lookup` 钩子把连接**钉定**到已验证 IP（防 DNS 重绑定；Host 头与 TLS SNI 仍用原始主机名）；重定向逐跳重新解析校验、最多 3 次；Content-Length 预检 + 流式计数超限立即销毁；整体超时销毁。`resolver` 与 `httpImpl` 可注入，测试不访问外网。
+  - `storage`：七牛原生协议——PUT 直传（`QBox` 签名 = path\n+body）、RS 删除（612 视为已删除，幂等）、私有空间下载签名（`?e=deadline&token=`，`download` 附 `attachment` 文件名）；内存实现同接口且支持流式 body；`createStorageFromConfig`：driver=qiniu 时要求配置完整（缺失启动报错），生产 driver=memory 直接报错。
+  - `transfer.transferFromUrl(url, key, { maxBytes, timeoutMs })`：经 safeFetch 下载并流式 `storage.put`，contentType 优先参数 → 上游 → octet-stream，put 失败中断下载流。
+  - `extract.extractText(buffer, mime)`：文件头优先（PK=OOXML）；docx 零依赖解 ZIP（EOCD → central directory → 本地头重算偏移 → inflateRaw）读 `word/document.xml`，按 `<w:p>` 段落、合并 `<w:t>`、解码实体；txt UTF-8 去 BOM；老式 .doc（OLE2）与二进制明确拒绝；签名与 app.js 注入点一致（`async (buffer, mime) => string`）。
+- **验证（命令与结果）**：
+  - `npm run test:server`：121 通过 0 失败（100 → 121，新增 21 用例：公网地址判定 30+ 例、URL/私网解析/重定向链/maxBytes 双路径/超时/HTTP 错误、七牛 PUT-RS-签名形状（注入 fetch 比对签名）与失败、createStorageFromConfig 三分支、transfer 回退链与失败中断、txt/docx/遗留 doc/损坏 ZIP/空文档）。
+  - `npm run check` 0 错误；`npm run build` 成功；连续 4 轮稳定。
+- **未完成 / 风险**：
+  - 七牛签名按官方文档实现、单测验证「签名形状与请求拼装」，真实桶联调放 M2（`qiniu put` 的 signStr 细节以真桶为准）；默认 node:http 传输层因 SSRF 防护禁回环、无法离线联测，属薄胶水层。
+  - 净逻辑移植自超搭云并简化（去掉重试/Range/公网 DNS 回退/并行分段），M2 如需断点续传再按原文件补。
+  - `extractText` 的 docx 解析覆盖常规文档；加密/损坏 docx 报 `EXTRACT_INVALID`，样式类内容（表格内文本）已由 `<w:t>` 合并覆盖但编号/脚注未处理。
+  - 下一步按 §6 要点 b 顺序：M1-ENG-02（providers，分支 `agent/eng/M1-ENG-02-providers`），完成后再 ENG-01。
+
+### 2026-10-17 · BE-Core · M1-BE-04 修复（§6 审查意见 1~5）
 ### 2026-10-17 · BE-Core · M1-BE-04 修复（§6 审查意见 1~5）
 
 - **背景**：Lead 审查（§6）指出 3 条必须修改 + 2 条建议（BE-05 前补上）。分支已 `git merge origin/main`（75900d4，含 PRD v2.3 文档）后修复，仍在同一分支追加提交（1fc2c25）。
