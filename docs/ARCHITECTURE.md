@@ -182,7 +182,8 @@ understand({ storyText, style, maxSeconds, allowedDurations, characters /* 用�
   → { title, synopsis, compressed, notice?, cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
       segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes }] }
 bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, voicesEnabled })
-  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], firstFrame?: 'prev_tail' }]
+  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean }]
+  -- 全能参考（omni_reference）模式：usePrevTail 为 true 时，调用方在生成该片段前先取上一段尾帧，作为普通参考图放入 imageRefs（尽力而为，不保证首帧衔接）
 ```
 
 - `allowedDurations` 来自档位映射的视频 SKU；返回的每段时长必须在其中，总时长 ≤ `maxSeconds`，由调用方再校验一次。
@@ -220,7 +221,7 @@ extractLastFrame(videoPath) → imagePath     // 尾帧衔接
 | `backend/screenwriter/prompts.js` `tools.js` `index.js` | `engine/story/` | 改为「故事理解+片段规划」与「绑定提示词」两段；输出按 §5 结构；新增音色推荐 |
 | `backend/agent/llm.js`、pi agent 接入、`agent/skills/wan-video.js` `storyboard.js` | `engine/llm/` `engine/skills/` | 配置走本项目环境变量；30 秒多镜头提示词规范 |
 | `backend/screenwriter/extract.js` | `engine/extract/` | txt/docx 文本提取 |
-| `modelhub-models.js` 等渠道代码 | `engine/providers/<id>.js` | 统一适配器接口，注册表管理；支持图片 + 音频参考、首帧 |
+| `modelhub-models.js` 等渠道代码（仅参考） | `engine/providers/<id>.js` | 统一适配器接口，注册表管理；视频用「全能参考」模式（图片 + 音频参考）；**渠道不绑定 Modelhub**，上线渠道以 M0 结论为准，新增渠道只需新增适配器 |
 | `backend/video-transfer.js` `media-proxy.js` | `engine/transfer/` | 上游结果转存七牛 |
 | `network-safety.js` | `engine/net/` | SSRF/大小/超时，可注入模拟网络 |
 | `backend/object-storage.js` `storage/qiniu-kodo.js`（仅参考） | `engine/storage/` | **七牛原生协议**（用户 2026-10-17 决定：比 S3 兼容更轻量、零额外依赖）：小对象表单上传（上传凭证）、大对象分片上传 v2（有界内存）、管理凭证删除、私有空间签名下载链接（同步生成）；官方文档：上传凭证 `kodo/1208/upload-token`、表单上传 `kodo/1272/form-upload`、管理凭证 `kodo/1201/access-token`、下载凭证 `kodo/1202/download-token`、分片上传 v2 `kodo/6364/multipartupload-interface` |
