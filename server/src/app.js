@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createAuth } from './auth/index.js';
 import { catalogRoutes } from './api/catalog.js';
+import { quoteRoutes } from './api/quotes.js';
+import { walletRoutes } from './api/wallet.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { errorHandler, notFound, requestId } from './http/middleware.js';
@@ -44,8 +46,11 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   api.use(auth.csrfGuard);
   api.use(auth.routes);
 
+  // 钱包与报价（M1-BE-02），挂载在认证中间件之后，全部要求登录
+  api.use(walletRoutes({ db }));
+  api.use(quoteRoutes({ db }));
+
   // ── 以下由 BE-Core 按 docs/TASKS.md 接入 ──
-  // M1-BE-02  api.use(walletRoutes(...)); api.use(quoteRoutes(...));
   // M1-BE-04  api.use(uploadRoutes(...)); api.use(characterRoutes(...));
   // M1-BE-06  api.use(projectRoutes(...));
 
