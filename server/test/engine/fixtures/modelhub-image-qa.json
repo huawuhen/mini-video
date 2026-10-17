@@ -1,0 +1,4 @@
+{
+  "succeeded": { "data": [{ "url": "https://media.example.test/images/qa-look-001.png" }] },
+  "failed": { "error": { "code": "content_rejected", "message": "图片内容不符合要求" } }
+}

@@ -371,6 +371,36 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(provider.calls.length, callsBefore, '成功 provider 未被误用');
   });
 
+  test('provider 抛错：仅 retryable 回退重试，其他一律 unknown 并保持冻结', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 200, frozen_fen = 0 WHERE user_id = $1`, [A.userId]);
+    const character = await (await post(base, '/characters', { name: '错误分类', description: '虚构角色' },
+      { cookie: A.cookie, csrf: A.csrf })).json();
+    for (const [styleId, retryable] of [['anime', true], ['clay', false]]) {
+      const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: character.id, styleId },
+        { cookie: A.cookie, csrf: A.csrf })).json();
+      const version = await (await post(base, `/characters/${character.id}/looks/${styleId}/versions`,
+        { quoteId: quote.quoteId, idempotencyKey: `classification-${styleId}` }, { cookie: A.cookie, csrf: A.csrf })).json();
+      const injected = { id: 'test-provider', async generate() {
+        const error = new Error('渠道异常');
+        error.retryable = retryable;
+        error.submitted = !retryable;
+        throw error;
+      } };
+      const worker = createWorker({ db: ctx.db, logger: silentLogger,
+        handlers: buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db,
+          logger: silentLogger, storage, imageProvider: injected }), workerId: `worker-class-${styleId}`, concurrency: 1 });
+      assert.equal(await worker.runOne(), true);
+      const record = (await ctx.db.query(`SELECT gt.status AS task_status, lv.status AS version_status
+        FROM gen_tasks gt JOIN look_versions lv ON lv.gen_task_id = gt.id WHERE lv.id = $1`, [version.id])).rows[0];
+      assert.equal(record.task_status, retryable ? 'created' : 'unknown');
+      assert.equal(record.version_status, 'pending');
+      const job = (await ctx.db.query(`SELECT status FROM jobs WHERE dedupe_key = $1`, [`look:${version.id}`])).rows[0];
+      assert.equal(job.status, retryable ? 'queued' : 'done');
+    }
+    const wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
+    assert.deepEqual(wallet, { available_fen: 100, frozen_fen: 100 });
+  });
+
   test('selection：只能选本数字人本风格的 succeeded 版本（要点 f）', async () => {
     const up = (await (await multipart(base, '/uploads/image', A, 'sel.png', TINY_PNG)).json()).uploadId;
     const chr = await (await post(base, '/characters', { name: '挑选', photoUploadIds: [up] }, { cookie: A.cookie, csrf: A.csrf })).json();

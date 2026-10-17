@@ -378,9 +378,19 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
         referenceKeys: request.referenceKeys ?? [], // 该数字人的参考照片 key（§6 审查 4）
       });
     } catch (err) {
-      // 上游调用异常（非业务失败）：回退状态，交队列退避重试
-      await db.tx((t) => t.query(`UPDATE gen_tasks SET status = 'created', updated_at = now() WHERE id = $1`, [version.gen_task_id]));
-      throw err;
+      if (err.retryable === true) {
+        await db.tx((t) => t.query(
+          `UPDATE gen_tasks SET status = 'created', updated_at = now() WHERE id = $1 AND status = 'submitting'`,
+          [version.gen_task_id],
+        ));
+        throw err;
+      }
+      await db.tx((t) => t.query(
+        `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1 AND status = 'submitting'`,
+        [version.gen_task_id],
+      ));
+      ctx.logger.error('look_generate_submission_unknown', { versionId, code: err?.code });
+      return; // 未明确证明未提交：不再重提，版本 pending，费用冻结待对账
     }
     await ctx.extendLease?.();
 
