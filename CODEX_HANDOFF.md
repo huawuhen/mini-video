@@ -147,6 +147,18 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-19 · Engine · M1-ENG-01 复审修复（取消语义与超长片段）
+
+- **背景**：在原分支合并 `origin/main`（996353f）后，按 §6 复审修复 2 条必改与建议 3；已阅工作流新决定与 `docs/skills/wan-3.0.md`（v2）、`docs/ARCHITECTURE.md` §5 新契约、`docs/TASKS.md` M1-ENG-04 任务描述，**本轮未实现**，待 ENG-01 合并后按指示以 M1-ENG-04 单独开工。
+- **改动**：
+  - 必改 1（取消不生效）：删除按错误信息字符串分类的 `isCallerCancelled`；`understand` / `bindPrompts` 循环每次尝试前 `throwIfCallerCancelled(signal)`——调用方信号已 abort（`signal?.aborted`）就抛 `signal.reason`（默认原因包装为 `AbortError`），不看原因文字；provider 失败路径同样先检查信号再决定重试。取消时 LLM 调用 ≤ 1 次。
+  - 必改 2（超长片段被丢弃）：`normalizePlan` 的溢出条件收敛为「剩余预算 < 最小允许值」；请求时长超过允许最大值时**向下取到不超过剩余预算的最大允许值**保留该段，任何时长改动或合并都置 `compressed`。
+  - 建议 3：`story-smoke.js` 删除 `/root/chaodayun` 硬编码导入分支与遗留 `void readFile;`，只保留自带 OpenAI 兼容路径；`@earendil-works/pi-ai@0.87.1` 写死为 `server` 直接依赖。
+- **测试**：新增取消用例（默认原因、自定义原因「项目已取消」、调用前已 abort、`bindPrompts` 取消——全部直接抛出且 LLM 调用 ≤ 1，调用前已 abort 时为 0）；新增超长片段用例（`[100]` → 30、`[60,30]` → 30+30 顺序不变、`[30,30,30,5]` 第 4 段预算耗尽合并且 `compressed`）；「预算不足」用例按新规则改为 `[30,30,10]`（向下取值保留）。旧「用户停止」魔法字符串测试删除。
+- **验证**：`npm run test:server` 169/169 连续四轮通过；`npm run check`、`npm run build` 通过；敏感信息扫描无异常。未调用真实模型。
+- **未完成 / 风险**：取消抛出的错误为 `signal.reason` 原样（默认原因是 DOMException AbortError，自定义原因是调用方给的 Error），BE-05 的 Worker 处理器需按 `signal.aborted` 或错误名识别取消，不要比较消息文本；M1-ENG-04（bible/endState/Skill/expandIdea）待 ENG-01 合并后读最新文档开工。
+
+### 2026-10-19 · Engine · M1-ENG-01 审查修复（输出契约、角色匹配与超时）
 ### 2026-10-19 · Engine · M1-ENG-01 审查修复（输出契约、角色匹配与超时）
 
 - **背景**：在原分支合并 `origin/main`（64d356b）后，按 §6 修复 5 条必改与建议 6~9；「设定集」与「每段结束状态」按 Lead 指示暂不实现。

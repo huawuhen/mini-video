@@ -104,16 +104,17 @@ export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
   let overflowPlots = [];
   for (const [index, segment] of raw.segments.entries()) {
     const requested = segment.durationSeconds;
-    // Round a too-short segment up to the smallest allowed duration; only stop when the
-    // remaining budget cannot hold even that (or the requested duration at all). Segments
-    // are never silently dropped, and any change marks the plan as compressed.
+    // Budget exhausted (remaining below the smallest allowed duration) is the only overflow.
+    // A requested duration above the allowed maximum steps DOWN to the largest allowed value
+    // that still fits the remaining budget; a too-short one rounds UP to the smallest.
+    // Segments are never silently dropped, and any change marks the plan as compressed.
     const budget = allowed.filter((n) => n <= remaining);
-    if (!budget.length || (requested >= smallest && requested > Math.max(...budget))) {
+    if (!budget.length) {
       overflowPlots.push(segment.plot.trim());
       continue;
     }
     const durationSeconds = requested < smallest ? smallest
-      : (budget.includes(requested) ? requested : Math.max(...budget.filter((n) => n <= requested)));
+      : Math.max(...budget.filter((n) => n <= requested));
     const castIndexes = [...new Set(segment.castIndexes.filter((i) => i < cast.length))];
     const sceneId = trimText(segment.sceneId);
     segments.push({ durationSeconds, plot: segment.plot.trim(), cameraNotes: trimText(segment.cameraNotes),

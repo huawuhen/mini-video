@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createStoryAgent, isCallerCancelled } from '../../src/engine/story/index.js';
+import { createStoryAgent } from '../../src/engine/story/index.js';
 import { parseModelJson, validatePlan } from '../../src/engine/story/parse.js';
 import { bindCharacters, normalizePlan, validateInput } from '../../src/engine/story/plan.js';
 import { BIND_EXAMPLE, STORY_EXAMPLE, STORY_SYSTEM, BIND_SYSTEM } from '../../src/engine/story/prompts.js';
@@ -226,7 +226,7 @@ describe('engine/story（M1-ENG-01）', () => {
     assert.equal(result.compressed, true);
     assert.deepEqual(result.segments.map((segment) => segment.durationSeconds), [30, 5, 30]);
     assert.match(result.segments.at(-1).plot, /第三段/);
-    // 预算不足：剩余 10 秒放不下最小 15 秒片段时停止，剧情并入上一段
+    // 预算不足：剩余 10 秒放不下 15 秒请求，向下取到最大允许值 10 保留该段（复审必改 2）
     raw.segments = [
       { durationSeconds: 30, sceneId: 's1', plot: '第一段。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
       { durationSeconds: 30, sceneId: 's2', plot: '第二段。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
@@ -234,7 +234,7 @@ describe('engine/story（M1-ENG-01）', () => {
     ];
     const tight = agentWith([JSON.stringify(raw)]);
     const tightResult = await tight.agent.understand({ ...input(), maxSeconds: 70, voices: [] });
-    assert.deepEqual(tightResult.segments.map((segment) => segment.durationSeconds), [30, 30]);
+    assert.deepEqual(tightResult.segments.map((segment) => segment.durationSeconds), [30, 30, 10]);
     assert.match(tightResult.segments.at(-1).plot, /第三段收尾/);
     assert.equal(tightResult.compressed, true);
   });
@@ -250,19 +250,11 @@ describe('engine/story（M1-ENG-01）', () => {
     assert.ok(result.segments.every((segment) => segment.castIndexes.length >= 1));
   });
 
-  test('LLM 挂起：超时走兜底；调用方取消直接抛出；修复请求携带上一版输出', async () => {
+  test('LLM 挂起：超时走兜底；修复请求携带上一版输出', async () => {
     const hangs = createMockLlm([(request) => new Promise(() => {})]);
     const agent = createStoryAgent({ llm: hangs, logger: { warn: () => {} } });
     const result = await agent.understand({ ...input(), timeoutMs: 50 });
     assert.equal(result.degraded, true);
-
-    const controller = new AbortController();
-    controller.abort(new Error('用户停止'));
-    // 用独立的挂起 LLM：上一步已耗尽 hangs 的脚本步骤
-    const hangsAgain = createMockLlm([(request) => new Promise(() => {})]);
-    const cancellingAgent = createStoryAgent({ llm: hangsAgain, logger: { warn: () => {} } });
-    await assert.rejects(() => cancellingAgent.understand({ ...input(), signal: controller.signal, timeoutMs: 5000 }),
-      (error) => isCallerCancelled(error) || error.name === 'AbortError');
 
     const llm = createMockLlm([
       { text: '{"title":"缺少概要"}', usage: { inputTokens: 1, outputTokens: 2 } },
@@ -274,6 +266,66 @@ describe('engine/story（M1-ENG-01）', () => {
     assert.equal(repair.messages.at(-2).role, 'assistant');
     assert.match(repair.messages.at(-2).content, /缺少概要/);
     assert.match(repair.messages.at(-1).content, /校验失败/);
+  });
+
+  test('取消（审查复审必改 1）：任何原因都直接抛出且 LLM 调用 ≤ 1 次', async () => {    const cancelCases = [
+      ['默认原因', () => { const controller = new AbortController(); controller.abort(); return controller.signal; }],
+      ['自定义原因', () => { const controller = new AbortController(); controller.abort(new Error('项目已取消')); return controller.signal; }],
+      ['调用前已 abort', () => { const controller = new AbortController(); controller.abort(); return controller.signal; }],
+    ];
+    for (const [label, makeSignal] of cancelCases) {
+      const llm = createMockLlm([(request) => new Promise((resolve, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true });
+      })]);
+      const agent = createStoryAgent({ llm, logger: { warn: () => {} } });
+      const signal = makeSignal();
+      await assert.rejects(() => agent.understand({ ...input(), signal, timeoutMs: 5000 }),
+        (error) => error.name === 'AbortError' || /项目已取消/.test(error.message), label);
+      assert.ok(llm.calls.length <= 1, `${label}: understand 最多调用 LLM 一次（调用前已 abort 时为 0）`);
+    }
+    // bindPrompts 取消同样直接抛出
+    const llm = createMockLlm([(request) => new Promise((resolve, reject) => {
+      request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true });
+    })]);
+    const agent = createStoryAgent({ llm, logger: { warn: () => {} } });
+    const controller = new AbortController();
+    controller.abort(new Error('项目已取消'));
+    await assert.rejects(() => agent.bindPrompts({ style: input().style, ratio: '9:16',
+      segments: [{ plot: '剧情', castIds: [], dialogue: [], transition: 'hard_cut' }],
+      cast: [{ id: 'cast_a', name: '妈妈' }], voicesEnabled: false,
+      signal: controller.signal, timeoutMs: 5000 }), /项目已取消/);
+    assert.equal(llm.calls.length, 0, '调用前已 abort：不应发起任何 LLM 调用');
+  });
+
+  test('超长片段向下取值保留，不丢弃（审查复审必改 2）', async () => {
+    const raw = JSON.parse(await sample('normal.json'));
+    const build = (durations) => {
+      const llm = createMockLlm([JSON.stringify({ ...raw, segments: durations.map((durationSeconds, index) => ({
+        durationSeconds, plot: `第 ${index + 1} 段`, dialogue: [], castIndexes: [0, 1],
+        transition: index ? 'prev_tail' : 'hard_cut', sceneId: `s${index + 1}` })) })]);
+      return createStoryAgent({ llm });
+    };
+
+    // 模型给了超出范围的大数 [100]：向下取到 30，保留一段
+    const single = await build([100]).understand(input());
+    assert.deepEqual(single.segments.map((segment) => segment.durationSeconds), [30]);
+    assert.equal(single.totalSeconds, 30);
+    assert.equal(single.compressed, true);
+    assert.match(single.segments[0].plot, /第 1 段/);
+
+    // [60,30]：60 向下取 30，两段都保留且顺序不变
+    const two = await build([60, 30]).understand(input());
+    assert.deepEqual(two.segments.map((segment) => segment.durationSeconds), [30, 30]);
+    assert.equal(two.totalSeconds, 60);
+    assert.match(two.segments.at(-1).plot, /第 2 段/);
+    assert.equal(two.compressed, true);
+
+    // [30,30,30,5]：预算耗尽后第 4 段并入并 compressed；预算不足才是唯一溢出条件
+    const four = await build([30, 30, 30, 5]).understand({ ...input(), maxSeconds: 90 });
+    assert.equal(four.segments.length, 3);
+    assert.equal(four.totalSeconds, 90);
+    assert.match(four.segments.at(-1).plot, /第 4 段/);
+    assert.equal(four.compressed, true);
   });
 
   test('bindPrompts：对白 castIndex 回退、尾帧预留参考图位置', async () => {

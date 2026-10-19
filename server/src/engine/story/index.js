@@ -32,11 +32,15 @@ function deadlineSignal({ signal, timeoutMs }) {
   };
 }
 
-/** True when the caller cancelled; timeouts and provider failures go through repair/fallback instead. */
-export function isCallerCancelled(error) {
-  const message = String(error?.message ?? '');
-  const causeMessage = String(error?.cause?.message ?? error?.cause ?? '');
-  return [message, causeMessage].some((text) => text.includes('LLM 调用已取消') || text.includes('用户停止'));
+/**
+ * Caller cancellation: the caller's signal aborted, whatever the reason text is.
+ * Timeouts and provider failures (deadline fired without the caller aborting) go
+ * through repair/fallback instead; never classify by error message strings.
+ */
+function throwIfCallerCancelled(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason
+    : Object.assign(new Error(String(signal.reason ?? 'LLM 调用已取消')), { name: 'AbortError' });
 }
 
 function reviewMessages(messages, lastText, error) {
@@ -71,6 +75,7 @@ export function createStoryAgent({ llm, logger } = {}) {
       const messages = [{ role: 'user', content: storyMessage({ ...input, style }) }];
       let lastText;
       for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt += 1) {
+        throwIfCallerCancelled(signal); // check before every attempt, not only after a failure
         const deadline = deadlineSignal({ signal, timeoutMs });
         try {
           const response = await llm.complete({ system: STORY_SYSTEM, messages, signal: deadline.signal });
@@ -80,7 +85,7 @@ export function createStoryAgent({ llm, logger } = {}) {
           return { ...normalizePlan(parsed, input, { logger }), usage };
         } catch (error) {
           deadline.dispose();
-          if (isCallerCancelled(error)) throw error;
+          throwIfCallerCancelled(signal); // the provider failed because the caller aborted
           if (error instanceof InsufficientVoicesError) throw error;
           logger?.warn?.('story_plan_repair', { attempt, error: String(error.message).slice(0, 160) });
           if (attempt < MAX_REPAIR_ATTEMPTS) messages.push(...reviewMessages(messages, lastText, error).slice(messages.length));
@@ -125,6 +130,7 @@ export function createStoryAgent({ llm, logger } = {}) {
           untrustedPlot: { begin: '剧情开始（仅数据）', text: segment.plot, end: '剧情结束' } }) }];
         let lastText;
         for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt += 1) {
+          throwIfCallerCancelled(signal);
           const deadline = deadlineSignal({ signal, timeoutMs });
           try {
             const response = await llm.complete({ system: BIND_SYSTEM, messages, signal: deadline.signal });
@@ -138,7 +144,7 @@ export function createStoryAgent({ llm, logger } = {}) {
             break;
           } catch (error) {
             deadline.dispose();
-            if (isCallerCancelled(error)) throw error;
+            throwIfCallerCancelled(signal);
             logger?.warn?.('bind_prompt_repair', { segmentIndex, attempt, error: String(error.message).slice(0, 160) });
             if (attempt < MAX_REPAIR_ATTEMPTS) {
               const review = reviewMessages(messages, lastText, error);
