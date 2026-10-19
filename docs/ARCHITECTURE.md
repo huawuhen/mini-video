@@ -144,7 +144,7 @@ story_review ──reanalyze──► understanding
 story_review ──confirm-story(looks>0, 扣形象费)──► casting ──job:look.generate×N──► cast_review (◆B)
 story_review ──confirm-story(looks=0)──► cast_review
 cast_review ──confirm-cast(预占视频费)──► rendering
-rendering: job:project.bind_prompts → job:segment.generate（尾帧衔接的片段按顺序，其余并行）→ job:gen.poll
+rendering: job:project.bind_prompts → job:segment.generate（**全部片段按顺序串行**，用户 2026-10-19 决定；并行是 M0 对比之后的优化）→ job:gen.poll → 转存 → render.inspect（基础技术检查，不通过 → 该片段失败并退回预占）→ 提取尾帧 → 下一段
          → 全部成功 ──job:project.compose──► composing ──► delivered（写 delivered_at / expires_at）
 delivered ──segment take / selection──► 重新 compose（status 保持 delivered）
 delivered ──cron:projects.expire_sweep──► expired
@@ -196,7 +196,7 @@ bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音
 
 - `allowedDurations` 来自档位映射的视频 SKU；返回的每段时长必须在其中，总时长 ≤ `maxSeconds`，由调用方再校验一次。
 - 只有 1 个片段时 `voicesEnabled=false`，`audioRefs` 为空。
-- **输入判定**（`classifyInput(text)`，确定性，阈值可配置，默认约 120 字且无对白与场景描述为「想法」）在 `project.understand` job 里先于 LLM 调用；「想法」先 `expandIdea` 再 `understand`，「剧本」直接 `understand`；用户在确认点 A 编辑后重新整理的文字一律按「剧本」处理。`script` 保存在 `projects.story.script`，`projects.story_text` 保持用户原始输入。
+- **输入判定**（`classifyInput(text)`，确定性，阈值可配置，默认约 60 字且无对白与场景描述为「想法」）在 `project.understand` job 里先于 LLM 调用；「想法」先 `expandIdea` 再 `understand`，「剧本」直接 `understand`；用户在确认点 A 编辑后重新整理的文字一律按「剧本」处理。`script` 保存在 `projects.story.script`，`projects.story_text` 保持用户原始输入。
 - 剧本模式忠实处理：**不新增对白**、不新增原文没有的人物与场景；想法模式的对白由 `expandIdea` 创作，之后 `understand` 按剧本模式忠实处理这份扩写结果。
 - **设定集（`bible`）在故事理解时生成一次，保存到 `projects.story.bible`，之后只读**；最终提示词中的风格、场景、道具、人物外观、连贯性、写实与避坑模板由**代码逐字注入**，不经过 LLM 改写；LLM 只写每段的镜头时间线（英文）。对白由代码逐字校验（不新增、不改写、不丢、顺序不变）。
 - `startState` 是上一段的 `endState`（仅 `transition: 'prev_tail'` 时有值）；`segments.final_prompt`（jsonb）保存 `{ prompt, imageRefs, audioRefs, usePrevTail, startState, endState, shots, skillId, skillVersion, degraded }`，无需新增数据库列。
@@ -220,7 +220,9 @@ transfer.fromUrl(url, key, { maxBytes, timeoutMs })   // 上游临时链接 → 
 
 ```js
 compose({ inputs: [{ localPath, transition }], ratio, resolution, watermarkText }) → { outputPath, coverPath, durationSeconds }
-extractLastFrame(videoPath) → imagePath     // 尾帧衔接
+extractLastFrame(videoPath) → imagePath     // 尾帧作为下一段的参考图
+inspect(videoPath, { durationSeconds, ratio, resolution, expectAudio }) → { ok, issues: [{ code, message }] }
+  // 基础技术检查：可解码、有视频流、有音频流、时长偏差 ≤2 秒、画幅与分辨率、非全黑（blackdetect）、非长时间卡住（freezedetect）、非静音（volumedetect）；全部用 FFprobe/FFmpeg，不调用任何模型
 ```
 
 - 拼接：响度统一（EBU R128）、硬切 / 尾帧衔接、H.264 + AAC MP4、显式 AI 生成标识 + 元数据隐式标识。**不加 BGM、不加字幕**。
