@@ -175,19 +175,28 @@ delivered ──cron:projects.expire_sweep──► expired
 
 所有外部依赖通过参数注入，测试用模拟实现，**不产生真实费用**。
 
-**engine.story（Engine 角色）**
+**engine.story（Engine 角色）**——提示词设计与每个字段的规则见 [docs/skills/wan-3.0.md](./skills/wan-3.0.md)（按视频模型一个 Skill）
 
 ```js
-understand({ storyText, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices })
-  → { title, synopsis, compressed, notice?, cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
-      segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes }] }
-bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, voicesEnabled })
-  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean }]
+understand({ storyText, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices, skillId, signal, timeoutMs })
+  → { title, synopsis, compressed, notice?, degraded, usage,
+      bible: { characters: [{ castIndex, handle, brief }],          // 英文，唯一简称 + 身份级外观，一经写出不再改
+               scenes:     [{ id, nameZh, description }],            // 英文固定场景描述
+               props:      [{ id, nameZh, description }] },
+      cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
+      segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes,
+                   sceneId, propIds, endState /* 英文，本段最后一帧的状态 */ }] }
+bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, bible, voicesEnabled, skillId, maxImageRefs, signal, timeoutMs })
+  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean,
+       startState, endState, shots, skillId, skillVersion, degraded }]
   -- 全能参考（omni_reference）模式：usePrevTail 为 true 时，调用方在生成该片段前先取上一段尾帧，作为普通参考图放入 imageRefs（尽力而为，不保证首帧衔接）
 ```
 
 - `allowedDurations` 来自档位映射的视频 SKU；返回的每段时长必须在其中，总时长 ≤ `maxSeconds`，由调用方再校验一次。
 - 只有 1 个片段时 `voicesEnabled=false`，`audioRefs` 为空。
+- **设定集（`bible`）在故事理解时生成一次，保存到 `projects.story.bible`，之后只读**；最终提示词中的风格、场景、道具、人物外观、连贯性、写实与避坑模板由**代码逐字注入**，不经过 LLM 改写；LLM 只写每段的镜头时间线（英文）。对白由代码逐字校验（不新增、不改写、不丢、顺序不变）。
+- `startState` 是上一段的 `endState`（仅 `transition: 'prev_tail'` 时有值）；`segments.final_prompt`（jsonb）保存 `{ prompt, imageRefs, audioRefs, usePrevTail, startState, endState, shots, skillId, skillVersion, degraded }`，无需新增数据库列。
+- `skillId` 由调用方按视频 SKU 的 `model` 选择（`skills.forModel(model)`），Skill 文件在 `server/src/engine/skills/`。
 
 **engine.providers（Engine 角色）**：注册表，每个适配器实现
 
@@ -219,7 +228,7 @@ extractLastFrame(videoPath) → imagePath     // 尾帧衔接
 | 原文件 | 新位置 | 适配要点 |
 |---|---|---|
 | `backend/screenwriter/prompts.js` `tools.js` `index.js` | `engine/story/` | 改为「故事理解+片段规划」与「绑定提示词」两段；输出按 §5 结构；新增音色推荐 |
-| `backend/agent/llm.js`、pi agent 接入、`agent/skills/wan-video.js` `storyboard.js` | `engine/llm/` `engine/skills/` | 配置走本项目环境变量；30 秒多镜头提示词规范 |
+| `backend/agent/llm.js`、pi agent 接入、`agent/skills/wan-video.js` `storyboard.js`（仅参考） | `engine/llm/` `engine/skills/<model>.js` | 配置走本项目环境变量；**每个视频模型一个 Skill**（提示词、拼装模板、校验、默认值），主力 `wan-3.0`，设计见 `docs/skills/wan-3.0.md` |
 | `backend/screenwriter/extract.js` | `engine/extract/` | txt/docx 文本提取 |
 | `modelhub-models.js` 等渠道代码（仅参考） | `engine/providers/<id>.js` | 统一适配器接口，注册表管理；视频用「全能参考」模式（图片 + 音频参考）；**渠道不绑定 Modelhub**，上线渠道以 M0 结论为准，新增渠道只需新增适配器 |
 | `backend/video-transfer.js` `media-proxy.js` | `engine/transfer/` | 上游结果转存七牛 |
