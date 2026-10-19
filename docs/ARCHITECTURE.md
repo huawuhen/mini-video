@@ -178,8 +178,10 @@ delivered ──cron:projects.expire_sweep──► expired
 **engine.story（Engine 角色）**——提示词设计与每个字段的规则见 [docs/skills/wan-3.0.md](./skills/wan-3.0.md)（按视频模型一个 Skill）
 
 ```js
-understand({ storyText, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices, skillId, signal, timeoutMs })
-  → { title, synopsis, compressed, notice?, degraded, usage,
+expandIdea({ idea, style, maxSeconds, allowedDurations, characters, skillId, signal, timeoutMs })   // 仅当输入被判为「一句话想法」时调用；免费
+  → { title, script /* 中文剧本全文：场景、动作、对白（可创作）；长度与目标时长匹配 */, usage, degraded }
+understand({ storyText /* 剧本；想法已先扩写 */, inputKind, expanded, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices, skillId, signal, timeoutMs })
+  → { title, script, inputKind, expanded, synopsis, compressed, notice?, degraded, usage,
       bible: { characters: [{ castIndex, handle, brief }],          // 英文，唯一简称 + 身份级外观，一经写出不再改
                scenes:     [{ id, nameZh, description }],            // 英文固定场景描述
                props:      [{ id, nameZh, description }] },
@@ -194,6 +196,8 @@ bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音
 
 - `allowedDurations` 来自档位映射的视频 SKU；返回的每段时长必须在其中，总时长 ≤ `maxSeconds`，由调用方再校验一次。
 - 只有 1 个片段时 `voicesEnabled=false`，`audioRefs` 为空。
+- **输入判定**（`classifyInput(text)`，确定性，阈值可配置，默认约 120 字且无对白与场景描述为「想法」）在 `project.understand` job 里先于 LLM 调用；「想法」先 `expandIdea` 再 `understand`，「剧本」直接 `understand`；用户在确认点 A 编辑后重新整理的文字一律按「剧本」处理。`script` 保存在 `projects.story.script`，`projects.story_text` 保持用户原始输入。
+- 剧本模式忠实处理：**不新增对白**、不新增原文没有的人物与场景；想法模式的对白由 `expandIdea` 创作，之后 `understand` 按剧本模式忠实处理这份扩写结果。
 - **设定集（`bible`）在故事理解时生成一次，保存到 `projects.story.bible`，之后只读**；最终提示词中的风格、场景、道具、人物外观、连贯性、写实与避坑模板由**代码逐字注入**，不经过 LLM 改写；LLM 只写每段的镜头时间线（英文）。对白由代码逐字校验（不新增、不改写、不丢、顺序不变）。
 - `startState` 是上一段的 `endState`（仅 `transition: 'prev_tail'` 时有值）；`segments.final_prompt`（jsonb）保存 `{ prompt, imageRefs, audioRefs, usePrevTail, startState, endState, shots, skillId, skillVersion, degraded }`，无需新增数据库列。
 - `skillId` 由调用方按视频 SKU 的 `model` 选择（`skills.forModel(model)`），Skill 文件在 `server/src/engine/skills/`。

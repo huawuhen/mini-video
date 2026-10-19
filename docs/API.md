@@ -257,6 +257,9 @@ type ProjectDetail = ProjectSummary & {
   deliveredAt?: string;
 };
 type StoryResult = {
+  inputKind: 'script' | 'idea';    // 用户输入被判定为剧本还是一句话想法
+  expanded: boolean;               // 一句话想法是否已被 AI 编剧扩写
+  script: string;                  // 确认点 A 展示并可编辑的剧本全文（扩写结果或用户原文的整理版）
   synopsis: string;                // AI 整理后的故事梗概
   totalSeconds: number; segmentCount: number;
   compressed: boolean;             // 超过最长时长被精简
@@ -298,7 +301,7 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
-| POST | `/projects/:id/story/reanalyze` | `{ storyText }` | `ProjectDetail`（回到 `understanding`，消耗 1 次免费次数） |
+| POST | `/projects/:id/story/reanalyze` | `{ storyText }`（用户在确认点 A 编辑后的剧本全文） | `ProjectDetail`（回到 `understanding`，消耗 1 次免费次数；**按剧本处理，不会再次扩写**，`story.inputKind` 变为 `script`） |
 | PUT | `/projects/:id/cast/:castId/character` | `{ characterId: string \| null }`（纠正匹配；null 表示新建） | `ProjectDetail` |
 | POST | `/projects/:id/confirm-story` | `{ quoteId?, idempotencyKey }` | `ProjectDetail` |
 
