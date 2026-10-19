@@ -143,6 +143,20 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-19 · Engine · M1-ENG-01 审查修复（输出契约、角色匹配与超时）
+
+- **背景**：在原分支合并 `origin/main`（64d356b）后，按 §6 修复 5 条必改与建议 6~9；「设定集」与「每段结束状态」按 Lead 指示暂不实现。
+- **改动**：
+  - 必改 1：`STORY_SYSTEM` / `BIND_SYSTEM` 写明完整输出字段说明、取值范围与完整示例 JSON（`STORY_EXAMPLE` / `BIND_EXAMPLE` 导出）；新增契约测试「示例必须通过 `parseModelJson` + `validatePlan` + `normalizePlan`」；新增 `server/scripts/story-smoke.js` 真实调用冒烟脚本（读环境变量，打印 degraded / 重试 / usage，默认不运行、不参与测试）。
+  - 必改 2：角色匹配精确同名优先，子串只在唯一候选时采用，`characterId` 先到先得不重复绑（`bindCharacters` 导出并直接单测）。
+  - 必改 3：短片段向上取整到最小允许时长，只在剩余预算不足时才停止；任何时长改动或片段合并都置 `compressed`；溢出剧情拼接上限 1000 字并记日志（建议 9）。
+  - 必改 4：保底方案在无勾选数字人时注入默认「主角」（unknown/young）并让所有片段引用。
+  - 必改 5：`understand` / `bindPrompts` 接受 `{ signal, timeoutMs }`（默认 90 秒），超时按失败走修复/兜底，调用方取消直接抛出；挂起 LLM 超时后兜底不再无限等待。
+  - 建议 6：修复重试把上一版输出（截断 2000 字）作为 `assistant` 消息回传，`llm/pi.js` 按 role 原样映射历史。建议 7：`bindPrompts` 对白同时支持 `castId` 与 `castIndex`（`segmentPrompt` 与重要性排序均回退），`engine/README.md` 新增 understand 输出 ↔ bindPrompts 输入字段对应表。建议 8：`usePrevTail` 时参考图预算减 1 为尾帧留位。
+- **测试**：`server/test/engine/story.test.js` 从 9 例扩到 12 例（契约、三种角色匹配情形、短片段/预算不足/压缩标记、保底主角、挂起超时与取消、修复带上版输出、对白回退与尾帧预留）；`llm/mock.js` 支持函数步骤模拟「忽略超时的 provider」并响应 abort。开发中发现并修复：已 abort 的外部信号不会触发 `addEventListener`，`deadlineSignal` 现在立即传播；音色不足以全部分配时留空交由用户在确认点 B 选择，不再抛错卡死（审查原「明确报错」按兜底原则收敛为「部分分配 + degraded 语义」，已在下方风险中标注）。
+- **验证**：`npm run test:server` 167/167 连续四轮通过（首轮出现整库 3ms 内全被取消，系测试库容器已停止，`npm run test:db:up` 后恢复）；`npm run check`、`npm run build` 通过；敏感信息扫描无异常。未调用真实模型。
+- **未完成 / 风险**：音色不足现为「分配到不重复为止、其余留空」，与开工要点「音色不够用时抛出明确错误」的表述不同——按 §6e「绝不能因 LLM 抽风卡死」的兜底原则处理，请 Lead 复审确认该取舍；`story-smoke.js` 需 M0 授权后人工运行。
+
 ### 2026-10-17 · Engine · M1-ENG-01 故事理解与片段规划
 
 - **背景**：按 §6 M1-ENG-01 开工要点 a~g、`docs/ARCHITECTURE.md` §5、PRD §4.2/§4.7，实现注入式故事代理。参考超搭云 `2926b42` 的 screenwriter/agent/wan-video/storyboard 提示词与 pi Agent 接入思路，不复制其仓库、会话、计费依赖；`@earendil-works/pi-agent-core` 精确版本 `0.87.1`。
