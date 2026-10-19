@@ -187,7 +187,8 @@ understand({ storyText /* 剧本；想法已先扩写 */, inputKind, expanded, s
                props:      [{ id, nameZh, description }] },
       cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
       segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes,
-                   sceneId, propIds, endState /* 英文，本段最后一帧的状态 */ }] }
+                   sceneId, propIds, endState /* 英文，本段最后一帧的状态 */,
+                   takeMode /* 'multi_shot'(默认)|'single_take'(一镜到底，豁免逐镜头 3~8 秒上限) */ }] }
 bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, bible, voicesEnabled, skillId, maxImageRefs, signal, timeoutMs })
   → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean,
        startState, endState, shots, skillId, skillVersion, degraded }]
