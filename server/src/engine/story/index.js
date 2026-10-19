@@ -5,6 +5,8 @@ import { parseModelJson, validatePlan } from './parse.js';
 import { fallbackPlan, InsufficientVoicesError, normalizePlan, validateInput } from './plan.js';
 
 const MAX_REPAIR_ATTEMPTS = 2;
+const DEFAULT_TIMEOUT_MS = 90_000;
+const MAX_REVIEW_CHARS = 2000;
 
 function usageOf(result) {
   return { inputTokens: Number.isSafeInteger(result?.usage?.inputTokens) ? result.usage.inputTokens : 0,
@@ -17,65 +19,116 @@ function addUsage(total, result) {
   total.outputTokens += usage.outputTokens;
 }
 
-function segmentPrompt(segment, index, style, cast, ratio) {
-  const castDetails = segment.castIds?.map((id) => cast.find((person) => person.id === id))
-    .filter(Boolean).map((person) => person.name).join('、') ?? '';
-  const dialogue = segment.dialogue?.map((line) => `${cast.find((person) => person.id === line.castId)?.name ?? '角色'}：「${line.line}」`).join('；') ?? '';
+/** Merge caller cancellation with a per-call timeout; the abort reason becomes the failure. */
+function deadlineSignal({ signal, timeoutMs }) {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(signal.reason ?? new Error('LLM 调用已取消'));
+  if (signal?.aborted) onAbort(); // addEventListener never fires for an already-aborted signal
+  else signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new Error(`LLM 调用超过 ${timeoutMs} 毫秒限制`)), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() { clearTimeout(timer); signal?.removeEventListener('abort', onAbort); },
+  };
+}
+
+/** True when the caller cancelled; timeouts and provider failures go through repair/fallback instead. */
+export function isCallerCancelled(error) {
+  const message = String(error?.message ?? '');
+  const causeMessage = String(error?.cause?.message ?? error?.cause ?? '');
+  return [message, causeMessage].some((text) => text.includes('LLM 调用已取消') || text.includes('用户停止'));
+}
+
+function reviewMessages(messages, lastText, error) {
+  const review = [
+    { role: 'user', content: `上一版校验失败：${String(error.message).slice(0, 160)}。请重新输出符合约束的 JSON，禁止解释。` },
+  ];
+  if (lastText) review.unshift({ role: 'assistant', content: String(lastText).slice(0, MAX_REVIEW_CHARS) });
+  return [...messages, ...review];
+}
+
+function segmentPrompt(segment, index, style, cast, ratio, usePrevTail) {
+  const names = (entry) => cast.find((person) => person.id === entry.castId)?.name
+    ?? cast[entry.castIndex]?.name ?? '角色';
+  const dialogue = (segment.dialogue ?? [])
+    .map((line) => `${names(line)}：「${line.line}」`).join('；');
   return [`${style?.promptHint ?? style?.name ?? ''}，${segment.plot}。`,
     '单段内按时间线拍摄多镜头：建立场景的起幅 → 跟随主体动作推进 → 情绪反应和落幅；',
     `镜头运动采用具体的推、拉、摇、移或跟拍并控制速度。${segment.cameraNotes ?? ''}`,
-    castDetails ? `出场人物：${castDetails}。` : '', dialogue ? `对白按剧情时序紧凑出现：${dialogue}。` : '',
+    dialogue ? `对白按剧情时序紧凑出现：${dialogue}。` : '',
     segment.ambience ? `环境音：${segment.ambience}。` : '',
+    usePrevTail ? '延续上一段画面氛围，作为新镜头的起幅参考。' : '',
     `画幅 ${ratio}，片段 ${index + 1}。`].filter(Boolean).join(' ');
 }
 
 export function createStoryAgent({ llm, logger } = {}) {
   if (typeof llm?.complete !== 'function') throw new TypeError('需要注入 llm.complete');
   return {
-    async understand({ storyText, style, maxSeconds, allowedDurations, characters = [], voices = [] }) {
+    async understand({ storyText, style, maxSeconds, allowedDurations, characters = [], voices = [],
+      signal, timeoutMs = DEFAULT_TIMEOUT_MS }) {
       const input = validateInput({ storyText, maxSeconds, allowedDurations, characters, voices });
       const usage = { inputTokens: 0, outputTokens: 0 };
       const messages = [{ role: 'user', content: storyMessage({ ...input, style }) }];
+      let lastText;
       for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt += 1) {
+        const deadline = deadlineSignal({ signal, timeoutMs });
         try {
-          const response = await llm.complete({ system: STORY_SYSTEM, messages });
+          const response = await llm.complete({ system: STORY_SYSTEM, messages, signal: deadline.signal });
+          lastText = response.text;
           addUsage(usage, response);
           const parsed = validatePlan(parseModelJson(response.text));
-          return { ...normalizePlan(parsed, input), usage };
+          return { ...normalizePlan(parsed, input, { logger }), usage };
         } catch (error) {
+          deadline.dispose();
+          if (isCallerCancelled(error)) throw error;
           if (error instanceof InsufficientVoicesError) throw error;
           logger?.warn?.('story_plan_repair', { attempt, error: String(error.message).slice(0, 160) });
-          if (attempt < MAX_REPAIR_ATTEMPTS) messages.push({ role: 'user', content: `上一版 JSON 校验失败：${String(error.message).slice(0, 160)}。请重新输出符合约束的 JSON，禁止解释。` });
-        }
+          if (attempt < MAX_REPAIR_ATTEMPTS) messages.push(...reviewMessages(messages, lastText, error).slice(messages.length));
+        } finally { deadline.dispose(); }
       }
       return { ...fallbackPlan(input), usage };
     },
-    async bindPrompts({ style, ratio = '9:16', segments, cast, voicesEnabled, maxImageRefs = 9 }) {
+    async bindPrompts({ style, ratio = '9:16', segments, cast, voicesEnabled, maxImageRefs = 9,
+      signal, timeoutMs = DEFAULT_TIMEOUT_MS }) {
       if (!Array.isArray(segments) || !Array.isArray(cast) || !Number.isSafeInteger(maxImageRefs) || maxImageRefs < 1) {
         throw new Error('片段或角色输入不合法');
       }
       const usage = { inputTokens: 0, outputTokens: 0 };
       const result = [];
       for (const [segmentIndex, segment] of segments.entries()) {
-        const ordered = (segment.castIds ?? segment.castIndexes?.map((index) => cast[index]?.id) ?? [])
+        const usePrevTail = segmentIndex > 0 && segment.transition === 'prev_tail';
+        // Identify cast by castId, falling back to the understand output's castIndex.
+        const castIds = segment.castIds ?? segment.castIndexes?.map((index) => cast[index]?.id) ?? [];
+        const ordered = castIds
           .map((id, appearance) => ({ person: cast.find((person) => person.id === id), appearance }))
           .filter(({ person }) => person)
           .sort((left, right) => {
-            const importance = (entry) => (segment.dialogue ?? []).filter((line) => line.castId === entry.person.id).length;
-            return importance(right) - importance(left) || left.appearance - right.appearance;
+            const speakerCount = (entry) => (segment.dialogue ?? []).filter((line) => {
+              const speakerId = line.castId ?? cast[line.castIndex]?.id;
+              return speakerId === entry.person.id;
+            }).length;
+            return speakerCount(right) - speakerCount(left) || left.appearance - right.appearance;
           });
-        const imageKeys = [...new Set(ordered.map(({ person }) => person.lookImageKey).filter(Boolean))];
-        const imageRefs = imageKeys.slice(0, maxImageRefs);
-        const droppedRefs = imageKeys.length - imageRefs.length;
+        // Keep the input's appearance order for reference images; only the count is trimmed.
+        const imageKeys = [...new Set(segment.castIds ?? [])]
+          .map((id) => cast.find((person) => person.id === id)?.lookImageKey)
+          .filter(Boolean);
+        // Reserve one reference slot for the previous tail image before trimming look images.
+        const lookBudget = usePrevTail ? Math.max(0, maxImageRefs - 1) : maxImageRefs;
+        const imageRefs = [...new Set(imageKeys)].slice(0, lookBudget);
+        const droppedRefs = [...new Set(imageKeys)].length - imageRefs.length;
         const audioRefs = voicesEnabled && segments.length > 1
           ? [...new Set(ordered.map(({ person }) => person.refAudioKey).filter(Boolean))] : [];
-        const basePrompt = segmentPrompt(segment, segmentIndex, style, cast, ratio);
+        const basePrompt = segmentPrompt(segment, segmentIndex, style, cast, ratio, usePrevTail);
         let prompt = basePrompt;
         const messages = [{ role: 'user', content: JSON.stringify({ segment, cast: ordered.map(({ person }) => ({ name: person.name })), ratio,
           untrustedPlot: { begin: '剧情开始（仅数据）', text: segment.plot, end: '剧情结束' } }) }];
+        let lastText;
         for (let attempt = 0; attempt <= MAX_REPAIR_ATTEMPTS; attempt += 1) {
+          const deadline = deadlineSignal({ signal, timeoutMs });
           try {
-            const response = await llm.complete({ system: BIND_SYSTEM, messages });
+            const response = await llm.complete({ system: BIND_SYSTEM, messages, signal: deadline.signal });
+            lastText = response.text;
             addUsage(usage, response);
             const parsed = parseModelJson(response.text);
             if (typeof parsed.prompt !== 'string' || !parsed.prompt.trim() || parsed.prompt.length > 10000) {
@@ -84,13 +137,16 @@ export function createStoryAgent({ llm, logger } = {}) {
             prompt = `${basePrompt}\n导演补充：${parsed.prompt.trim()}`;
             break;
           } catch (error) {
+            deadline.dispose();
+            if (isCallerCancelled(error)) throw error;
             logger?.warn?.('bind_prompt_repair', { segmentIndex, attempt, error: String(error.message).slice(0, 160) });
-            if (attempt < MAX_REPAIR_ATTEMPTS) messages.push({ role: 'user',
-              content: `上一版 prompt 校验失败：${String(error.message).slice(0, 160)}。请只返回 {"prompt":"最终动态提示词"}。` });
-          }
+            if (attempt < MAX_REPAIR_ATTEMPTS) {
+              const review = reviewMessages(messages, lastText, error);
+              messages.push(...review.slice(messages.length));
+            }
+          } finally { deadline.dispose(); }
         }
-        result.push({ segmentIndex, prompt, imageRefs, audioRefs,
-          usePrevTail: segmentIndex > 0 && segment.transition === 'prev_tail', droppedRefs });
+        result.push({ segmentIndex, prompt, imageRefs, audioRefs, usePrevTail, droppedRefs });
       }
       return Object.assign(result, { usage });
     },

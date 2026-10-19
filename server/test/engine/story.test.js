@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createStoryAgent } from '../../src/engine/story/index.js';
-import { parseModelJson } from '../../src/engine/story/parse.js';
+import { createStoryAgent, isCallerCancelled } from '../../src/engine/story/index.js';
+import { parseModelJson, validatePlan } from '../../src/engine/story/parse.js';
+import { bindCharacters, normalizePlan, validateInput } from '../../src/engine/story/plan.js';
+import { BIND_EXAMPLE, STORY_EXAMPLE, STORY_SYSTEM, BIND_SYSTEM } from '../../src/engine/story/prompts.js';
 import { createMockLlm } from '../../src/engine/llm/mock.js';
 
 const sample = (name) => readFile(fileURLToPath(new URL(`./fixtures/story/${name}`, import.meta.url)), 'utf8');
@@ -20,6 +22,17 @@ const agentWith = (steps, logger) => {
 };
 
 describe('engine/story（M1-ENG-01）', () => {
+  test('契约：提示词中的示例 JSON 必须通过解析、校验与归一化', async () => {
+    for (const [label, example, system] of [['story', STORY_EXAMPLE, STORY_SYSTEM], ['bind', BIND_EXAMPLE, BIND_SYSTEM]]) {
+      assert.ok(system.includes(JSON.stringify(example)), `${label} 示例必须在系统提示中`);
+    }
+    const parsed = validatePlan(parseModelJson(JSON.stringify(STORY_EXAMPLE)));
+    const result = normalizePlan(parsed, validateInput(input()));
+    assert.equal(result.degraded, false);
+    assert.equal(result.segmentCount, 2);
+    assert.deepEqual(result.segments.map((segment) => segment.durationSeconds), [30, 30]);
+  });
+
   test('正常样本：允许时长、总时长、角色匹配、音色不重复、转场与对白索引', async () => {
     const { agent, calls } = agentWith([{ text: await sample('normal.json'), usage: { inputTokens: 100, outputTokens: 80 } }]);
     const result = await agent.understand(input());
@@ -112,12 +125,16 @@ describe('engine/story（M1-ENG-01）', () => {
     assert.ok(result.segments[0].castIndexes.includes(result.cast.findIndex((person) => person.characterId === 'chr_baby')));
   });
 
-  test('音色重复样本重新分配；不足时明确错误', async () => {
+  test('音色重复样本重新分配；不足时留空交由用户选择', async () => {
     const { agent } = agentWith([await sample('duplicate-voice.txt')]);
     const result = await agent.understand({ ...input(), characters: [] });
-    assert.equal(new Set(result.cast.map((person) => person.voiceId)).size, result.cast.length);
-    const lacking = agentWith([await sample('duplicate-voice.txt'), await sample('duplicate-voice.txt'), await sample('duplicate-voice.txt')]);
-    await assert.rejects(() => lacking.agent.understand({ ...input(), characters: [], voices: [input().voices[0]] }), /音色不足|可用音色不足/);
+    const voiced = result.cast.filter((person) => person.voiceId);
+    assert.equal(new Set(voiced.map((person) => person.voiceId)).size, voiced.length, '已分配的音色不重复');
+    const lacking = agentWith([await sample('duplicate-voice.txt')]);
+    const lackingResult = await lacking.agent.understand({ ...input(), characters: [], voices: [input().voices[0]] });
+    assert.equal(lackingResult.degraded, false);
+    assert.equal(lackingResult.cast.filter((person) => person.voiceId).length, 1, '只有一个音色时只分配一个角色');
+    assert.ok(lackingResult.cast.some((person) => !person.voiceId), '其余角色留空，由用户在确认点 B 选择');
   });
 
   test('bindPrompts：多镜头、风格、图/音引用、尾帧标志、图片裁剪', async () => {
@@ -170,5 +187,112 @@ describe('engine/story（M1-ENG-01）', () => {
     assert.ok(!calls[0].system.includes(storyText));
     assert.ok(calls[0].messages[0].content.includes(storyText));
     assert.equal(calls.length, 3);
+  });
+
+  test('名字匹配：精确同名优先，多候选不绑，characterId 不重复绑定', async () => {
+    const raw = JSON.parse(await sample('normal.json'));
+    raw.cast = [
+      { name: '宝宝的妈妈', description: '温柔', gender: 'female', ageGroup: 'middle' },
+      { name: '妈妈', description: '重复出现', gender: 'female', ageGroup: 'middle' },
+    ];
+    const characters = [{ id: 'chr_baby', name: '宝宝', selected: false, gender: 'female', ageGroup: 'child' },
+      { id: 'chr_mother', name: '妈妈', selected: false, gender: 'female', ageGroup: 'middle' }];
+    const { agent } = agentWith([JSON.stringify(raw)]);
+    const result = await agent.understand({ ...input(), characters });
+    const bound = result.cast.filter((person) => person.characterId);
+    assert.equal(bound.length, 1, '唯一精确同名才绑定');
+    assert.equal(bound[0].characterId, 'chr_mother');
+    const ambiguous = agentWith([JSON.stringify({ ...raw, cast: [{ name: '宝宝的妈妈', gender: 'female', ageGroup: 'middle' }] })]);
+    const ambiguousResult = await ambiguous.agent.understand({ ...input(), characters });
+    assert.ok(!ambiguousResult.cast[0].characterId, '多候选一律视为不匹配');
+    // 同一 characterId 只绑一次：第二个「妈妈」先到先得，后来的被视为新角色
+    const direct = bindCharacters([
+      { name: '妈妈', gender: 'female', ageGroup: 'middle' },
+      { name: '妈妈', gender: 'female', ageGroup: 'middle' },
+    ], characters);
+    assert.equal(direct[0].characterId, 'chr_mother');
+    assert.ok(!direct[1].characterId, '先到先得，后者不绑定');
+  });
+
+  test('短片段向上取整；预算不足才停止且标记压缩', async () => {
+    const raw = JSON.parse(await sample('normal.json'));
+    raw.segments = [
+      { durationSeconds: 30, sceneId: 's1', plot: '第一段：野餐开始。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
+      { durationSeconds: 3, sceneId: 's1', plot: '第二段：追逐树叶。', dialogue: [], castIndexes: [1], transition: 'prev_tail' },
+      { durationSeconds: 30, sceneId: 's2', plot: '第三段：分享水果回家。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
+    ];
+    const { agent } = agentWith([JSON.stringify(raw)]);
+    const result = await agent.understand({ ...input(), maxSeconds: 90 });
+    assert.equal(result.compressed, true);
+    assert.deepEqual(result.segments.map((segment) => segment.durationSeconds), [30, 5, 30]);
+    assert.match(result.segments.at(-1).plot, /第三段/);
+    // 预算不足：剩余 10 秒放不下最小 15 秒片段时停止，剧情并入上一段
+    raw.segments = [
+      { durationSeconds: 30, sceneId: 's1', plot: '第一段。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
+      { durationSeconds: 30, sceneId: 's2', plot: '第二段。', dialogue: [], castIndexes: [0, 1], transition: 'hard_cut' },
+      { durationSeconds: 15, sceneId: 's3', plot: '第三段收尾。', dialogue: [], castIndexes: [0], transition: 'hard_cut' },
+    ];
+    const tight = agentWith([JSON.stringify(raw)]);
+    const tightResult = await tight.agent.understand({ ...input(), maxSeconds: 70, voices: [] });
+    assert.deepEqual(tightResult.segments.map((segment) => segment.durationSeconds), [30, 30]);
+    assert.match(tightResult.segments.at(-1).plot, /第三段收尾/);
+    assert.equal(tightResult.compressed, true);
+  });
+
+  test('保底方案在未勾选数字人时仍有主角', async () => {
+    const { agent } = agentWith([await sample('missing-synopsis.txt'), await sample('type-drift.txt'), new Error('LLM 断开')]);
+    const result = await agent.understand({ ...input(), characters: [] });
+    assert.equal(result.degraded, true);
+    assert.ok(result.cast.length >= 1);
+    assert.equal(result.cast[0].name, '主角');
+    assert.equal(result.cast[0].gender, 'unknown');
+    assert.equal(result.cast[0].ageGroup, 'young');
+    assert.ok(result.segments.every((segment) => segment.castIndexes.length >= 1));
+  });
+
+  test('LLM 挂起：超时走兜底；调用方取消直接抛出；修复请求携带上一版输出', async () => {
+    const hangs = createMockLlm([(request) => new Promise(() => {})]);
+    const agent = createStoryAgent({ llm: hangs, logger: { warn: () => {} } });
+    const result = await agent.understand({ ...input(), timeoutMs: 50 });
+    assert.equal(result.degraded, true);
+
+    const controller = new AbortController();
+    controller.abort(new Error('用户停止'));
+    // 用独立的挂起 LLM：上一步已耗尽 hangs 的脚本步骤
+    const hangsAgain = createMockLlm([(request) => new Promise(() => {})]);
+    const cancellingAgent = createStoryAgent({ llm: hangsAgain, logger: { warn: () => {} } });
+    await assert.rejects(() => cancellingAgent.understand({ ...input(), signal: controller.signal, timeoutMs: 5000 }),
+      (error) => isCallerCancelled(error) || error.name === 'AbortError');
+
+    const llm = createMockLlm([
+      { text: '{"title":"缺少概要"}', usage: { inputTokens: 1, outputTokens: 2 } },
+      { text: await sample('normal.json'), usage: { inputTokens: 3, outputTokens: 4 } },
+    ]);
+    const reviewing = createStoryAgent({ llm });
+    await reviewing.understand(input());
+    const repair = llm.calls[1];
+    assert.equal(repair.messages.at(-2).role, 'assistant');
+    assert.match(repair.messages.at(-2).content, /缺少概要/);
+    assert.match(repair.messages.at(-1).content, /校验失败/);
+  });
+
+  test('bindPrompts：对白 castIndex 回退、尾帧预留参考图位置', async () => {
+    const llm = createMockLlm(['not json', 'not json']);
+    const agent = createStoryAgent({ llm });
+    const cast = [{ id: 'cast_a', name: '妈妈', lookImageKey: 'looks/a.png' },
+      { id: 'cast_b', name: '宝宝', lookImageKey: 'looks/b.png' }];
+    const segments = [
+      { plot: '同一片草地', castIds: ['cast_a', 'cast_b'], dialogue: [{ castId: 'cast_b', line: '苹果真甜！' }], transition: 'hard_cut' },
+      { plot: '继续野餐', castIds: ['cast_a', 'cast_b'], dialogue: [], transition: 'prev_tail' },
+    ];
+    const bound = await agent.bindPrompts({ style: input().style, segments, cast, voicesEnabled: false, maxImageRefs: 2 });
+    assert.match(bound[0].prompt, /宝宝：「苹果真甜！」/);
+    assert.deepEqual(bound[1].imageRefs, ['looks/a.png'], '尾帧预留后只保留 1 张形象图');
+    assert.equal(bound[1].droppedRefs, 1);
+    assert.equal(bound[1].usePrevTail, true);
+    const plain = await agent.bindPrompts({ style: input().style,
+      segments: [{ ...segments[0], transition: 'prev_tail' }], cast, voicesEnabled: false, maxImageRefs: 2 });
+    assert.deepEqual(plain[0].imageRefs, ['looks/a.png', 'looks/b.png']);
+    assert.equal(plain[0].usePrevTail, false, '第一段不做尾帧衔接');
   });
 });

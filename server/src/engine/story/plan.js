@@ -1,5 +1,6 @@
 // Story planning constraints and deterministic fallback.
 const AGE_GROUPS = ['child', 'teen', 'young', 'middle', 'elder'];
+const MAX_OVERFLOW_PLOT_CHARS = 1000;
 const trimText = (value, fallback = '') => typeof value === 'string' && value.trim() ? value.trim() : fallback;
 
 export class InsufficientVoicesError extends Error {
@@ -32,10 +33,27 @@ function pickDurations(target, allowed, limit) {
   return result.length ? result : [usable.at(-1)];
 }
 
+/** Exact name match wins; a substring match only counts when exactly one character contains it. */
 function matchCharacter(name, characters) {
   const exact = characters.find((item) => item.name === name);
   if (exact) return exact.id;
-  return characters.find((item) => item.name && name.includes(item.name))?.id;
+  const contains = characters.filter((item) => item.name && item.name !== name && name.includes(item.name));
+  return contains.length === 1 ? contains[0].id : undefined;
+}
+
+/** Bind at most one cast member per characterId; later matches are treated as new characters. */
+export function bindCharacters(rawCast, characters) {
+  const taken = new Set();
+  return rawCast.map((person) => {
+    const trimmed = person.name.trim();
+    const candidateId = matchCharacter(trimmed, characters);
+    const character = candidateId && !taken.has(candidateId)
+      ? characters.find((item) => item.id === candidateId) : undefined;
+    if (character) taken.add(character.id);
+    return { name: trimmed, description: trimText(person.description),
+      gender: person.gender, ageGroup: person.ageGroup,
+      ...(character ? { characterId: character.id, defaultVoiceId: character.defaultVoiceId } : {}) };
+  });
 }
 
 function voiceFor(person, voices, used) {
@@ -53,22 +71,27 @@ function voiceFor(person, voices, used) {
 }
 
 function assignVoices(cast, voices) {
+  // Voices are recommendations only: when there are not enough for everyone, leave the
+  // remaining cast without voiceId. BE-05's confirmation step lets the user pick one.
   const used = new Set();
   for (const person of cast) {
     const preferred = voices.find((voice) => voice.id === person.defaultVoiceId && !used.has(voice.id));
     if (preferred) { person.voiceId = preferred.id; used.add(preferred.id); }
   }
-  for (const person of cast) if (!person.voiceId) person.voiceId = voiceFor(person, voices, used);
+  for (const person of cast) {
+    if (person.voiceId) continue;
+    try { person.voiceId = voiceFor(person, voices, used); }
+    catch (error) {
+      if (!(error instanceof InsufficientVoicesError)) throw error;
+      break; // keep the rest unassigned rather than duplicating voices
+    }
+  }
 }
 
-export function normalizePlan(raw, input, { degraded = false } = {}) {
+export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
   const allowed = input.allowedDurations;
-  const cast = raw.cast.map((person) => {
-    const character = input.characters.find((item) => item.id === matchCharacter(person.name.trim(), input.characters));
-    return { name: person.name.trim(), description: trimText(person.description),
-      gender: person.gender, ageGroup: person.ageGroup,
-      ...(character ? { characterId: character.id, defaultVoiceId: character.defaultVoiceId } : {}) };
-  });
+  const smallest = allowed.at(-1);
+  const cast = bindCharacters(raw.cast, input.characters);
   for (const character of input.characters.filter((item) => item.selected)) {
     if (!cast.some((person) => person.characterId === character.id)) cast.push({ name: character.name,
       description: trimText(character.description), gender: character.gender ?? 'unknown',
@@ -78,10 +101,19 @@ export function normalizePlan(raw, input, { degraded = false } = {}) {
   const proposed = raw.segments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
   let remaining = input.maxSeconds;
   const segments = [];
+  let overflowPlots = [];
   for (const [index, segment] of raw.segments.entries()) {
-    const durationSeconds = allowed.includes(segment.durationSeconds) && segment.durationSeconds <= remaining
-      ? segment.durationSeconds : allowed.find((n) => n <= remaining && n <= segment.durationSeconds);
-    if (!durationSeconds) break;
+    const requested = segment.durationSeconds;
+    // Round a too-short segment up to the smallest allowed duration; only stop when the
+    // remaining budget cannot hold even that (or the requested duration at all). Segments
+    // are never silently dropped, and any change marks the plan as compressed.
+    const budget = allowed.filter((n) => n <= remaining);
+    if (!budget.length || (requested >= smallest && requested > Math.max(...budget))) {
+      overflowPlots.push(segment.plot.trim());
+      continue;
+    }
+    const durationSeconds = requested < smallest ? smallest
+      : (budget.includes(requested) ? requested : Math.max(...budget.filter((n) => n <= requested)));
     const castIndexes = [...new Set(segment.castIndexes.filter((i) => i < cast.length))];
     const sceneId = trimText(segment.sceneId);
     segments.push({ durationSeconds, plot: segment.plot.trim(), cameraNotes: trimText(segment.cameraNotes),
@@ -89,14 +121,17 @@ export function normalizePlan(raw, input, { degraded = false } = {}) {
         .map((line) => ({ castIndex: line.castIndex, line: line.line.trim() })),
       ambience: trimText(segment.ambience),
       transition: index > 0 && segment.transition === 'prev_tail' && sceneId
-        && sceneId === segments.at(-1).sceneId ? 'prev_tail' : 'hard_cut',
+        && sceneId === segments.at(-1)?.sceneId ? 'prev_tail' : 'hard_cut',
       sceneId, castIndexes });
     remaining -= durationSeconds;
   }
   if (!segments.length) throw new Error('片段规划没有可用时长');
-  if (segments.length < raw.segments.length) {
-    const overflow = raw.segments.slice(segments.length).map((segment) => segment.plot.trim()).filter(Boolean).join('；');
-    segments.at(-1).plot += `；压缩叙事：${overflow}`;
+  const compressed = proposed > input.maxSeconds || overflowPlots.length > 0
+    || segments.some((segment, index) => segment.durationSeconds !== raw.segments[index]?.durationSeconds);
+  if (overflowPlots.length) {
+    const overflow = overflowPlots.map((plot) => plot.trim()).filter(Boolean).join('；').slice(0, MAX_OVERFLOW_PLOT_CHARS);
+    if (overflow) segments.at(-1).plot += `；压缩叙事：${overflow}`;
+    logger?.warn?.('story_plan_compressed', { droppedSegments: overflowPlots.length });
   }
   for (const selected of input.characters.filter((item) => item.selected)) {
     const index = cast.findIndex((person) => person.characterId === selected.id);
@@ -106,7 +141,6 @@ export function normalizePlan(raw, input, { degraded = false } = {}) {
   for (const person of cast) delete person.defaultVoiceId;
   for (const segment of segments) delete segment.sceneId;
   const totalSeconds = segments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
-  const compressed = proposed > totalSeconds || segments.length < raw.segments.length;
   return { title: trimText(raw.title, '我的故事'), synopsis: raw.synopsis.trim(), compressed,
     ...(compressed ? { notice: `故事较长，已为您精简为 ${totalSeconds} 秒` } : {}),
     degraded, totalSeconds, segmentCount: segments.length, cast, segments };
@@ -117,18 +151,20 @@ export function fallbackPlan(input) {
   const maxAllowed = input.allowedDurations.find((n) => n <= input.maxSeconds);
   const target = Math.min(input.maxSeconds, Math.max(maxAllowed, Math.ceil(words.length / 80) * maxAllowed));
   const durations = pickDurations(target, input.allowedDurations, input.maxSeconds);
-  const cast = input.characters.filter((item) => item.selected).map((item) => ({ name: item.name,
+  const selected = input.characters.filter((item) => item.selected);
+  const cast = selected.map((item) => ({ name: item.name,
     description: trimText(item.description), gender: item.gender ?? 'unknown', defaultVoiceId: item.defaultVoiceId,
     ageGroup: AGE_GROUPS.includes(item.ageGroup) ? item.ageGroup : 'young', characterId: item.id }));
+  if (!cast.length) cast.push({ name: '主角', description: '故事中的主角', gender: 'unknown', ageGroup: 'young' });
   const synopsis = words.length < 20 ? `在温暖的日常场景中，${words}。画面补足人物的动作、表情和情绪变化。` : words.slice(0, 260);
   const segments = durations.map((durationSeconds, index) => ({ durationSeconds,
     plot: words.slice(Math.floor(index * words.length / durations.length), Math.floor((index + 1) * words.length / durations.length)) || words,
     cameraNotes: '从人物与环境的建立镜头推进到动作细节，最后落在情绪反应。',
-    dialogue: [], ambience: '与场景一致的自然环境音。', transition: index ? 'hard_cut' : 'hard_cut',
+    dialogue: [], ambience: '与场景一致的自然环境音。', transition: 'hard_cut',
     castIndexes: cast.map((_, i) => i) }));
   if (segments.length > 1) assignVoices(cast, input.voices);
-  const totalSeconds = durations.reduce((sum, n) => sum + n, 0);
   for (const person of cast) delete person.defaultVoiceId;
+  const totalSeconds = durations.reduce((sum, n) => sum + n, 0);
   const compressed = words.length > 300 || Math.ceil(words.length / 80) * maxAllowed > input.maxSeconds;
   return { title: words.slice(0, 16) || '我的故事', synopsis, compressed,
     ...(compressed ? { notice: `故事较长，已为您精简为 ${totalSeconds} 秒` } : {}),

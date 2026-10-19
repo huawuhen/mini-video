@@ -7,12 +7,18 @@ export function createPiLlm({ model, streamFn }) {
   return {
     async complete({ system, messages, signal }) {
       const agent = new Agent({ initialState: { systemPrompt: system, model, tools: [] }, streamFn });
-      const history = messages.slice(0, -1).map((message) => ({ role: 'user', content: String(message.content ?? ''), timestamp: Date.now() }));
+      // Replay earlier messages with their own roles so repair turns include the failed assistant output.
+      const history = messages.slice(0, -1).map((message) => ({ role: message.role === 'assistant' ? 'assistant' : 'user',
+        content: String(message.content ?? ''), timestamp: Date.now() }));
       if (history.length) agent.state.messages = [...agent.state.messages, ...history];
       const abort = () => agent.abort();
       signal?.addEventListener('abort', abort, { once: true });
       try {
-        if (signal?.aborted) throw new Error('LLM 调用已取消');
+        if (signal?.aborted) {
+          const error = new Error('LLM 调用已取消');
+          error.name = 'AbortError';
+          throw error;
+        }
         const current = messages.at(-1);
         if (!current) throw new Error('LLM 调用缺少用户消息');
         await agent.prompt(String(current.content ?? ''));
