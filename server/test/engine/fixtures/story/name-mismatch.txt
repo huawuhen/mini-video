@@ -1,0 +1,1 @@
+{"title":"生日会","synopsis":"妈妈给宝宝准备生日蛋糕。","cast":[{"name":"小朋友","gender":"female","ageGroup":"child"}],"segments":[{"durationSeconds":30,"plot":"吹蜡烛、许愿。","dialogue":[],"castIndexes":[0],"transition":"hard_cut"}]}

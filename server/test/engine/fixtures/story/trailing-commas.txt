@@ -1,0 +1,1 @@
+{"title":"做蛋糕","synopsis":"一家人在厨房做蛋糕。","cast":[{"name":"妈妈","gender":"female","ageGroup":"middle",}],"segments":[{"durationSeconds":30,"plot":"打发奶油、摆上水果。","dialogue":[],"castIndexes":[0,],"transition":"hard_cut",}],}

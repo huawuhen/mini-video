@@ -68,7 +68,7 @@
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
-| M1-ENG-01 | — | — | — | 待认领（下一步；开工要点见 §6 M1-ENG-02 第三轮记录） | — |
+| M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | 待审查 | 2026-10-17 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-RND-01 | — | — | — | 待认领 | — |
@@ -146,6 +146,40 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-19 · Engine · M1-ENG-01 复审修复（取消语义与超长片段）
+
+- **背景**：在原分支合并 `origin/main`（996353f）后，按 §6 复审修复 2 条必改与建议 3；已阅工作流新决定与 `docs/skills/wan-3.0.md`（v2）、`docs/ARCHITECTURE.md` §5 新契约、`docs/TASKS.md` M1-ENG-04 任务描述，**本轮未实现**，待 ENG-01 合并后按指示以 M1-ENG-04 单独开工。
+- **改动**：
+  - 必改 1（取消不生效）：删除按错误信息字符串分类的 `isCallerCancelled`；`understand` / `bindPrompts` 循环每次尝试前 `throwIfCallerCancelled(signal)`——调用方信号已 abort（`signal?.aborted`）就抛 `signal.reason`（默认原因包装为 `AbortError`），不看原因文字；provider 失败路径同样先检查信号再决定重试。取消时 LLM 调用 ≤ 1 次。
+  - 必改 2（超长片段被丢弃）：`normalizePlan` 的溢出条件收敛为「剩余预算 < 最小允许值」；请求时长超过允许最大值时**向下取到不超过剩余预算的最大允许值**保留该段，任何时长改动或合并都置 `compressed`。
+  - 建议 3：`story-smoke.js` 删除 `/root/chaodayun` 硬编码导入分支与遗留 `void readFile;`，只保留自带 OpenAI 兼容路径；`@earendil-works/pi-ai@0.87.1` 写死为 `server` 直接依赖。
+- **测试**：新增取消用例（默认原因、自定义原因「项目已取消」、调用前已 abort、`bindPrompts` 取消——全部直接抛出且 LLM 调用 ≤ 1，调用前已 abort 时为 0）；新增超长片段用例（`[100]` → 30、`[60,30]` → 30+30 顺序不变、`[30,30,30,5]` 第 4 段预算耗尽合并且 `compressed`）；「预算不足」用例按新规则改为 `[30,30,10]`（向下取值保留）。旧「用户停止」魔法字符串测试删除。
+- **验证**：`npm run test:server` 169/169 连续四轮通过；`npm run check`、`npm run build` 通过；敏感信息扫描无异常。未调用真实模型。
+- **未完成 / 风险**：取消抛出的错误为 `signal.reason` 原样（默认原因是 DOMException AbortError，自定义原因是调用方给的 Error），BE-05 的 Worker 处理器需按 `signal.aborted` 或错误名识别取消，不要比较消息文本；M1-ENG-04（bible/endState/Skill/expandIdea）待 ENG-01 合并后读最新文档开工。
+
+### 2026-10-19 · Engine · M1-ENG-01 审查修复（输出契约、角色匹配与超时）
+### 2026-10-19 · Engine · M1-ENG-01 审查修复（输出契约、角色匹配与超时）
+
+- **背景**：在原分支合并 `origin/main`（64d356b）后，按 §6 修复 5 条必改与建议 6~9；「设定集」与「每段结束状态」按 Lead 指示暂不实现。
+- **改动**：
+  - 必改 1：`STORY_SYSTEM` / `BIND_SYSTEM` 写明完整输出字段说明、取值范围与完整示例 JSON（`STORY_EXAMPLE` / `BIND_EXAMPLE` 导出）；新增契约测试「示例必须通过 `parseModelJson` + `validatePlan` + `normalizePlan`」；新增 `server/scripts/story-smoke.js` 真实调用冒烟脚本（读环境变量，打印 degraded / 重试 / usage，默认不运行、不参与测试）。
+  - 必改 2：角色匹配精确同名优先，子串只在唯一候选时采用，`characterId` 先到先得不重复绑（`bindCharacters` 导出并直接单测）。
+  - 必改 3：短片段向上取整到最小允许时长，只在剩余预算不足时才停止；任何时长改动或片段合并都置 `compressed`；溢出剧情拼接上限 1000 字并记日志（建议 9）。
+  - 必改 4：保底方案在无勾选数字人时注入默认「主角」（unknown/young）并让所有片段引用。
+  - 必改 5：`understand` / `bindPrompts` 接受 `{ signal, timeoutMs }`（默认 90 秒），超时按失败走修复/兜底，调用方取消直接抛出；挂起 LLM 超时后兜底不再无限等待。
+  - 建议 6：修复重试把上一版输出（截断 2000 字）作为 `assistant` 消息回传，`llm/pi.js` 按 role 原样映射历史。建议 7：`bindPrompts` 对白同时支持 `castId` 与 `castIndex`（`segmentPrompt` 与重要性排序均回退），`engine/README.md` 新增 understand 输出 ↔ bindPrompts 输入字段对应表。建议 8：`usePrevTail` 时参考图预算减 1 为尾帧留位。
+- **测试**：`server/test/engine/story.test.js` 从 9 例扩到 12 例（契约、三种角色匹配情形、短片段/预算不足/压缩标记、保底主角、挂起超时与取消、修复带上版输出、对白回退与尾帧预留）；`llm/mock.js` 支持函数步骤模拟「忽略超时的 provider」并响应 abort。开发中发现并修复：已 abort 的外部信号不会触发 `addEventListener`，`deadlineSignal` 现在立即传播；音色不足以全部分配时留空交由用户在确认点 B 选择，不再抛错卡死（审查原「明确报错」按兜底原则收敛为「部分分配 + degraded 语义」，已在下方风险中标注）。
+- **验证**：`npm run test:server` 167/167 连续四轮通过（首轮出现整库 3ms 内全被取消，系测试库容器已停止，`npm run test:db:up` 后恢复）；`npm run check`、`npm run build` 通过；敏感信息扫描无异常。未调用真实模型。
+- **未完成 / 风险**：音色不足现为「分配到不重复为止、其余留空」，与开工要点「音色不够用时抛出明确错误」的表述不同——按 §6e「绝不能因 LLM 抽风卡死」的兜底原则处理，请 Lead 复审确认该取舍；`story-smoke.js` 需 M0 授权后人工运行。
+
+### 2026-10-17 · Engine · M1-ENG-01 故事理解与片段规划
+
+- **背景**：按 §6 M1-ENG-01 开工要点 a~g、`docs/ARCHITECTURE.md` §5、PRD §4.2/§4.7，实现注入式故事代理。参考超搭云 `2926b42` 的 screenwriter/agent/wan-video/storyboard 提示词与 pi Agent 接入思路，不复制其仓库、会话、计费依赖；`@earendil-works/pi-agent-core` 精确版本 `0.87.1`。
+- **改动**：`server/src/engine/story/{index,parse,plan,prompts}.js` 实现 `createStoryAgent({ llm, logger }) → { understand, bindPrompts }`；`engine/llm/{pi,mock}.js` 实现 pi Agent 桥接与脚本化模拟 LLM；新增 `server/test/engine/{story,pi-llm}.test.js` 及 9 份模拟常见 LLM 输出形态的故事夹具，夹具来源说明在 `fixtures/story/README.md`；更新依赖锁文件。
+- **核心实现**：故事作为不可信 JSON 数据区放入消息，系统提示明确故事中的指令不得执行；输出扫描首个完整 JSON 对象，兼容围栏、前后文本、尾逗号，长度上限 200k 字符，无嵌套量词回溯。严格校验角色/片段/对白索引；最多两次校验反馈修复，仍失败则确定性兜底并标 `degraded: true`。每段时长只取 SKU 的 `allowedDurations`，总时长不超 `maxSeconds`；超出时保留因果并把溢出剧情合并到最后片段，给出精简提示；已勾选数字人保证出现，匹配资产 ID，音色优先默认值且全作品不重复，不足时明确报错。`prev_tail` 仅相邻片段有相同 `sceneId` 时保留，否则硬切。`bindPrompts` 输出片段内多镜头运镜骨架、风格、形象/音频引用、`usePrevTail`、按出场和对白重要性裁剪的 `droppedRefs`；坏输出两次修复后确定性提示词兜底。LLM `usage` 汇总 input/output tokens，仅供内部核算，用户价为零。
+- **验证**：`npm run test:server` 161/161，连续四轮通过；`npm run check`、`npm run build` 通过；敏感信息扫描与 `git diff --check` 无异常。9 份夹具涵盖正常、围栏、多余前后文、尾逗号、缺字段、超长、姓名不匹配、音色重复、类型漂移；pi 桥接用注入的模拟流运行，所有测试无真实模型调用。
+- **未完成 / 风险**：真实 LLM 文本与模型成本、视觉和声音一致性尚未验证，留 M0/M2 经用户授权；`bindPrompts` 当前依赖调用方提供角色的 `lookImageKey/refAudioKey`，与 BE-05 联调时需确认字段映射。复审通过前不开其他任务。
 
 ### 2026-10-17 · Engine · M1-ENG-02 复审修复（参考图读取与测试稳定性）
 

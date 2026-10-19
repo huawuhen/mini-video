@@ -1,0 +1,3 @@
+我已经整理好方案，下面是结构化结果，请核对。
+{"title":"雨天回家","synopsis":"姐姐在雨中撑伞接弟弟回家。","cast":[{"name":"姐姐","gender":"female","ageGroup":"teen"}],"segments":[{"durationSeconds":30,"plot":"在校门口撑伞等待并一起回家。","dialogue":[],"castIndexes":[0],"transition":"hard_cut"}]}
+以上是全部内容。
