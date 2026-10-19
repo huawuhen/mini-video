@@ -71,7 +71,7 @@
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
-| M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | 进行中（规格：`docs/skills/wan-3.0.md` v2 与 ARCHITECTURE §5） | 2026-10-19 |
+| M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | 待审查（§5 有 6 条解释口径待确认） | 2026-10-19 |
 | M1-RND-01 | — | — | — | 待认领 | — |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
@@ -122,7 +122,7 @@
 
 | 日期 | 申请人 | 内容 | 影响 | 处理结果 |
 |---|---|---|---|---|
-| — | — | — | — | — |
+| 2026-10-19 | Engine（M1-ENG-04） | 按规格实现时做了以下解释口径，请 Lead 确认；如需调整都是小改动：① `understand` 输出的 segments[].takeMode（`multi_shot`/`single_take`，缺省 `multi_shot`）——wan-3.0.md §8 说 takeMode 由规划阶段逐段指定，但 ARCHITECTURE §5 的输出清单未列该字段，已按 §8 实现并写入 README；② `bindPrompts` 的 `ratio` 参数保留但不再进提示词正文（wan-3.0.md §6 拼装模板没有画幅块），画幅由生成请求的 ratio 字段表达；③ `assemble` 注入 startState/endState/mood/brief 前去掉尾部英文句号、按模板补标点——§6 模板与成品示例在「连贯性」行尾差一个字符（模板 `。` vs 示例 `.`），按模板执行，成品示例逐字测试按此口径；④ `classifyInput` 确定性细则：不超过阈值（默认 60 字，可配置）且不含对白标记（「」『』引号对白、说/问/答/喊等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判为「想法」；⑤ 设定集与 endState 的英文-only、handle 唯一、sceneId/propIds 引用存在为**硬校验**（进修复重试），词数上限（mood ≤8、brief ≤25、场景 ≤50、endState ≤50 词）为**软限制**（归一化截断并记 warn），避免真实模型频繁被打回兜底；⑥ `single_take`（一镜到底）整段即一个镜头，豁免逐镜头 3~8 秒上限（否则 30 秒一镜到底必然校验失败，§7 未明确此例外；兜底时间线同理）。 | 影响：BE-05 需按 `server/src/engine/README.md` 的新字段对接（bible/script/final_prompt/expandIdea/classifyInput）；无数据库变更 | 待 Lead 确认 |
 
 ## 6. 审查记录（Lead 填写，最新在上）
 
@@ -148,6 +148,20 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-19 · Engine · M1-ENG-04 设定集/结束状态/Skill/编剧扩写（待审查）
+
+- **背景**：M1-ENG-01 合并（`298929d`）后按 Lead 指示以新分支实现审查记录第 10~15 条：`docs/skills/wan-3.0.md`（v2）与 `docs/ARCHITECTURE.md` §5 新契约。分支 `agent/eng/M1-ENG-04-skills`（基于 main `298929d`），共 4 个提交（认领 + 三个功能提交）。
+- **受影响文件**：`server/src/engine/skills/{index,wan-3.0,generic,base}.js`（新增）、`server/src/engine/story/{index,prompts,parse,plan,call}.js`、`server/src/engine/story/expand.js`（新增）、`server/src/engine/README.md`（BE-05 对接说明重写）、`server/test/engine/{skills,expand}.test.js`（新增）、`server/test/engine/story.test.js`（重写）、`server/test/engine/fixtures/story/*`（有效样本补齐 bible/endState 等新字段）。
+- **核心实现**（按任务规格顺序）：
+  1. **设定集 bible**：`understand` 输出 `bible`（mood/characters/scenes/props，英文），提示词写明字段与示例（STORY_EXAMPLE 含 bible，契约测试保证示例过 parse+validate+normalize）；硬规则（英文-only、handle 唯一、castIndex/sceneId/propIds 引用存在）失败进修复重试，软限制（词数 8/25/50/25）归一化截断并记 `story_bible_clamped`；保底方案也生成确定性英文 bible。
+  2. **endState/startState/shots**：每段输出 `sceneId`（不再删除）、`propIds`、`endState`（≤50 词截断）、`takeMode`；`bindPrompts` 返回 `startState`（上一段 endState，仅 prev_tail）、`endState`、`shots`、`skillId`、`skillVersion`、`degraded`，BE-05 存 `segments.final_prompt` 无需新列。
+  3. **代码拼装提示词**：新增 `skills/`（注册表 `get(skillId)`/`forModel(model)` 回退 generic；`wan-3.0.js` 含 planningGuide 与 shotSystem §4/§5.1 原文+占位符；`base.js` 共享 `validateShots`/`assemble`/`fallbackTimeline`/`refLabels`/`dialogueSentence`/`buildShotMessage`）。`bindPrompts` 改为每段一次 LLM 调用写镜头时间线；`assemble` 按 §6 块顺序逐字拼装（成品示例逐字一致测试）；对白逐字校验（不新增/不改写/不丢/顺序不变）、英文字段禁中文、镜头时间首尾相接、语速预算；超长先裁镜头级 avoid 再截 environment、仍超判失败重试；修复 2 次失败走单镜头确定性兜底（`degraded: true`）。STORY_SYSTEM 里模型相关的节奏规则挪进 Skill 的 `planningGuide`，`understand` 按 `skillId` 注入。
+  4. **expandIdea**：`story/expand.js`——目标时长 `min(maxSeconds, 60)`；校验对白字数预算（≤目标秒 × Skill 的 dialogueCharsPerSecond）、已勾选数字人必须出场、不含镜头运镜（保守词表）；2 次修复后兜底（想法原文作剧本，`degraded: true`）；想法原文只进不可信数据区；`createStoryAgent` 暴露 `expandIdea`。
+  5. **classifyInput（约 60 字）**：确定性判定——≤阈值（默认 60，`ideaCharThreshold` 可配置）且无对白标记（「」『』、说/问/答等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判「想法」；导出自 `story/expand.js` 与 `story/index.js`，BE-05 在 `project.understand` job 里先于 LLM 调用。
+- **测试**：新增 `skills.test.js`（12 例：注册表、§5.3 示例契约、镜头校验与对白逐字、§6 成品示例逐字拼装、兜底、generic）与 `expand.test.js`（7 例：classifyInput、扩写契约、修复、兜底、取消/超时）；`story.test.js` 重写为 26 例（原 M1-ENG-01 全部用例保留并适配新契约，新增 bible 修复、script/inputKind/expanded 透传、skillId 注入、bindPrompts 镜头流程/prev_tail/兜底/single_take/超长裁剪/输入校验）。`npm run test:server` 194/194 通过。
+- **验证**：`npm run test:server` 194/194；`npm run check`、`npm run build` 通过（见最终推送前自测）；未调用真实模型（全部模拟 LLM）。
+- **未完成 / 风险**：① §5 登记了 6 条实现解释口径（takeMode 字段、ratio 不进正文、标点归一化、classifyInput 细则、软硬校验划分、single_take 豁免逐镜头上限），待 Lead 确认；② `docs/skills/wan-3.0.md` 第 9 节的 M0 假设全部落在 `limits` 可配置，M0 A/B 时直接改 Skill 参数即可；③ 敏感信息自查无异常（全部为虚构内容）。
 
 ### 2026-10-19 · Engine · M1-ENG-01 复审修复（取消语义与超长片段）
 
