@@ -116,6 +116,26 @@ function normalizeBible(raw, { logger } = {}) {
   return bible;
 }
 
+// Whitespace, punctuation and symbols are ignored so a line still matches when the
+// model re-punctuates it; a genuinely invented line will not appear in the source.
+const STRIP_RE = /[\s\p{P}\p{S}]+/gu;
+const compact = (text) => String(text ?? '').replace(STRIP_RE, '');
+
+/** Deterministic faithfulness check for script mode: every dialogue line must appear in
+ * the source text (user script or expanded script). Throws to trigger repair. */
+export function assertDialogueFromSource(plan, storyText) {
+  const source = compact(storyText);
+  for (const segment of plan.segments) {
+    for (const line of segment.dialogue) {
+      const spoken = compact(line.line);
+      if (spoken && !source.includes(spoken)) {
+        throw new Error(`剧本里没有这句对白：「${line.line}」。剧本模式不得新增对白`);
+      }
+    }
+  }
+  return plan;
+}
+
 export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
   const allowed = input.allowedDurations;
   const smallest = allowed.at(-1);

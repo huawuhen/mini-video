@@ -73,10 +73,11 @@ bindPrompts({ style, ratio, segments, cast, bible, voicesEnabled, skillId, maxIm
 行为约定：
 
 - 最终提示词 `prompt` 由 Skill 的 `assemble` **逐字拼装**（风格、场景、道具、人物外观、连贯性、写实与避坑模板不经过 LLM 改写）；对白由代码嵌入（`某 handle says in Mandarin Chinese, {delivery}: 「原句」`），镜头里出现才加 `Lip sync.`，全段无对白写 `No dialogue.`。
-- `图N` 编号 = `imageRefs` 顺序；`usePrevTail=true` 时提示词额外写 `图{N+1}：上一段的最后一帧…`，调用方在提交上游前把尾帧图片追加为第 N+1 张参考图（`omni_reference` 普通参考，尽力而为）。`usePrevTail=true` 时形象图预算已减 1（`droppedRefs` 计入裁剪数）。
+- **图片编号与提交顺序一致**：视频适配器的提交顺序是 `[tailRef, ...imageRefs]`（`modelhub-video` 尾帧排最前），所以 `usePrevTail=true` 时提示词 `图1` 写「上一段的最后一帧」、人物形象图从 `图2` 开始，调用方把尾帧图片作为第 1 张参考图提交（`omni_reference` 普通参考，尽力而为，不保证首帧衔接）；无尾帧时人物从 `图1` 开始。`usePrevTail=true` 时形象图预算已减 1（`droppedRefs` 计入裁剪数）。跨模块一致性有专门测试：`server/test/engine/skill-provider-numbering.test.js`。
 - `音色参考音频M` 编号 = `audioRefs` 顺序（按说话次数排序）。
 - `startState` = 上一段 `endState`（仅 `transition: 'prev_tail'`），已写入返回与 `final_prompt`。
 - `ratio` 参数保留但**不进提示词正文**（画幅由生成请求的 ratio 字段表达）。
+- 剧本忠实模式有确定性兜底检查：`inputKind: 'script'` 或 `expanded: true` 时，`understand` 逐句比对每条对白（去空白与标点后）必须出现在 `storyText` 原文中，否则判校验失败进修复重试；`inputKind: 'idea'`（未扩写）跳过。
 - `degraded: true` 表示该段镜头时间线 LLM 修复 2 次仍不合法，已用单镜头兜底（剧情直述 + 对白照嵌），日志有 `shot_timeline_fallback`。
 - 保存：`segments.final_prompt`（jsonb）= `{ prompt, imageRefs, audioRefs, usePrevTail, startState, endState, shots, skillId, skillVersion, degraded }`，无需新增数据库列。
 - 重拍单个片段：用保存的 `bible` 与上一段 `endState` 再次调用 `bindPrompts` 只传该段即可（`usePrevTail` 由该段 `transition` 决定）。

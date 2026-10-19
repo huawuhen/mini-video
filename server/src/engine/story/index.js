@@ -4,7 +4,7 @@
 // code-assembled final prompts (docs/skills/wan-3.0.md v2, ARCHITECTURE §5).
 import { storySystem, storyMessage } from './prompts.js';
 import { parseModelJson, validatePlan } from './parse.js';
-import { fallbackPlan, InsufficientVoicesError, normalizePlan, validateInput } from './plan.js';
+import { assertDialogueFromSource, fallbackPlan, InsufficientVoicesError, normalizePlan, validateInput } from './plan.js';
 import { expandIdea as expandIdeaImpl, classifyInput } from './expand.js';
 import { createSkillRegistry, DEFAULT_SKILL_ID } from '../skills/index.js';
 import { addUsage, deadlineSignal, MAX_REPAIR_ATTEMPTS, reviewMessages, throwIfCallerCancelled,
@@ -48,6 +48,8 @@ export function createStoryAgent({ llm, logger, skills = createSkillRegistry() }
       const skill = resolveSkill(skills, skillId);
       const meta = { script: input.storyText.trim(),
         inputKind: inputKind === 'idea' ? 'idea' : 'script', expanded: Boolean(expanded) };
+      // 剧本忠实模式（含确认点 A 编辑后的剧本与扩写结果）：对白逐句必须来自原文，确定性比对。
+      const faithful = meta.inputKind === 'script' || meta.expanded;
       const usage = { inputTokens: 0, outputTokens: 0 };
       const messages = [{ role: 'user', content: storyMessage({ ...input, inputKind: meta.inputKind,
         expanded: meta.expanded, style }) }];
@@ -60,6 +62,7 @@ export function createStoryAgent({ llm, logger, skills = createSkillRegistry() }
           lastText = response.text;
           addUsage(usage, response);
           const parsed = validatePlan(parseModelJson(response.text));
+          if (faithful) assertDialogueFromSource(parsed, input.storyText);
           return { ...normalizePlan(parsed, input, { logger }), ...meta, usage };
         } catch (error) {
           deadline.dispose();

@@ -71,7 +71,7 @@
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
-| M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | 待审查（§5 有 6 条解释口径待确认） | 2026-10-19 |
+| M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | 待复审（必改 1 与建议 2 已修复；§5 六条口径已裁决 ✅） | 2026-10-19 |
 | M1-RND-01 | — | — | — | 待认领 | — |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
@@ -122,7 +122,7 @@
 
 | 日期 | 申请人 | 内容 | 影响 | 处理结果 |
 |---|---|---|---|---|
-| 2026-10-19 | Engine（M1-ENG-04） | 按规格实现时做了以下解释口径，请 Lead 确认；如需调整都是小改动：① `understand` 输出的 segments[].takeMode（`multi_shot`/`single_take`，缺省 `multi_shot`）——wan-3.0.md §8 说 takeMode 由规划阶段逐段指定，但 ARCHITECTURE §5 的输出清单未列该字段，已按 §8 实现并写入 README；② `bindPrompts` 的 `ratio` 参数保留但不再进提示词正文（wan-3.0.md §6 拼装模板没有画幅块），画幅由生成请求的 ratio 字段表达；③ `assemble` 注入 startState/endState/mood/brief 前去掉尾部英文句号、按模板补标点——§6 模板与成品示例在「连贯性」行尾差一个字符（模板 `。` vs 示例 `.`），按模板执行，成品示例逐字测试按此口径；④ `classifyInput` 确定性细则：不超过阈值（默认 60 字，可配置）且不含对白标记（「」『』引号对白、说/问/答/喊等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判为「想法」；⑤ 设定集与 endState 的英文-only、handle 唯一、sceneId/propIds 引用存在为**硬校验**（进修复重试），词数上限（mood ≤8、brief ≤25、场景 ≤50、endState ≤50 词）为**软限制**（归一化截断并记 warn），避免真实模型频繁被打回兜底；⑥ `single_take`（一镜到底）整段即一个镜头，豁免逐镜头 3~8 秒上限（否则 30 秒一镜到底必然校验失败，§7 未明确此例外；兜底时间线同理）。 | 影响：BE-05 需按 `server/src/engine/README.md` 的新字段对接（bible/script/final_prompt/expandIdea/classifyInput）；无数据库变更 | 待 Lead 确认 |
+| 2026-10-19 | Engine（M1-ENG-04） | 按规格实现时做了以下解释口径，请 Lead 确认；如需调整都是小改动：① `understand` 输出的 segments[].takeMode（`multi_shot`/`single_take`，缺省 `multi_shot`）——wan-3.0.md §8 说 takeMode 由规划阶段逐段指定，但 ARCHITECTURE §5 的输出清单未列该字段，已按 §8 实现并写入 README；② `bindPrompts` 的 `ratio` 参数保留但不再进提示词正文（wan-3.0.md §6 拼装模板没有画幅块），画幅由生成请求的 ratio 字段表达；③ `assemble` 注入 startState/endState/mood/brief 前去掉尾部英文句号、按模板补标点——§6 模板与成品示例在「连贯性」行尾差一个字符（模板 `。` vs 示例 `.`），按模板执行，成品示例逐字测试按此口径；④ `classifyInput` 确定性细则：不超过阈值（默认 60 字，可配置）且不含对白标记（「」『』引号对白、说/问/答/喊等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判为「想法」；⑤ 设定集与 endState 的英文-only、handle 唯一、sceneId/propIds 引用存在为**硬校验**（进修复重试），词数上限（mood ≤8、brief ≤25、场景 ≤50、endState ≤50 词）为**软限制**（归一化截断并记 warn），避免真实模型频繁被打回兜底；⑥ `single_take`（一镜到底）整段即一个镜头，豁免逐镜头 3~8 秒上限（否则 30 秒一镜到底必然校验失败，§7 未明确此例外；兜底时间线同理）。 | 影响：BE-05 需按 `server/src/engine/README.md` 的新字段对接（bible/script/final_prompt/expandIdea/classifyInput）；无数据库变更 | ✅ 已裁决：六条全部接受（Lead 2026-10-19，见 §6 M1-ENG-04 审查记录；①已同步写入 ARCHITECTURE §5） |
 
 ## 6. 审查记录（Lead 填写，最新在上）
 
@@ -149,6 +149,16 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-19 · Engine · M1-ENG-04 复审修复（图片编号与提交顺序一致 + 剧本对白确定性比对）
+
+- **背景**：按 §6 M1-ENG-04 审查修复必改 1；建议 2 一并实现。已合并 `origin/main`（`0aa9c34`，含 Lead 更正的 `docs/skills/wan-3.0.md` §6），修复 2 个提交推同一分支。
+- **改动**：
+  - **必改 1（图片编号错位）**：`skills/base.js` 的 `assemble` 与 `refLabels` 按更正后的规格改为「尾帧占 `图1`、人物形象图从 `图2` 开始；无尾帧时人物从 `图1` 开始」，音频编号不变（`音色参考音频M` 按 `audioRefs` 顺序）。参考素材块内尾帧行排在首位，与编号一致。
+  - **必改 1②（跨模块一致性测试）**：新增 `server/test/engine/skill-provider-numbering.test.js`——用 `bindPrompts`（模拟 LLM 返回合法镜头）的 `prompt`/`imageRefs`/`usePrevTail` 走 `createWan30Adapter` 的 `prepare + submit`（本地假上游捕获请求体），断言有尾帧时 `image_file_1=尾帧`、`image_file_2/3=形象图` 且提示词 `图1/图2/图3` 一一对应，无尾帧时人物从 `图1` 对应 `image_file_1/2`。
+  - **建议 2（剧本对白确定性比对）**：`story/plan.js` 新增 `assertDialogueFromSource(plan, storyText)`（去空白与全部标点/符号后逐句 `includes`，线性正则无回溯）；`understand` 在 `inputKind: 'script'` 或 `expanded: true` 时于校验阶段调用，新增的对白会带着「剧本模式不得新增对白」进修复重试，2 次后仍失败走既有兜底；`inputKind: 'idea'`（未扩写）跳过。测试默认剧本与 `duplicate-voice` 用例的 storyText 已改为包含各自对白原句。
+- **验证**：`npm run test:server` 197/197 通过（新增跨模块 2 例 + 剧本忠实 1 例；skills/story 的逐字与编号断言同步更新）；`npm run check`、`npm run build` 通过；`git merge origin/main` 无冲突。
+- **未完成 / 风险**：真实模型下「模型改写对白被拦下修复」会增加重试次数，M0 冒烟脚本（剧本模式）可观察 `story_plan_repair` 频率，必要时在 §5 再提调整（如对白比对放宽为仅在 `compressed` 时告警）——当前严格按审查意见执行。
 
 ### 2026-10-19 · Engine · M1-ENG-04 设定集/结束状态/Skill/编剧扩写（待审查）
 

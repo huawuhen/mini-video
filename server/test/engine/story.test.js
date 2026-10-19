@@ -13,7 +13,7 @@ import { genericSkill } from '../../src/engine/skills/generic.js';
 import { defineSkill } from '../../src/engine/skills/base.js';
 
 const sample = (name) => readFile(fileURLToPath(new URL(`./fixtures/story/${name}`, import.meta.url)), 'utf8');
-const input = (storyText = '妈妈带宝宝在公园野餐，树叶被风吹起，两人分享水果后回家。') => ({
+const input = (storyText = '妈妈带宝宝在公园野餐，妈妈说：「慢一点，看看树叶。」宝宝咬了一口苹果说：「这个苹果真甜！」两人分享水果后回家。') => ({
   storyText, style: { name: '绘本水彩', promptHint: '柔和水彩、儿童绘本质感' }, maxSeconds: 90,
   allowedDurations: [5, 10, 15, 30],
   characters: [{ id: 'chr_baby', name: '宝宝', selected: true, gender: 'female', ageGroup: 'child' }],
@@ -202,15 +202,43 @@ describe('engine/story（M1-ENG-01/04）', () => {
   });
 
   test('音色重复样本重新分配；不足时留空交由用户选择', async () => {
+    const storyText = '两个孩子在公园沙坑玩，阿花说：「你好！」阿兰说：「一起玩吧！」，玩得很开心。';
     const { agent } = agentWith([await sample('duplicate-voice.txt')]);
-    const result = await agent.understand({ ...input(), characters: [] });
+    const result = await agent.understand({ ...input(storyText), characters: [] });
     const voiced = result.cast.filter((person) => person.voiceId);
     assert.equal(new Set(voiced.map((person) => person.voiceId)).size, voiced.length, '已分配的音色不重复');
     const lacking = agentWith([await sample('duplicate-voice.txt')]);
-    const lackingResult = await lacking.agent.understand({ ...input(), characters: [], voices: [input().voices[0]] });
+    const lackingResult = await lacking.agent.understand({ ...input(storyText), characters: [], voices: [input().voices[0]] });
     assert.equal(lackingResult.degraded, false);
     assert.equal(lackingResult.cast.filter((person) => person.voiceId).length, 1, '只有一个音色时只分配一个角色');
     assert.ok(lackingResult.cast.some((person) => !person.voiceId), '其余角色留空，由用户在确认点 B 选择');
+  });
+
+  test('剧本忠实模式：对白必须来自原文，模型新增对白触发修复（expanded 同理，idea 跳过）', async () => {
+    const raw = JSON.parse(await sample('normal.json'));
+    // 模型把原句改成了剧本里没有的新句
+    raw.segments[0].dialogue = [{ castIndex: 0, line: '哇，树叶飞得好高呀！' }];
+    raw.segments[1].dialogue = [];
+    const good = JSON.parse(await sample('normal.json'));
+    const { agent, calls } = agentWith([JSON.stringify(raw), JSON.stringify(good)]);
+    const result = await agent.understand(input());
+    assert.equal(result.degraded, false);
+    assert.equal(calls.length, 2);
+    assert.match(calls[1].messages.at(-1).content, /不得新增对白/);
+    assert.ok(result.segments.every((segment) => segment.dialogue.length > 0), '修复后恢复原文对白');
+    // expanded=true 的扩写剧本同样受检
+    const expandedLlm = createMockLlm([JSON.stringify(raw), JSON.stringify(good)]);
+    const expandedAgent = createStoryAgent({ llm: expandedLlm, logger: { warn: () => {} } });
+    const expandedResult = await expandedAgent.understand({ ...input(), expanded: true });
+    assert.equal(expandedResult.expanded, true);
+    assert.equal(expandedLlm.calls.length, 2);
+    // inputKind='idea' 且未扩写时跳过该检查（对白由扩写阶段负责）
+    const ideaLlm = createMockLlm([JSON.stringify({ ...raw, segments: raw.segments.map((segment) => ({ ...segment,
+      durationSeconds: 30 })) })]);
+    const ideaAgent = createStoryAgent({ llm: ideaLlm, logger: { warn: () => {} } });
+    const ideaResult = await ideaAgent.understand({ ...input(), inputKind: 'idea' });
+    assert.equal(ideaLlm.calls.length, 1, 'idea 模式不做原文比对');
+    assert.equal(ideaResult.degraded, false);
   });
 
   test('恶意故事只进入不可信数据区；超长模型输出有界且不回溯', async () => {
@@ -446,8 +474,10 @@ describe('engine/story（M1-ENG-01/04）', () => {
     assert.equal(second.usePrevTail, true);
     assert.equal(second.startState, 'the girl stands panting on the lawn, wide framing');
     assert.match(second.prompt, /连贯性：本段从上一段结尾自然开始：the girl stands panting on the lawn, wide framing。/);
-    assert.match(second.prompt, /图2：上一段的最后一帧，作为本段起始画面的关键帧参考。/,
-      '1 张形象图后尾帧占 图2');
+    assert.match(second.prompt, /图1：上一段的最后一帧，作为本段起始画面的关键帧参考。/,
+      '有尾帧时尾帧占 图1（与提交顺序一致）');
+    assert.match(second.prompt, /图2：the girl 的主体参考（锁定外貌与服装）：a four-year-old girl。/,
+      '形象图顺延为 图2');
     assert.deepEqual(second.imageRefs, ['looks/b.png'], 'maxImageRefs=2 时为尾帧预留 1 位');
     assert.match(second.prompt, /No dialogue\./);
     assert.deepEqual(second.audioRefs, ['voices/b.wav'], '两段以上才推荐音色');
