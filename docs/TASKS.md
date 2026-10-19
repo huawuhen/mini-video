@@ -27,13 +27,13 @@
 | M1-BE-02 | BE-Core | 钱包与计价：账本、SKU/档位映射取价、`/quotes` 四种 kind、`/quotes/estimate`、预占/结算/退回/直接扣费、兑换码（只存哈希） | 并发预占不超扣；幂等重放；同键不同参数 409；调价后旧报价 `QUOTE_MISMATCH` | M1-BE-01 |
 | M1-BE-03 | BE-Core | 定时任务调度（基于 `enqueue` + 去重键按时间窗口入队）：`projects.expire_sweep`、`uploads.sweep`、`auth.sweep`（清理过期 `rate_counters` 窗口、已作废/过期 `sms_codes`、过期 `sessions`）、已完成 `jobs` 归档；队列核心已在 L-02 完成 | 多 Worker 同时启动只入队一次；清理任务幂等 | L-02 |
 | M1-BE-04 | BE-Core | 数字资产库与上传：`/uploads/*`、`/characters/**`、形象生成（job `look.generate`，调用 engine 模拟适配器） | 用户隔离（他人资源 404）；版本只增不改；软删除不影响历史作品 | M1-BE-02、M1-BE-03 |
-| M1-BE-05 | BE-Core | 作品状态机与各 job（§4 ARCHITECTURE），engine/render 先用桩实现 | 模拟上游下从创建跑到 delivered；两个确认点；暂停/恢复/取消/重试；重启续跑；免费次数限制（「每天」按北京时间 00:00 切日）；`voicesEnabled` 规则 | M1-BE-04、M1-ENG-01、M1-ENG-02 |
+| M1-BE-05 | BE-Core | 作品状态机与各 job（§4 ARCHITECTURE），engine/render 先用桩实现；`project.understand` 含「想法扩写」分支（`classifyInput` → `expandIdea` → `understand`，一次整理只计 1 次免费次数），`story.script`/`inputKind`/`expanded`/`bible` 写入 `projects.story`，`segments.final_prompt` 保存 `startState/endState/shots/skillId/skillVersion`；**所有片段按顺序串行生成**（用户 2026-10-19 决定），每段「提交 → 轮询 → 转存 → `render.inspect` → 提取尾帧 → 下一段」；`inspect` 不通过按「片段失败」处理：退回该片段预占、作品进入 `failed`，用户重试只重新生成失败片段（M1 阶段 `inspect` 用桩实现，M1-RND-01 完成后接入） | 模拟上游下从创建跑到 delivered；两个确认点；暂停/恢复/取消/重试；重启续跑；免费次数限制（「每天」按北京时间 00:00 切日）；`voicesEnabled` 规则 | M1-BE-04、M1-ENG-01、M1-ENG-02 |
 | M1-BE-06 | BE-Core | 作品 API（API.md §6）+ SSE + 交付后片段替换与重新拼接 + 下载 | 契约测试：响应结构与 `types.ts` 一致；状态不允许时 409 | M1-BE-05 |
 | M1-ENG-01 | Engine | `engine/story`：pi agent 接入、`understand` / `bindPrompts`（ARCHITECTURE §5），时长约束、角色匹配、音色推荐，模拟 LLM | 单测覆盖：时长只取 allowedDurations、总时长 ≤ max、超长精简提示、单片段不出音频参考 | – |
 | M1-ENG-02 | Engine | `engine/providers`：适配器注册表 + wan3.0 / seedance2.5 视频（图片+音频参考、首帧）+ 图片模型适配器 + 模拟上游 | submit/query/normalize 单测；提交结果未知的分类 | – |
 | M1-ENG-03 | Engine | `engine/net` `engine/storage`（七牛 Kodo + 签名链接）`engine/transfer` `engine/extract` | SSRF/大小/超时测试；存储用内存实现可替换 | – |
-| M1-RND-01 | Render | `render.compose`：拼接、响度统一、硬切/尾帧衔接、AI 生成标识（显式 + 元数据）、封面；`extractLastFrame` | 用 FFmpeg 生成的测试视频做合成测试（不需要真实模型） | – |
-| M1-WEB-01 | Web | 在 L-04 骨架上打磨首页、资产库、作品列表、作品详情各视图（mock） | 375px 与 1280px 截图；`npm run check` 与 build 通过 | L-04 |
+| M1-RND-01 | Render | `render.compose`：拼接、响度统一、硬切、AI 生成标识（显式 + 元数据）、封面；`extractLastFrame`；**`inspect` 基础技术检查**（可解码、有视频流与音频流、时长偏差 ≤2 秒、画幅分辨率、非全黑、非卡住、非静音，PRD §4.3；用 FFmpeg 生成的正常与异常样例视频测试：全黑、静音、静帧、缺音轨、时长不符、损坏文件） | 用 FFmpeg 生成的测试视频做合成测试（不需要真实模型） | – |
+| M1-WEB-01 | Web | 在 L-04 骨架上打磨首页、资产库、作品列表、作品详情各视图（mock）；**确认点 A 改为展示并编辑 `story.script` 剧本全文**，`expanded` 为 `true` 时标注「AI 已为你扩写成剧本」，重新整理按剧本处理（API.md §6.1、§6.3） | 375px 与 1280px 截图；`npm run check` 与 build 通过 | L-04 |
 | M1-WEB-02 | Web | 新手引导打磨：定位、自动避让、键盘与焦点、减少动态效果、场景小提示 | 手机/PC 各走一遍主引导与 3 个小提示截图 | L-04 |
 
 ## M2 MVP 内测

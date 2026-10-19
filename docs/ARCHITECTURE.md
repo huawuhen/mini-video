@@ -144,7 +144,7 @@ story_review ──reanalyze──► understanding
 story_review ──confirm-story(looks>0, 扣形象费)──► casting ──job:look.generate×N──► cast_review (◆B)
 story_review ──confirm-story(looks=0)──► cast_review
 cast_review ──confirm-cast(预占视频费)──► rendering
-rendering: job:project.bind_prompts → job:segment.generate（尾帧衔接的片段按顺序，其余并行）→ job:gen.poll
+rendering: job:project.bind_prompts → job:segment.generate（**全部片段按顺序串行**，用户 2026-10-19 决定；并行是 M0 对比之后的优化）→ job:gen.poll → 转存 → render.inspect（基础技术检查，不通过 → 该片段失败并退回预占）→ 提取尾帧 → 下一段
          → 全部成功 ──job:project.compose──► composing ──► delivered（写 delivered_at / expires_at）
 delivered ──segment take / selection──► 重新 compose（status 保持 delivered）
 delivered ──cron:projects.expire_sweep──► expired
@@ -175,19 +175,32 @@ delivered ──cron:projects.expire_sweep──► expired
 
 所有外部依赖通过参数注入，测试用模拟实现，**不产生真实费用**。
 
-**engine.story（Engine 角色）**
+**engine.story（Engine 角色）**——提示词设计与每个字段的规则见 [docs/skills/wan-3.0.md](./skills/wan-3.0.md)（按视频模型一个 Skill）
 
 ```js
-understand({ storyText, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices })
-  → { title, synopsis, compressed, notice?, cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
-      segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes }] }
-bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, voicesEnabled })
-  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean }]
+expandIdea({ idea, style, maxSeconds, allowedDurations, characters, skillId, signal, timeoutMs })   // 仅当输入被判为「一句话想法」时调用；免费
+  → { title, script /* 中文剧本全文：场景、动作、对白（可创作）；长度与目标时长匹配 */, usage, degraded }
+understand({ storyText /* 剧本；想法已先扩写 */, inputKind, expanded, style, maxSeconds, allowedDurations, characters /* 用户勾选+资产库摘要 */, voices, skillId, signal, timeoutMs })
+  → { title, script, inputKind, expanded, synopsis, compressed, notice?, degraded, usage,
+      bible: { characters: [{ castIndex, handle, brief }],          // 英文，唯一简称 + 身份级外观，一经写出不再改
+               scenes:     [{ id, nameZh, description }],            // 英文固定场景描述
+               props:      [{ id, nameZh, description }] },
+      cast: [{ name, description, gender, ageGroup, characterId?, voiceId? }],
+      segments: [{ durationSeconds, plot, cameraNotes, dialogue: [{ castIndex, line }], ambience, transition, castIndexes,
+                   sceneId, propIds, endState /* 英文，本段最后一帧的状态 */ }] }
+bindPrompts({ style, ratio, segments, cast /* 含形象图 key、音色参考音频 key */, bible, voicesEnabled, skillId, maxImageRefs, signal, timeoutMs })
+  → [{ segmentIndex, prompt, imageRefs: string[], audioRefs: string[], usePrevTail: boolean,
+       startState, endState, shots, skillId, skillVersion, degraded }]
   -- 全能参考（omni_reference）模式：usePrevTail 为 true 时，调用方在生成该片段前先取上一段尾帧，作为普通参考图放入 imageRefs（尽力而为，不保证首帧衔接）
 ```
 
 - `allowedDurations` 来自档位映射的视频 SKU；返回的每段时长必须在其中，总时长 ≤ `maxSeconds`，由调用方再校验一次。
 - 只有 1 个片段时 `voicesEnabled=false`，`audioRefs` 为空。
+- **输入判定**（`classifyInput(text)`，确定性，阈值可配置，默认约 60 字且无对白与场景描述为「想法」）在 `project.understand` job 里先于 LLM 调用；「想法」先 `expandIdea` 再 `understand`，「剧本」直接 `understand`；用户在确认点 A 编辑后重新整理的文字一律按「剧本」处理。`script` 保存在 `projects.story.script`，`projects.story_text` 保持用户原始输入。
+- 剧本模式忠实处理：**不新增对白**、不新增原文没有的人物与场景；想法模式的对白由 `expandIdea` 创作，之后 `understand` 按剧本模式忠实处理这份扩写结果。
+- **设定集（`bible`）在故事理解时生成一次，保存到 `projects.story.bible`，之后只读**；最终提示词中的风格、场景、道具、人物外观、连贯性、写实与避坑模板由**代码逐字注入**，不经过 LLM 改写；LLM 只写每段的镜头时间线（英文）。对白由代码逐字校验（不新增、不改写、不丢、顺序不变）。
+- `startState` 是上一段的 `endState`（仅 `transition: 'prev_tail'` 时有值）；`segments.final_prompt`（jsonb）保存 `{ prompt, imageRefs, audioRefs, usePrevTail, startState, endState, shots, skillId, skillVersion, degraded }`，无需新增数据库列。
+- `skillId` 由调用方按视频 SKU 的 `model` 选择（`skills.forModel(model)`），Skill 文件在 `server/src/engine/skills/`。
 
 **engine.providers（Engine 角色）**：注册表，每个适配器实现
 
@@ -207,7 +220,9 @@ transfer.fromUrl(url, key, { maxBytes, timeoutMs })   // 上游临时链接 → 
 
 ```js
 compose({ inputs: [{ localPath, transition }], ratio, resolution, watermarkText }) → { outputPath, coverPath, durationSeconds }
-extractLastFrame(videoPath) → imagePath     // 尾帧衔接
+extractLastFrame(videoPath) → imagePath     // 尾帧作为下一段的参考图
+inspect(videoPath, { durationSeconds, ratio, resolution, expectAudio }) → { ok, issues: [{ code, message }] }
+  // 基础技术检查：可解码、有视频流、有音频流、时长偏差 ≤2 秒、画幅与分辨率、非全黑（blackdetect）、非长时间卡住（freezedetect）、非静音（volumedetect）；全部用 FFprobe/FFmpeg，不调用任何模型
 ```
 
 - 拼接：响度统一（EBU R128）、硬切 / 尾帧衔接、H.264 + AAC MP4、显式 AI 生成标识 + 元数据隐式标识。**不加 BGM、不加字幕**。
@@ -219,7 +234,7 @@ extractLastFrame(videoPath) → imagePath     // 尾帧衔接
 | 原文件 | 新位置 | 适配要点 |
 |---|---|---|
 | `backend/screenwriter/prompts.js` `tools.js` `index.js` | `engine/story/` | 改为「故事理解+片段规划」与「绑定提示词」两段；输出按 §5 结构；新增音色推荐 |
-| `backend/agent/llm.js`、pi agent 接入、`agent/skills/wan-video.js` `storyboard.js` | `engine/llm/` `engine/skills/` | 配置走本项目环境变量；30 秒多镜头提示词规范 |
+| `backend/agent/llm.js`、pi agent 接入、`agent/skills/wan-video.js` `storyboard.js`（仅参考） | `engine/llm/` `engine/skills/<model>.js` | 配置走本项目环境变量；**每个视频模型一个 Skill**（提示词、拼装模板、校验、默认值），主力 `wan-3.0`，设计见 `docs/skills/wan-3.0.md` |
 | `backend/screenwriter/extract.js` | `engine/extract/` | txt/docx 文本提取 |
 | `modelhub-models.js` 等渠道代码（仅参考） | `engine/providers/<id>.js` | 统一适配器接口，注册表管理；视频用「全能参考」模式（图片 + 音频参考）；**渠道不绑定 Modelhub**，上线渠道以 M0 结论为准，新增渠道只需新增适配器 |
 | `backend/video-transfer.js` `media-proxy.js` | `engine/transfer/` | 上游结果转存七牛 |
