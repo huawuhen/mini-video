@@ -72,7 +72,7 @@
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
-| M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | 进行中（compose / extractLastFrame / inspect，样例视频用 FFmpeg 生成） | 2026-10-19 |
+| M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | 待审查（compose / extractLastFrame / inspect 完成，205/205 通过） | 2026-10-19 |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -150,6 +150,18 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-19 · Render · M1-RND-01 成片合成与片段技术验收（待审查）
+
+- **背景**：M1-ENG-04 合并（`6daa673`）后引擎线完成，按 Lead 指示开工 M1-RND-01（`render.compose` / `extractLastFrame` / `inspect`）。分支 `agent/render/M1-RND-01-compose`（基于 main `6daa673`），认领 + 实现 + 交接共 3 个提交。本机 FFmpeg/FFprobe 8.1.2。
+- **受影响文件**：`server/src/render/{index,ffmpeg,compose,inspect}.js`、`server/src/render/README.md`（骨架扩写为对接说明）、`server/src/render/assets/ai-mark.png`（新增资产）、`server/test/render/render.test.js`（新增）。
+- **核心实现**：
+  1. **compose**（PRD §4.4）：每段 `scale+pad` 归一到目标画幅（`dimensionsFor`：短边=档位、两边取偶）+ fps30 + `loudnorm=I=-16:TP=-1.5:LRA=11`（EBU R128）→ 48k AAC；`concat` 滤镜硬切拼接；**显式 AI 标识**——构建带 drawtext 时绘制 `watermarkText`（缺省「AI 生成内容」、首次调用探测并缓存），否则叠加内置 PNG 资产 `assets/ai-mark.png`（本机 FFmpeg 8.1.2 无 drawtext 滤镜，`overlay` 为核心滤镜任何构建可用；资产由本机 Swift CoreText 生成一次后提交，自制素材无第三方版权）；**隐式标识**写 MP4 `comment`；封面取 1 秒处 JPEG；输出 H.264+AAC MP4 `+faststart`；支持可选 `workDir`（对齐 Lead 骨架 README 的约定），缺省系统临时目录、文件名含 UUID 防并发碰撞。**不加 BGM/字幕**。
+  2. **extractLastFrame**：探测时长后 `-ss duration-1` 取最后一帧 JPEG，供下一段普通参考图。
+  3. **inspect**（PRD §4.3，全部 FFprobe/FFmpeg 零模型调用）：`UNDECODABLE`（probe 失败即返回，不再后续检查）、`VIDEO_STREAM_MISSING`、`AUDIO_STREAM_MISSING`（受 `expectAudio` 控制）、`DURATION_MISMATCH`（±2 秒）、`RESOLUTION_MISMATCH`（`dimensionsFor` 精确比对）、`BLACK_VIDEO`（blackdetect 黑色累计 ≥90% 时长）、`FROZEN_VIDEO`（freezedetect n=-60dB/d=2s，冻结累计 ≥90% 时长，未闭合的冻结延伸到片尾）、`SILENT_AUDIO`（volumedetect max < -60dB）。`message` 中文、`code` 供 BE-05 分支；错误统一 `RenderError`（`RENDER_INPUT_INVALID`/`RENDER_FFMPEG_MISSING`/`RENDER_FFMPEG_FAILED`/`RENDER_TIMEOUT`），上游细节只在 `detail` 供日志。
+- **测试**：`server/test/render/render.test.js` 8 例——`dimensionsFor` 表；`inspect` 正常样片全绿；全黑（只报 BLACK 不误报静音）、红色静帧（只报 FROZEN 不误报全黑）、静音各自命中；缺音轨受 `expectAudio` 控制、时长 ±2 秒容差两侧、分辨率不匹配、截断 30% 的损坏文件 `UNDECODABLE`；`extractLastFrame` 用红→蓝视频断言取到末帧（signalstats YAVG 蓝≈29/红≈76 对照）；`compose` 两段拼接时长≈6 秒、h264+aac/720x1280/元数据标识/封面存在、同一输入有/无水印时左下角水印区域 YAVG 差异 >2 证明显式标识真实叠加；compose 输入校验 4 例；`escapeDrawtext` 转义。样片全部 `lavfi` 合成，无真实模型费用。
+- **验证**：`npm run test:server` 205/205（197 + 8）；`npm run check`、`npm run build` 通过；`git merge origin/main` 无冲突。
+- **未完成 / 风险**：① 显式标识在本机走 PNG 叠加路径（drawtext 缺失），drawtext 分支逻辑已实现但本机无法 e2e 验证，M2-OPS 若用带 freetype 的构建建议人工过一眼；② 生产镜像必须装 FFmpeg（含 `libx264`/`aac`，Homebrew 与 Debian 默认均满足）；③ 水印 PNG 上的文字为静态资产，改文案需重新生成资产或用 drawtext 构建；④ BE-05 接入时 `inspect` 失败分支（片段失败、退回预占）由 BE-Core 实现，接口已就绪。
 
 ### 2026-10-19 · Engine · M1-ENG-04 复审修复（图片编号与提交顺序一致 + 剧本对白确定性比对）
 
