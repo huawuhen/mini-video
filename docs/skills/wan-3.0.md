@@ -174,9 +174,9 @@ bible.props[]       { id, nameZh, description }
 ```
 {Style}. {Scene description}. {Props，用分号连接，没有道具则省略}.        ← 总体描述
 参考素材：
-  图1：{handle} 的主体参考（锁定外貌与服装）：{brief}。
-  图2：…
-  图K：上一段的最后一帧，作为本段起始画面的关键帧参考。                    ← 仅 usePrevTail 为 true 时
+  图1：上一段的最后一帧，作为本段起始画面的关键帧参考。                    ← 仅 usePrevTail 为 true 时，占 图1
+  图2：{handle} 的主体参考（锁定外貌与服装）：{brief}。                   ← 没有尾帧时人物从 图1 开始
+  图3：…
   音色参考音频1：{handle} 的音色，该角色所有台词使用此音色。              ← 仅 audioRefs 非空时
 连贯性：本段从上一段结尾自然开始：{startState}。                          ← 仅 usePrevTail 为 true 时
 Total {durationSeconds} seconds. Realistic performance, natural pacing.
@@ -190,7 +190,7 @@ Avoid: {固定模板 + 镜头级 avoid，去重}.
 ```
 
 - 对白句由代码生成：`{Handle} says in Mandarin Chinese, {delivery}: “{line}”`（`delivery` 为空则省略逗号部分）。多句按顺序。
-- `图N` 的编号 = `imageRefs` 的顺序（对应 `image_file_N`）；`音频M` = `audioRefs` 的顺序（对应 `audio_file_M`）。拼装函数必须用同一份顺序生成编号，并有测试保证一致。
+- **图片编号与提交顺序一致**：提交给视频模型的图片顺序是 `[tailRef（若有）, ...imageRefs]`（`modelhub-video.js` 的实现，尾帧排最前），所以有尾帧时尾帧是 `图1`，人物依次 `图2…`；没有尾帧时人物从 `图1` 开始。`图N` 的编号 = 实际 `image_file_N`；`音频M` = `audioRefs` 的顺序（对应 `audio_file_M`）。拼装函数必须用同一份顺序生成编号，并有测试保证一致。
 - 固定避坑模板：`exaggerated acting, sudden whip pans, morphing faces, distorted hands, subtitles, text, watermarks`；镜头级 `avoid` 去重后追加，且不得与正向文本重复。
 
 成品示例（为便于阅读，只取 5.3 里的前两个镜头、按一个 9 秒的片段拼装；风格为日系动漫，且已有上一段。真实的 30 秒片段是 4~8 个镜头）：
@@ -198,9 +198,9 @@ Avoid: {固定模板 + 镜头级 avoid，去重}.
 ```
 Japanese anime, cel shading, vivid colors. A sunlit city-park lawn in late morning, soft shadows under old maple trees, a checkered picnic blanket in the middle, calm breeze. A small red diamond kite with a long white string.
 参考素材：
-图1：the girl 的主体参考（锁定外貌与服装）：a 4-year-old girl with short black hair and a yellow dress。
-图2：the woman 的主体参考（锁定外貌与服装）：a woman in her thirties with long hair and a white cardigan。
-图3：上一段的最后一帧，作为本段起始画面的关键帧参考。
+图1：上一段的最后一帧，作为本段起始画面的关键帧参考。
+图2：the girl 的主体参考（锁定外貌与服装）：a 4-year-old girl with short black hair and a yellow dress。
+图3：the woman 的主体参考（锁定外貌与服装）：a woman in her thirties with long hair and a white cardigan。
 音色参考音频1：the girl 的音色，该角色所有台词使用此音色。
 音色参考音频2：the woman 的音色，该角色所有台词使用此音色。
 连贯性：本段从上一段结尾自然开始：the girl stands on the blanket holding the kite spool, the woman kneels beside her, both looking up at the sky, medium-wide framing.
