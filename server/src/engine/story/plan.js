@@ -2,6 +2,7 @@
 const AGE_GROUPS = ['child', 'teen', 'young', 'middle', 'elder'];
 const MAX_OVERFLOW_PLOT_CHARS = 1000;
 const trimText = (value, fallback = '') => typeof value === 'string' && value.trim() ? value.trim() : fallback;
+const clampWords = (text, maxWords) => trimText(text).split(/\s+/).slice(0, maxWords).join(' ');
 
 export class InsufficientVoicesError extends Error {
   constructor() {
@@ -88,6 +89,33 @@ function assignVoices(cast, voices) {
   }
 }
 
+/** Clamp the bible's soft word-count limits; hard rules (English-only, unique ids/handles,
+ * resolvable references) are already enforced by validatePlan before this runs. */
+function normalizeBible(raw, { logger } = {}) {
+  const clamped = { mood: 0, brief: 0, scene: 0, prop: 0 };
+  const brief = (person) => {
+    const words = trimText(person.brief).split(/\s+/);
+    if (words.length > 25) clamped.brief += 1;
+    return words.slice(0, 25).join(' ');
+  };
+  const bible = {
+    mood: (() => { const words = trimText(raw.mood).split(/\s+/);
+      if (words.length > 8) clamped.mood += 1;
+      return words.slice(0, 8).join(' '); })(),
+    characters: raw.characters.map((person) => ({ castIndex: person.castIndex, handle: trimText(person.handle), brief: brief(person) })),
+    scenes: raw.scenes.map((scene) => { const words = trimText(scene.description).split(/\s+/);
+      if (words.length > 50) clamped.scene += 1;
+      return { id: trimText(scene.id), nameZh: trimText(scene.nameZh), description: words.slice(0, 50).join(' ') }; }),
+    props: (raw.props ?? []).map((prop) => { const words = trimText(prop.description).split(/\s+/);
+      if (words.length > 25) clamped.prop += 1;
+      return { id: trimText(prop.id), nameZh: trimText(prop.nameZh), description: words.slice(0, 25).join(' ') }; }),
+  };
+  if (Object.values(clamped).some((count) => count > 0)) {
+    logger?.warn?.('story_bible_clamped', clamped);
+  }
+  return bible;
+}
+
 export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
   const allowed = input.allowedDurations;
   const smallest = allowed.at(-1);
@@ -98,6 +126,8 @@ export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
       ageGroup: AGE_GROUPS.includes(character.ageGroup) ? character.ageGroup : 'young', characterId: character.id,
       defaultVoiceId: character.defaultVoiceId });
   }
+  const bible = normalizeBible(raw.bible, { logger });
+  const propIdSet = new Set(bible.props.map((prop) => prop.id));
   const proposed = raw.segments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
   let remaining = input.maxSeconds;
   const segments = [];
@@ -117,13 +147,19 @@ export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
       : Math.max(...budget.filter((n) => n <= requested));
     const castIndexes = [...new Set(segment.castIndexes.filter((i) => i < cast.length))];
     const sceneId = trimText(segment.sceneId);
+    const propIds = [...new Set((segment.propIds ?? []).map((id) => String(id).trim()))]
+      .filter((id) => propIdSet.has(id));
     segments.push({ durationSeconds, plot: segment.plot.trim(), cameraNotes: trimText(segment.cameraNotes),
       dialogue: segment.dialogue.filter((line) => line.castIndex < cast.length)
         .map((line) => ({ castIndex: line.castIndex, line: line.line.trim() })),
       ambience: trimText(segment.ambience),
       transition: index > 0 && segment.transition === 'prev_tail' && sceneId
         && sceneId === segments.at(-1)?.sceneId ? 'prev_tail' : 'hard_cut',
-      sceneId, castIndexes });
+      sceneId,
+      propIds,
+      endState: clampWords(segment.endState, 50),
+      takeMode: segment.takeMode === 'single_take' ? 'single_take' : 'multi_shot',
+      castIndexes });
     remaining -= durationSeconds;
   }
   if (!segments.length) throw new Error('片段规划没有可用时长');
@@ -140,11 +176,10 @@ export function normalizePlan(raw, input, { degraded = false, logger } = {}) {
   }
   if (segments.length > 1) assignVoices(cast, input.voices);
   for (const person of cast) delete person.defaultVoiceId;
-  for (const segment of segments) delete segment.sceneId;
   const totalSeconds = segments.reduce((sum, segment) => sum + segment.durationSeconds, 0);
   return { title: trimText(raw.title, '我的故事'), synopsis: raw.synopsis.trim(), compressed,
     ...(compressed ? { notice: `故事较长，已为您精简为 ${totalSeconds} 秒` } : {}),
-    degraded, totalSeconds, segmentCount: segments.length, cast, segments };
+    degraded, totalSeconds, segmentCount: segments.length, bible, cast, segments };
 }
 
 export function fallbackPlan(input) {
@@ -158,10 +193,21 @@ export function fallbackPlan(input) {
     ageGroup: AGE_GROUPS.includes(item.ageGroup) ? item.ageGroup : 'young', characterId: item.id }));
   if (!cast.length) cast.push({ name: '主角', description: '故事中的主角', gender: 'unknown', ageGroup: 'young' });
   const synopsis = words.length < 20 ? `在温暖的日常场景中，${words}。画面补足人物的动作、表情和情绪变化。` : words.slice(0, 260);
+  const bible = {
+    mood: 'natural, realistic; soft warm light',
+    characters: cast.map((_, index) => ({ castIndex: index, handle: `character ${index + 1}`,
+      brief: 'story character, appearance follows the reference image' })),
+    scenes: [{ id: 's1', nameZh: '故事场景',
+      description: 'the main location where the story happens, natural daylight, realistic everyday details' }],
+    props: [],
+  };
   const segments = durations.map((durationSeconds, index) => ({ durationSeconds,
     plot: words.slice(Math.floor(index * words.length / durations.length), Math.floor((index + 1) * words.length / durations.length)) || words,
     cameraNotes: '从人物与环境的建立镜头推进到动作细节，最后落在情绪反应。',
     dialogue: [], ambience: '与场景一致的自然环境音。', transition: 'hard_cut',
+    sceneId: 's1', propIds: [],
+    endState: 'the scene settles into a calm resting state, medium shot, natural light',
+    takeMode: 'multi_shot',
     castIndexes: cast.map((_, i) => i) }));
   if (segments.length > 1) assignVoices(cast, input.voices);
   for (const person of cast) delete person.defaultVoiceId;
@@ -169,5 +215,5 @@ export function fallbackPlan(input) {
   const compressed = words.length > 300 || Math.ceil(words.length / 80) * maxAllowed > input.maxSeconds;
   return { title: words.slice(0, 16) || '我的故事', synopsis, compressed,
     ...(compressed ? { notice: `故事较长，已为您精简为 ${totalSeconds} 秒` } : {}),
-    degraded: true, totalSeconds, segmentCount: segments.length, cast, segments };
+    degraded: true, totalSeconds, segmentCount: segments.length, bible, cast, segments };
 }

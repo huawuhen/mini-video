@@ -94,9 +94,12 @@ export function validateShots(raw, { durationSeconds, takeMode = 'multi_shot', d
     if (index > 0 && start !== shots[index - 1].end) throw new Error('镜头时间必须首尾相接、不重叠');
     const span = end - start;
     const hasDialogue = Array.isArray(shot?.dialogue) && shot.dialogue.length > 0;
-    const cap = hasDialogue ? limits.maxDialogueShotSeconds : limits.maxShotSeconds;
-    if (span < limits.minShotSeconds || span > cap) {
-      throw new Error(`第 ${index + 1} 个镜头时长必须在 ${limits.minShotSeconds}~${cap} 秒之间`);
+    // single_take（一镜到底）整段就是一个镜头，逐镜头时长上限只约束 multi_shot。
+    if (takeMode !== 'single_take') {
+      const cap = hasDialogue ? limits.maxDialogueShotSeconds : limits.maxShotSeconds;
+      if (span < limits.minShotSeconds || span > cap) {
+        throw new Error(`第 ${index + 1} 个镜头时长必须在 ${limits.minShotSeconds}~${cap} 秒之间`);
+      }
     }
     if (index === raw.shots.length - 1 && end !== durationSeconds) {
       throw new Error(`最后一个镜头必须结束于 ${durationSeconds} 秒`);

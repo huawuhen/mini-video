@@ -1,12 +1,25 @@
 {
   "title": "春天的野餐",
   "synopsis": "妈妈带宝宝到公园野餐，宝宝发现风吹动树叶，两人分享食物并开心回家。",
+  "bible": {
+    "mood": "warm, gentle, healing; soft golden light",
+    "characters": [
+      { "castIndex": 0, "handle": "the mother", "brief": "a woman in her thirties with long dark hair and a beige cardigan" },
+      { "castIndex": 1, "handle": "the girl", "brief": "a four-year-old girl with short black hair and a yellow dress" }
+    ],
+    "scenes": [
+      { "id": "s1", "nameZh": "公园草地", "description": "a sunlit city-park lawn in late morning, soft shadows under old maple trees, calm breeze" }
+    ],
+    "props": [
+      { "id": "p1", "nameZh": "野餐垫", "description": "a red and white checkered picnic blanket spread on the grass" }
+    ]
+  },
   "cast": [
     { "name": "妈妈", "description": "温柔耐心", "gender": "female", "ageGroup": "middle" },
     { "name": "宝宝", "description": "好奇活泼", "gender": "female", "ageGroup": "child" }
   ],
   "segments": [
-    { "durationSeconds": 30, "sceneId": "park_grass", "plot": "公园里铺开野餐垫，宝宝追逐飘落的树叶。", "cameraNotes": "广角建立场景后跟拍宝宝", "dialogue": [{ "castIndex": 0, "line": "慢一点，看看树叶。" }], "ambience": "风声和鸟鸣", "transition": "hard_cut", "castIndexes": [0, 1] },
-    { "durationSeconds": 30, "sceneId": "park_grass", "plot": "同一片草地上，两人分享水果并相视而笑。", "cameraNotes": "从手部特写缓慢拉到双人中景", "dialogue": [{ "castIndex": 1, "line": "这个苹果真甜！" }], "ambience": "轻微风声", "transition": "prev_tail", "castIndexes": [0, 1] }
+    { "durationSeconds": 30, "sceneId": "s1", "propIds": ["p1"], "endState": "the girl stands on the blanket holding a fallen leaf up to the sun, the mother sits beside her smiling, medium-wide framing, soft golden light", "plot": "公园里铺开野餐垫，宝宝追逐飘落的树叶。", "cameraNotes": "广角建立场景后跟拍宝宝", "dialogue": [{ "castIndex": 0, "line": "慢一点，看看树叶。" }], "ambience": "风声和鸟鸣", "transition": "hard_cut", "castIndexes": [0, 1] },
+    { "durationSeconds": 30, "sceneId": "s1", "propIds": ["p1"], "endState": "the two sit close together on the blanket sharing fruit, both smiling, medium shot, warm afternoon light", "plot": "同一片草地上，两人分享水果并相视而笑。", "cameraNotes": "从手部特写缓慢拉到双人中景", "dialogue": [{ "castIndex": 1, "line": "这个苹果真甜！" }], "ambience": "轻微风声", "transition": "prev_tail", "castIndexes": [0, 1] }
   ]
 }
