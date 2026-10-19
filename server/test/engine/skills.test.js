@@ -121,14 +121,14 @@ describe('engine/skills（M1-ENG-04）', () => {
     assert.equal(hanCharCount('妈妈，风筝飞起来啦！'), 8, '标点不计入汉字数');
   });
 
-  test('拼装：与 docs/skills/wan-3.0.md §6 成品示例逐字一致（连贯性行按模板归一化为中文句号）', () => {
+  test('拼装：与 docs/skills/wan-3.0.md §6 成品示例逐字一致（尾帧占 图1，连贯性行按模板归一化为中文句号）', () => {
     const prompt = assemble({ ...ASSEMBLE_INPUT, handles: { 0: 'the girl', 1: 'the woman' } });
     assert.equal(prompt, [
       'Japanese anime, cel shading, vivid colors. A sunlit city-park lawn in late morning, soft shadows under old maple trees, a checkered picnic blanket in the middle, calm breeze. A small red diamond kite with a long white string.',
       '参考素材：',
-      '图1：the girl 的主体参考（锁定外貌与服装）：a 4-year-old girl with short black hair and a yellow dress。',
-      '图2：the woman 的主体参考（锁定外貌与服装）：a woman in her thirties with long hair and a white cardigan。',
-      '图3：上一段的最后一帧，作为本段起始画面的关键帧参考。',
+      '图1：上一段的最后一帧，作为本段起始画面的关键帧参考。',
+      '图2：the girl 的主体参考（锁定外貌与服装）：a 4-year-old girl with short black hair and a yellow dress。',
+      '图3：the woman 的主体参考（锁定外貌与服装）：a woman in her thirties with long hair and a white cardigan。',
       '音色参考音频1：the girl 的音色，该角色所有台词使用此音色。',
       '音色参考音频2：the woman 的音色，该角色所有台词使用此音色。',
       '连贯性：本段从上一段结尾自然开始：the girl stands on the blanket holding the kite spool, the woman kneels beside her, both looking up at the sky, medium-wide framing。',
@@ -164,11 +164,14 @@ describe('engine/skills（M1-ENG-04）', () => {
     assert.match(multiProps, /^A red kite; A wicker basket\./m, '多个道具用分号连接');
   });
 
-  test('参考素材编号：图N 与 imageRefs 同序、尾帧取下一个编号、音频单独编号', () => {
-    const labels = refLabels({ imageCount: 2, audioCount: 2, usePrevTail: true });
-    assert.deepEqual(labels.images, ['图1', '图2']);
-    assert.equal(labels.tail, '图3');
-    assert.deepEqual(labels.audio, ['音色参考音频1', '音色参考音频2']);
+  test('参考素材编号：提交顺序 [尾帧, ...形象图]，尾帧占 图1、人物从 图2 开始；音频单独编号', () => {
+    const withTail = refLabels({ imageCount: 2, audioCount: 2, usePrevTail: true });
+    assert.equal(withTail.tail, '图1');
+    assert.deepEqual(withTail.images, ['图2', '图3']);
+    const noTail = refLabels({ imageCount: 2, audioCount: 1, usePrevTail: false });
+    assert.equal(noTail.tail, null);
+    assert.deepEqual(noTail.images, ['图1', '图2']);
+    assert.deepEqual(withTail.audio, ['音色参考音频1', '音色参考音频2']);
   });
 
   test('对白句：handle 首字母大写起句，delivery 缺省时省略逗号部分，对白原句不改动', () => {

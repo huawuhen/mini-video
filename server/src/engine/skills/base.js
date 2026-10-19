@@ -148,11 +148,14 @@ export function dialogueSentence(handle, line, delivery = '') {
   return `${capitalized} says in Mandarin Chinese${style}: “${line}”`;
 }
 
-/** Official reference markers: `图N` per image, tail frame takes the next number, audio counted apart. */
+/** Official reference markers. Submission order is `[tailRef, ...imageRefs]` (modelhub-video
+ * puts the tail frame first), so with a tail frame it takes 图1 and looks follow from 图2;
+ * without one, looks start at 图1. Audio is numbered separately (音色参考音频M). */
 export function refLabels({ imageCount = 0, audioCount = 0, usePrevTail = false } = {}) {
+  const firstLook = usePrevTail ? 2 : 1;
   return {
-    images: Array.from({ length: imageCount }, (_, index) => `图${index + 1}`),
-    tail: `图${imageCount + 1}`,
+    tail: usePrevTail ? '图1' : null,
+    images: Array.from({ length: imageCount }, (_, index) => `图${firstLook + index}`),
     audio: Array.from({ length: audioCount }, (_, index) => `音色参考音频${index + 1}`),
   };
 }
@@ -179,11 +182,14 @@ export function assemble({ styleText = '', sceneDescription = '', propDescriptio
   const overall = [styleText, sceneDescription, propsText].map(stripPeriod).filter(Boolean)
     .map((text) => `${text}.`).join(' ');
   if (overall) lines.push(overall);
+  // Image numbers must match submission order: the video adapter sends
+  // [tailRef, ...imageRefs], so the tail frame is 图1 and looks follow from 图2.
+  const firstLook = usePrevTail ? 2 : 1;
   const refs = [];
+  if (usePrevTail) refs.push('图1：上一段的最后一帧，作为本段起始画面的关键帧参考。');
   characters.forEach(({ handle, brief }, index) => {
-    refs.push(`图${index + 1}：${handle} 的主体参考（锁定外貌与服装）：${stripPeriod(brief)}。`);
+    refs.push(`图${firstLook + index}：${handle} 的主体参考（锁定外貌与服装）：${stripPeriod(brief)}。`);
   });
-  if (usePrevTail) refs.push(`图${characters.length + 1}：上一段的最后一帧，作为本段起始画面的关键帧参考。`);
   audioHandles.forEach((handle, index) => {
     refs.push(`音色参考音频${index + 1}：${handle} 的音色，该角色所有台词使用此音色。`);
   });
