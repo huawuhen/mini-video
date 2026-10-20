@@ -67,12 +67,13 @@
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-05 ~ 06 | — | — | — | 待认领（BE-Core 串行） | — |
+| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` `server/src/engine/README.md` | 进行中（开工计划见 §7 认领说明；歧义见 §5 两项申请） | 2026-10-20 |
+| M1-BE-06 | — | — | — | 待认领（BE-Core 串行，依赖 BE-05） | — |
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
-| M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | 待复审（3 条必改与 2 条建议已修复，208/208 通过） | 2026-10-20 |
+| M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -123,6 +124,7 @@
 
 | 日期 | 申请人 | 内容 | 影响 | 处理结果 |
 |---|---|---|---|---|
+| 2026-10-20 | BE-Core（M1-BE-05） | ① **「失败即退回 + 重试免费」的资损口径**：ARCHITECTURE §4 写「inspect 不通过 → 该片段失败并退回预占」，API §6.5 的 `retry` 不带 quoteId（免费重试、无次数限制）。两者组合 = 每次失败都退回该段预占、重试又免费重新生成，失败片段的费用由平台承担且可反复触发。**本任务按字面实现**（失败即退回该段预占、重试免费重新生成失败片段）；如需改为「失败保持冻结，重试成功后结算、取消/过期时退回」或「重试收费/限次数」，请裁决后我调整（钱包流是小改动）。② **片段提交结果未知（take unknown）时项目的呈现**：gen_task/take 置 unknown、金额保持冻结、不自动重提（BE-04 既有惯例）已定；项目本身我实现为进入 `failed`（`error.code=TAKE_UNKNOWN`、中文提示、`retry` 空转不重提），让用户看到终态而不是永远「生成中」。请确认。 | 影响：确认点 B 预占 → 片段失败/取消/重试的钱包流；BE-06 API 呈现 | 待 Lead 裁决 |
 | 2026-10-19 | Engine（M1-ENG-04） | 按规格实现时做了以下解释口径，请 Lead 确认；如需调整都是小改动：① `understand` 输出的 segments[].takeMode（`multi_shot`/`single_take`，缺省 `multi_shot`）——wan-3.0.md §8 说 takeMode 由规划阶段逐段指定，但 ARCHITECTURE §5 的输出清单未列该字段，已按 §8 实现并写入 README；② `bindPrompts` 的 `ratio` 参数保留但不再进提示词正文（wan-3.0.md §6 拼装模板没有画幅块），画幅由生成请求的 ratio 字段表达；③ `assemble` 注入 startState/endState/mood/brief 前去掉尾部英文句号、按模板补标点——§6 模板与成品示例在「连贯性」行尾差一个字符（模板 `。` vs 示例 `.`），按模板执行，成品示例逐字测试按此口径；④ `classifyInput` 确定性细则：不超过阈值（默认 60 字，可配置）且不含对白标记（「」『』引号对白、说/问/答/喊等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判为「想法」；⑤ 设定集与 endState 的英文-only、handle 唯一、sceneId/propIds 引用存在为**硬校验**（进修复重试），词数上限（mood ≤8、brief ≤25、场景 ≤50、endState ≤50 词）为**软限制**（归一化截断并记 warn），避免真实模型频繁被打回兜底；⑥ `single_take`（一镜到底）整段即一个镜头，豁免逐镜头 3~8 秒上限（否则 30 秒一镜到底必然校验失败，§7 未明确此例外；兜底时间线同理）。 | 影响：BE-05 需按 `server/src/engine/README.md` 的新字段对接（bible/script/final_prompt/expandIdea/classifyInput）；无数据库变更 | ✅ 已裁决：六条全部接受（Lead 2026-10-19，见 §6 M1-ENG-04 审查记录；①已同步写入 ARCHITECTURE §5） |
 
 ## 6. 审查记录（Lead 填写，最新在上）
@@ -153,6 +155,32 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-20 · BE-Core · M1-BE-05 认领：状态迁移表与提交拆分（开工计划）
+
+- **背景**：引擎（ENG-01~04）与渲染（RND-01）均已合并，本任务把作品状态机、各 job 与钱包流接起来。模块：`server/src/projects/`（状态迁移 + 服务函数 + job 处理器）、`worker.js`/`config.js` 接线、`server/test/projects/`。API 路由与 SSE 属 M1-BE-06，本任务只提供服务函数（测试直接调用服务层）。
+- **状态迁移表**（每次迁移=短事务：校验当前状态 → 写状态+`project_events`+`NOTIFY` → 同事务 `enqueue` 下一个 job；事务内不调上游）：
+
+| From | 触发 | To | 关键动作 |
+|---|---|---|---|
+| — | `createProject`（服务函数；免额次数校验、幂等键、锁定 tier_mapping） | understanding | enqueue `project.understand` |
+| understanding | `project.understand` 成功 | story_review | 写 `story`（含引擎原始输出 bible/segments 全字段）、`project_cast`（含 characterId/voiceId 推荐/matchSource）、`segments`；给已选数字人回填本风格 succeeded 的 `look_version_id` |
+| story_review | `reanalyze`（耗 1 次免费，按剧本处理不扩写） | understanding | 覆写 story_text、inputKind=script，清空 cast/segments/story 后重跑 |
+| story_review | `confirmStory`（looks>0：consumeQuote `cast_looks` + reserve 形象费 + 为缺形象 cast 建 look_versions/gen_tasks；looks=0 直接跳） | casting / cast_review | enqueue `look.generate`×N |
+| casting | 每个 `look.generate` 成功后回填 `project_cast.look_version_id`；全部就绪 | cast_review | （characters/service 的 handler 成功路径加项目回填与推进检查，同属 BE-Core） |
+| cast_review | `confirmCast`（consumeQuote `project_render` + reserve 视频费；锁定 look/voice `locked_at`） | rendering | enqueue `project.bind_prompts` |
+| rendering | `project.bind_prompts` 成功 | rendering | 每段写 `final_prompt`（skillId 按视频 SKU 的 model 选 Skill）；enqueue `segment.generate`(idx=0) |
+| rendering | `segment.generate`：建 take/gen_task（幂等键=take）→ `prepare/submit`（prev_tail 时先取上段 `last_frame_key` 作 tailRef） | rendering | 成功：take running + enqueue `gen.poll`；unknown：take unknown、冻结不动、项目 failed（见 §5②） |
+| rendering | `gen.poll`：running→退避重排；succeeded→下载临时文件→`render.inspect`→通过：转存+`extractLastFrame`+结算该段→enqueue 下一段；最后一段→enqueue `project.compose` | rendering | inspect 不通过/上游业务失败：take failed + **退回该段预占** + 项目 failed（§5① 口径） |
+| composing | `project.compose`：取各段已选 take→`render.compose`→上传成片/封面→renders succeeded | delivered | delivered_at、expires_at=now+90 天 |
+| 进行中 | pause / resume / retry / cancel | paused / pausedFrom / 失败步骤 / canceled | retry 从 `error.step` 续跑（失败片段免费重建新 take）；cancel 退回未提交部分（unknown 不退） |
+| delivered | cron `projects.expire_sweep`（BE-03 已实现） | expired | — |
+
+- **进度 percent 分档**（内部口径）：understanding 5~15、story_review 15、casting 30、cast_review 40、rendering 45~90（每段均分）、composing 95、delivered 100。
+- **提交拆分**（每个提交 self-contained、全量测试通过后才有下一个）：C2 创建+understand；C3 确认点 A+casting；C4 确认点 B+bind_prompts；C5 串行片段链（segment.generate+gen.poll+inspect/尾帧/结算）；C6 compose+delivered；C7 暂停/恢复/取消/重试+worker 生产守卫；C8 §7 交接与待审查。
+- **生产/开发注入**：worker `buildHandlers` 增加 `{ storyAgent, videoProvider, transfer, fetchLocal }` 注入点；生产缺省启动报错（同 BE-03/04 守卫）；开发缺省给确定性桩（story LLM 返回固定合法规划；片段链不注册并 warn，因真实上游属 M0/M2）。`config.projects`: `freeDailyQuota=20`（北京日界，PRD【默认】）、`retentionDays=90`、`ideaCharThreshold=60`；新增环境变量登记 `.env.example`。
+- **测试**：`server/test/projects/`——mock LLM（engine story mock）+ 假视频 provider（进程内 prepare/submit/query）+ memory storage + 真 render（FFmpeg）+ 假 fetchLocal；覆盖验收列出的每一项。
+
 
 ### 2026-10-20 · Render · M1-RND-01 复审修复（真末帧、悬空链接、分辨率放宽）
 
