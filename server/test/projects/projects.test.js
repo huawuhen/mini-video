@@ -10,7 +10,10 @@ import { mockImageProvider } from '../helpers/providers.js';
 import { silentLogger } from '../../src/logger.js';
 import { loadConfig } from '../../src/config.js';
 import { createProject, getProjectDetail, reanalyzeProject, confirmStory, updateCastCharacter,
-  consumeFreeQuota, beijingDayStartUtc } from '../../src/projects/service.js';
+  confirmCast, updateCast, createCastLook, consumeFreeQuota, beijingDayStartUtc }
+  from '../../src/projects/service.js';
+import { createBindPromptsHandler } from '../../src/projects/bind.js';
+import { SHOT_EXAMPLE } from '../../src/engine/skills/base.js';
 import { createUnderstandHandler } from '../../src/projects/understand.js';
 import { classifyInput } from '../../src/engine/story/index.js';
 import { createMockLlm } from '../../src/engine/llm/mock.js';
@@ -387,5 +390,127 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const motherBound = rebound.cast.find((member) => member.name === '妈妈');
     assert.equal(motherBound.matchSource, 'user');
     assert.equal(motherBound.look.status, 'ready', '改绑后形象按新数字人重算');
+  });
+
+  // ───────────── C4：确认点 B 与 bind_prompts ─────────────
+
+  async function createAtCastReview(idemKey) {
+    const projectId = await createAtStoryReview(idemKey);
+    await ctx.db.tx(async (t) => {
+      await t.query(`UPDATE project_cast SET look_version_id = 'lkv_baby000000001'
+        WHERE project_id = $1 AND look_version_id IS NULL`, [projectId]);
+    });
+    await confirmStory(ctx.db, { userId, projectId, idempotencyKey: `${idemKey}-cs`, config });
+    return projectId;
+  }
+
+  test('confirmCast：预占视频费、锁定角色、入队 bind_prompts；未就绪/缺声音拒绝', async () => {
+    const projectId = await createAtCastReview('c4-0001');
+    // 缺一个声音：先清掉宝宝的声音
+    await ctx.db.query(`UPDATE project_cast SET voice_id = NULL WHERE project_id = $1 AND name = '宝宝'`,
+      [projectId]);
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'project_render', projectId } }));
+    await assert.rejects(() => confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'c4-confirm-0001', config }),
+      (err) => err.code === 'VALIDATION_FAILED', '多片段作品必须每个角色都有声音');
+    // 补上声音
+    await ctx.db.query(`UPDATE project_cast SET voice_id = 'vc_childf_sweet' WHERE project_id = $1 AND name = '宝宝'`,
+      [projectId]);
+    const result = await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'c4-confirm-0001', config });
+    assert.equal(result.replayed, false);
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'rendering');
+    const { rows: project } = await ctx.db.query(`SELECT progress FROM projects WHERE id = $1`, [projectId]);
+    assert.ok(project[0].progress.percent >= 45);
+    const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
+    assert.equal(wallet[0].frozen_fen, 1200, '视频费预占 = 2 段 × 30 秒 × 20 分');
+    const { rows: locked } = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM project_cast WHERE project_id = $1 AND locked_at IS NOT NULL`, [projectId]);
+    assert.equal(locked[0].n, 2, '确认后锁定角色');
+    // 重放
+    const replay = await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'c4-confirm-0001', config });
+    assert.equal(replay.replayed, true);
+  });
+
+  test('bind_prompts：逐段镜头时间线与 final_prompt 持久化，串行链从第 0 段开始', async () => {
+    const projectId = await createAtCastReview('c4-0002');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'project_render', projectId } }));
+    await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'c4-confirm-0002', config });
+    // 两个 30 秒片段：每个 4 镜头（3~8 秒/镜）；第 1 段带一句对白，第 2 段 prev_tail 无对白
+    const shot = (index, start, end, dialogue = []) => ({ start, end, size: 'Medium shot', transition: 'cut',
+      action: `Shot ${index}: the characters continue naturally.`, dialogue,
+      reaction: '', environment: 'Soft daylight.', camera: 'static' });
+    const timeline1 = { shots: [shot(1, 0, 7), shot(2, 7, 14), shot(3, 14, 21),
+        { ...shot(4, 21, 30), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }],
+      avoid: [] };
+    const timeline2 = { shots: [shot(1, 0, 7), shot(2, 7, 14), shot(3, 14, 21), shot(4, 21, 30)], avoid: [] };
+    const llm = createMockLlm([JSON.stringify(timeline1), JSON.stringify(timeline2)]);
+    const agent = createStoryAgent({ llm, logger: silentLogger });
+    const handler = createBindPromptsHandler({ db: ctx.db, logger: silentLogger, storyAgent: agent });
+    const enqueued = [];
+    await handler({ projectId }, { db: ctx.db, logger: silentLogger, enqueue: async (spec) => enqueued.push(spec) });
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    const { rows: segments } = await ctx.db.query(
+      `SELECT idx, final_prompt FROM segments WHERE project_id = $1 ORDER BY idx`, [projectId]);
+    const first = segments[0].final_prompt;
+    assert.match(first.prompt, /第1个镜头\[0-7秒\]/);
+    assert.match(first.prompt, /Lip sync\./);
+    assert.equal(first.skillId, 'generic', 'mock SKU 的 model=mock-video 回退 generic Skill');
+    assert.equal(first.imageRefs.length, 1, '只有宝宝绑定了形象图');
+    assert.ok(first.endState.length > 0);
+    assert.equal(first.degraded, false);
+    assert.equal(segments[1].final_prompt.usePrevTail, true, '第 2 段 prev_tail');
+    assert.match(segments[1].final_prompt.prompt, /连贯性：本段从上一段结尾自然开始/);
+    assert.equal(segments[1].final_prompt.startState, first.endState, 'startState 来自上一段 endState');
+    assert.deepEqual(enqueued, [{ type: 'segment.generate', payload: { projectId, idx: 0 },
+      dedupeKey: `project:segment:${projectId}:0` }], '严格串行：只入队第 0 段');
+    // 对白逐字出现在提示词中
+    assert.ok(first.prompt.includes('慢一点，看看树叶。'));
+  });
+
+  test('updateCast：声音重复 409、单片段不可设声音、改绑形象版本', async () => {
+    const projectId = await createAtCastReview('c4-0003');
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    const [mother, baby] = detail.cast;
+    await assert.rejects(() => updateCast(ctx.db, { userId, projectId, castId: baby.id,
+      voiceId: mother.voice.voiceId }),
+      (err) => err.code === 'VOICE_DUPLICATED', '同一作品音色不能重复');
+    // 改绑形象版本：用宝宝已有版本的 id
+    await updateCast(ctx.db, { userId, projectId, castId: baby.id, lookVersionId: 'lkv_baby000000001' });
+    // 单片段：不可设置声音
+    const single = { ...PLAN };
+    // 构造单片段项目：直接建一个并跑到 cast_review
+    const { projectId: projectId2 } = await createProject(ctx.db, { userId,
+      input: input({ storyText: '妈妈说：「我们回家吧。」', idempotencyKey: 'c4-0004' }), config });
+    const { agent } = mockStoryAgent([JSON.stringify({ ...PLAN, segments: [PLAN.segments[0]],
+      cast: [PLAN.cast[1]] })]);
+    const handler = createUnderstandHandler({ db: ctx.db, logger: silentLogger, storyAgent: agent, config });
+    const job = (await ctx.db.query(`SELECT * FROM jobs WHERE dedupe_key = $1`,
+      [`project:understand:${projectId2}`])).rows[0];
+    await handler(job.payload, { db: ctx.db, logger: silentLogger, job, enqueue: async () => {} });
+    const singleDetail = await getProjectDetail(ctx.db, { userId, projectId: projectId2 });
+    assert.equal(singleDetail.voicesEnabled, false);
+    // 手工推进到 cast_review（补形象），验证单片段不可设置声音
+    await ctx.db.query(`UPDATE project_cast SET look_version_id = 'lkv_baby000000001' WHERE project_id = $1`,
+      [projectId2]);
+    await ctx.db.query(`UPDATE projects SET status = 'cast_review' WHERE id = $1`, [projectId2]);
+    const castId = singleDetail.cast[0].id;
+    await assert.rejects(() => updateCast(ctx.db, { userId, projectId: projectId2, castId,
+      voiceId: 'vc_childf_sweet' }), (err) => err.code === 'VALIDATION_FAILED');
+  });
+
+  test('createCastLook：cast_review 下为角色新增形象版本（look_regenerate 报价）', async () => {
+    const projectId = await createAtCastReview('c4-0005');
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    const mother = detail.cast.find((member) => member.name === '妈妈');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'look_regenerate', characterId: mother.characterId, styleId: 'anime' } }));
+    const { version } = await createCastLook(ctx.db, { userId, projectId, castId: mother.id,
+      quoteId, idempotencyKey: 'c4-look-0001' });
+    assert.equal(version.status, 'pending');
+    const { rows: jobs } = await ctx.db.query(`SELECT type FROM jobs WHERE dedupe_key = $1`,
+      [`look:${version.id}`]);
+    assert.equal(jobs.length, 1);
   });
 });

@@ -3,9 +3,10 @@
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
 import { enqueue } from '../queue/index.js';
+import { createLookVersion } from '../characters/service.js';
 import { consumeQuote } from '../wallet/pricing.js';
 import { transition, requireProject, groupOf, appendEvent } from './state.js';
-import { projectMoneySummary, videoUnitFen, reserveProjectLooks } from './money.js';
+import { projectMoneySummary, videoUnitFen, reserveProjectLooks, reserveProjectVideo } from './money.js';
 
 /** 作品详情（API §6.2 ProjectDetail）：story 去掉引擎原始输出，cast/segments/takes/render 聚合。 */
 export async function getProjectDetail(db, { userId, projectId, urlFor }) {
@@ -374,3 +375,106 @@ export async function updateCastCharacter(db, { userId, projectId, castId, chara
 
 // ───────────── 确认点 B 前置：角色形象/声音调整（API §6.4 的读侧与纠正）─────────────
 // （PUT /cast/:castId 与 cast looks 属确认点 B，C4 实现。）
+
+// ───────────── 确认点 B（API §6.4）─────────────
+
+async function requireSegmentCount(db, projectId) {
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM segments WHERE project_id = $1`, [projectId]);
+  return rows[0].n;
+}
+
+/** 调整角色（API §6.4 PUT /cast/:castId）：绑定形象版本与音色；确认（locked_at）后不可改。 */
+export async function updateCast(db, { userId, projectId, castId, lookVersionId, voiceId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (project.status !== 'cast_review') throw appError('PROJECT_STATE_INVALID');
+    const { rows: castRows } = await t.query(
+      `SELECT * FROM project_cast WHERE id = $1 AND project_id = $2`, [castId, projectId]);
+    if (!castRows.length) throw appError('NOT_FOUND');
+    const cast = castRows[0];
+    if (cast.locked_at) throw appError('PROJECT_STATE_INVALID', '确认后角色已锁定');
+
+    if (lookVersionId !== undefined) {
+      if (lookVersionId === null) {
+        await t.query(`UPDATE project_cast SET look_version_id = NULL WHERE id = $1`, [castId]);
+      } else {
+        const { rows } = await t.query(
+          `SELECT lv.id FROM look_versions lv JOIN character_looks cl ON cl.id = lv.look_id
+            WHERE lv.id = $1 AND cl.character_id = $2 AND cl.style_id = $3 AND lv.status = 'succeeded'`,
+          [lookVersionId, cast.character_id, project.style_id]);
+        if (!rows.length) throw appError('VALIDATION_FAILED', '只能选择该角色生成成功的形象版本');
+        await t.query(`UPDATE project_cast SET look_version_id = $2 WHERE id = $1`, [castId, lookVersionId]);
+      }
+    }
+    if (voiceId !== undefined) {
+      const segmentCount = await requireSegmentCount(t, projectId);
+      if (segmentCount < 2) {
+        throw appError('VALIDATION_FAILED', '单片段作品不使用参考声音');
+      }
+      if (voiceId !== null) {
+        const { rows } = await t.query(`SELECT id FROM voices WHERE id = $1 AND status = 'active'`, [voiceId]);
+        if (!rows.length) throw appError('VALIDATION_FAILED', undefined, { fields: { voiceId: '取值不正确' } });
+      }
+      try {
+        await t.query(`UPDATE project_cast SET voice_id = $2, voice_source = 'user' WHERE id = $1`,
+          [castId, voiceId]);
+      } catch (error) {
+        // 同一作品两个角色不能用同一音色（project_cast_voice_uniq 唯一索引）
+        if (error?.code === '23505') throw appError('VOICE_DUPLICATED', '该声音已被本作品其他角色使用');
+        throw error;
+      }
+    }
+    await appendEvent(t, { projectId, status: 'cast_review',
+      progress: { percent: 40, message: '角色已就绪，等待你确认' }, changed: ['cast'] });
+    return { ok: true };
+  });
+}
+
+/** 确认角色（API §6.4）：校验形象/音色齐备 → consumeQuote(project_render) + 预占视频费 →
+ * 锁定 cast → rendering，入队 project.bind_prompts。 */
+export async function confirmCast(db, { userId, projectId, quoteId, idempotencyKey, config }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`project:confirm:${projectId}`]);
+    const { replayed } = await claimConfirm(t, { projectId, step: 'cast', idempotencyKey });
+    if (replayed) return { replayed: true, projectId };
+    if (project.status !== 'cast_review') throw appError('PROJECT_STATE_INVALID');
+
+    const { rows: cast } = await t.query(
+      `SELECT pc.id, pc.voice_id, lv.status AS look_status
+         FROM project_cast pc
+         LEFT JOIN look_versions lv ON lv.id = pc.look_version_id
+        WHERE pc.project_id = $1 ORDER BY pc.idx`, [projectId]);
+    const notReady = cast.filter((member) => member.look_status !== 'succeeded');
+    if (notReady.length) throw appError('VALIDATION_FAILED', '还有角色形象未就绪，请等待生成或重新选择');
+    const segmentCount = await requireSegmentCount(t, projectId);
+    const voicesEnabled = segmentCount >= 2;
+    if (voicesEnabled && cast.some((member) => !member.voice_id)) {
+      throw appError('VALIDATION_FAILED', '请为每个角色选择声音');
+    }
+    if (!quoteId) throw appError('VALIDATION_FAILED', '需要先获取视频生成报价');
+
+    const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'project_render', refType: 'project', refId: projectId });
+    await reserveProjectVideo(t, { userId, projectId, amountFen: quote.amount_fen });
+    await t.query(`UPDATE project_cast SET locked_at = now() WHERE project_id = $1`, [projectId]);
+    await transition(t, { projectId, userId, from: ['cast_review'], to: 'rendering',
+      progress: { percent: 45, message: `正在生成片段 1/${segmentCount}` }, changed: ['pricing'] });
+    await enqueue(t, { type: 'project.bind_prompts', payload: { projectId },
+      dedupeKey: `project:bind:${projectId}` });
+    return { replayed: false, projectId };
+  });
+}
+
+/** 确认点 B 重新生成形象（API §6.4 POST /cast/:castId/looks，kind=look_regenerate 作品风格）。
+ * 复用 BE-04 的 createLookVersion（报价、预占、gen_tasks、自动选中、写数字资产库）；
+ * 新版本绑定到作品角色仍由 updateCast 完成。 */
+export async function createCastLook(db, { userId, projectId, castId, quoteId, idempotencyKey, urlFor }) {
+  const project = await requireProject(db, { userId, projectId });
+  if (project.status !== 'cast_review') throw appError('PROJECT_STATE_INVALID');
+  const { rows } = await db.query(
+    `SELECT character_id FROM project_cast WHERE id = $1 AND project_id = $2`, [castId, projectId]);
+  if (!rows.length || !rows[0].character_id) throw appError('NOT_FOUND');
+  const { version } = await createLookVersion(db, { userId, characterId: rows[0].character_id,
+    styleId: project.style_id, quoteId, idempotencyKey, urlFor });
+  return { version };
+}
