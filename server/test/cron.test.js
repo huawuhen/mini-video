@@ -242,9 +242,10 @@ describe('cron（M1-BE-03）', () => {
     const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
     // M1-ENG-03 后：未注入 → 按 config.storage.driver 解析，生产默认 qiniu 但密钥缺失 → 配置错误
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /存储配置不完整|对象存储/);
-    // 非生产环境缺省内存实现可用
+    // 非生产环境缺省内存实现可用；M1-BE-05 起注册 project.understand（开发用确定性 story 桩）
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
-    assert.deepEqual(Object.keys(dev).sort(), ['auth.sweep', 'jobs.cleanup', 'look.generate', 'projects.expire_sweep', 'uploads.sweep']);
+    assert.deepEqual(Object.keys(dev).sort(),
+      ['auth.sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'segment.generate', 'uploads.sweep']);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {
