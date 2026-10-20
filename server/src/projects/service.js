@@ -6,7 +6,7 @@ import { enqueue } from '../queue/index.js';
 import { createLookVersion } from '../characters/service.js';
 import { consumeQuote } from '../wallet/pricing.js';
 import { transition, requireProject, groupOf, appendEvent } from './state.js';
-import { projectMoneySummary, videoUnitFen, reserveProjectLooks, reserveProjectVideo } from './money.js';
+import { projectMoneySummary, videoUnitFen, reserveProjectLooks, reserveProjectVideo, refundProject } from './money.js';
 
 /** 作品详情（API §6.2 ProjectDetail）：story 去掉引擎原始输出，cast/segments/takes/render 聚合。 */
 export async function getProjectDetail(db, { userId, projectId, urlFor }) {
@@ -242,6 +242,7 @@ export async function buildPricing(t, { userId, project }) {
   return {
     looksToGenerate, looksFen, videoFen, totalFen: looksFen + videoFen,
     reservedFen: money.reservedFen, settledFen: money.settledFen, refundedFen: money.refundedFen,
+    frozenFen: money.frozenFen,
   };
 }
 
@@ -477,4 +478,166 @@ export async function createCastLook(db, { userId, projectId, castId, quoteId, i
   const { version } = await createLookVersion(db, { userId, characterId: rows[0].character_id,
     styleId: project.style_id, quoteId, idempotencyKey, urlFor });
   return { version };
+}
+
+// ───────────── 进行中控制（API §6.5）─────────────
+
+const RESUMABLE = {
+  understanding: async (db, t, project) => {
+    await enqueue(t, { type: 'project.understand', payload: { projectId: project.id },
+      dedupeKey: `project:understand:${project.id}:resume` });
+  },
+  casting: async (db, t, project) => {
+    // 形象可能已全部生成（暂停期间完成）：推进检查；否则停留等待（不会有了——生成已停，
+    // 需 retry 补生成；此处仅处理「暂停期间完成」的正常情形）
+    const { rows: missing } = await t.query(
+      `SELECT 1 FROM project_cast WHERE project_id = $1 AND look_version_id IS NULL LIMIT 1`, [project.id]);
+    if (!missing.length) {
+      await transition(t, { projectId: project.id, userId: project.user_id, from: ['casting'],
+        to: 'cast_review', progress: { percent: 40, message: '角色已就绪，等待你确认' }, changed: ['cast'] });
+    }
+  },
+  rendering: async (db, t, project) => {
+    // 从第一个未成功的片段续跑（bind 未做则先 bind）
+    const { rows: bindMissing } = await t.query(
+      `SELECT 1 FROM segments WHERE project_id = $1 AND final_prompt IS NULL LIMIT 1`, [project.id]);
+    if (bindMissing.length) {
+      await enqueue(t, { type: 'project.bind_prompts', payload: { projectId: project.id },
+        dedupeKey: `project:bind:${project.id}:resume` });
+      return;
+    }
+    const { rows: next } = await t.query(
+      `SELECT idx FROM segments WHERE project_id = $1 ORDER BY idx`, [project.id]);
+    for (const segment of next) {
+      const { rows: takes } = await t.query(
+        `SELECT status FROM segment_takes WHERE segment_id = (
+           SELECT id FROM segments WHERE project_id = $1 AND idx = $2)`,
+        [project.id, segment.idx]);
+      if (!takes.some((take) => take.status === 'succeeded')) {
+        const { rows: running } = await t.query(
+          `SELECT 1 FROM segment_takes WHERE segment_id = (
+             SELECT id FROM segments WHERE project_id = $1 AND idx = $2)
+             AND status IN ('pending', 'running')`,
+          [project.id, segment.idx]);
+        if (!running.length && segment.idx > 0) {
+          await enqueue(t, { type: 'segment.generate', payload: { projectId: project.id, idx: segment.idx } });
+        }
+        if (!running.length && segment.idx === 0) {
+          await enqueue(t, { type: 'segment.generate', payload: { projectId: project.id, idx: 0 } });
+        }
+        break; // 串行：只续跑第一个未成功的片段
+      }
+    }
+  },
+  composing: async (db, t, project) => {
+    await enqueue(t, { type: 'project.compose', payload: { projectId: project.id },
+      dedupeKey: `project:compose:${project.id}:resume` });
+  },
+};
+
+export async function pauseProject(db, { userId, projectId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    await transition(t, { projectId, userId, from: ['understanding', 'casting', 'rendering'], to: 'paused',
+      pausedFrom: project.status, progress: { percent: project.progress?.percent ?? 0, message: '已暂停' } });
+    return { ok: true };
+  });
+}
+
+export async function resumeProject(db, { userId, projectId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    const from = project.paused_from;
+    if (!from) throw appError('PROJECT_STATE_INVALID');
+    await transition(t, { projectId, userId, from: ['paused'], to: from,
+      progress: null, changed: [] });
+    const kick = RESUMABLE[from];
+    if (kick) await kick(db, t, { ...project, status: from });
+    return { ok: true };
+  });
+}
+
+export async function retryProject(db, { userId, projectId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (project.status !== 'failed') throw appError('PROJECT_STATE_INVALID');
+    const step = project.error?.step ?? 'rendering';
+    // 恢复到失败步骤（失败时该段/该形象预占已按 §5① 退回，重试免费重新生成）
+    await transition(t, { projectId, userId, from: ['failed'], to: step,
+      progress: null, changed: [] });
+    if (step === 'understanding') {
+      await enqueue(t, { type: 'project.understand', payload: { projectId },
+        dedupeKey: `project:understand:${projectId}:retry` });
+    } else if (step === 'casting') {
+      // 为失败的形象版本补建新版本（amountFen=0：钱已在失败时退回），重新入队 look.generate
+      const { rows: failedCasts } = await t.query(
+        `SELECT pc.id AS cast_id, pc.character_id, lv.id AS failed_version_id
+           FROM project_cast pc JOIN look_versions lv ON lv.id = pc.look_version_id
+          WHERE pc.project_id = $1 AND lv.status = 'failed' ORDER BY pc.idx`, [projectId]);
+      const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [project.style_id]);
+      const { rows: imageSku } = await t.query(
+        `SELECT sku_code, version FROM skus WHERE kind = 'image' AND status = 'active'
+          ORDER BY version DESC, effective_at DESC LIMIT 1`);
+      for (const member of failedCasts) {
+        const versionId = newId('lkv');
+        const genTaskId = newId('gt');
+        await t.query(
+          `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
+           VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
+          [genTaskId, userId, imageSku[0].sku_code, imageSku[0].version, JSON.stringify({
+            versionId, characterId: member.character_id, styleId: project.style_id,
+            storageKey: `users/${userId}/looks/${versionId}`, amountFen: 0,
+            promptHint: styleRows[0]?.prompt_hint ?? '', description: '',
+            referenceKeys: [],
+          }), `project:${projectId}:look:${member.cast_id}:${member.failed_version_id}`],
+        );
+        await t.query(
+          `INSERT INTO look_versions (id, look_id, gen_task_id, status)
+           SELECT $1, cl.id, $2, 'pending' FROM character_looks cl
+            WHERE cl.character_id = $3 AND cl.style_id = $4`,
+          [versionId, genTaskId, member.character_id, project.style_id],
+        );
+        await t.query(`UPDATE project_cast SET look_version_id = $2 WHERE id = $1`, [member.cast_id, versionId]);
+        await enqueue(t, { type: 'look.generate', payload: { versionId }, dedupeKey: `look:${versionId}` });
+      }
+    } else if (step === 'rendering') {
+      // 第一个没有成功 take 的片段重新生成（segment.generate 会建新 take；失败段金额已退回）
+      const { rows: next } = await t.query(
+        `SELECT s.idx FROM segments s
+          WHERE s.project_id = $1
+            AND NOT EXISTS (SELECT 1 FROM segment_takes t WHERE t.segment_id = s.id AND t.status = 'succeeded')
+          ORDER BY s.idx LIMIT 1`, [projectId]);
+      if (next.length) {
+        await enqueue(t, { type: 'segment.generate', payload: { projectId, idx: next[0].idx } });
+      }
+    } else if (step === 'composing') {
+      await enqueue(t, { type: 'project.compose', payload: { projectId },
+        dedupeKey: `project:compose:${projectId}:retry` });
+    }
+    return { ok: true };
+  });
+}
+
+export async function cancelProject(db, { userId, projectId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    const money = await projectMoneySummary(t, { userId, projectId });
+    // 提交结果未知（unknown）的片段金额保持冻结待对账（docs/ARCHITECTURE §4：只退未提交部分）
+    const { rows: unknownRows } = await t.query(
+      `SELECT COALESCE(SUM(s.duration_seconds), 0)::bigint AS seconds
+         FROM segments s JOIN segment_takes st ON st.segment_id = s.id
+        WHERE s.project_id = $1 AND st.status = 'unknown'`, [projectId]);
+    let unknownFrozen = 0;
+    if (Number(unknownRows[0].seconds) > 0) {
+      const unit = await videoUnitFen(t, project.tier_mapping_id);
+      unknownFrozen = Number(unknownRows[0].seconds) * unit;
+    }
+    const refundable = Math.max(0, money.frozenFen - unknownFrozen);
+    const purpose = `cancel:${Date.now()}`; // 幂等由金额与账户一致性保证；多次取消不可达（状态迁移守卫）
+    await refundProject(t, { userId, projectId, amountFen: refundable, purpose });
+    await transition(t, { projectId, userId,
+      from: ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'],
+      to: 'canceled', progress: { percent: 0, message: '已取消' } });
+    return { ok: true, refundedFen: refundable, frozenFen: unknownFrozen };
+  });
 }

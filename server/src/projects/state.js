@@ -35,15 +35,17 @@ export const PROGRESS = {
 export async function transition(t, { projectId, userId, from, to, pausedFrom = null, error = null,
   progress, changed = [] }) {
   const nextProgress = progress ?? PROGRESS[to] ?? { percent: 0, message: '' };
+  // rendering 的进度是 (done, total) => object 的函数：这里按 0/total 求值，事件里存对象
+  const value = typeof nextProgress === 'function' ? nextProgress(0, 0) : nextProgress;
   const { rows } = await t.query(
     `UPDATE projects SET status = $3, paused_from = $4, error = $5, progress = $6, updated_at = now()
       WHERE id = $1 AND user_id = $2 AND status = ANY($7::text[]) AND deleted_at IS NULL
       RETURNING id`,
     [projectId, userId, to, pausedFrom, error ? JSON.stringify(error) : null,
-      JSON.stringify(typeof nextProgress === 'function' ? nextProgress(0, 0) : nextProgress), from],
+      JSON.stringify(value), from],
   );
   if (!rows.length) throw appError('PROJECT_STATE_INVALID');
-  await appendEvent(t, { projectId, status: to, progress: nextProgress, changed });
+  await appendEvent(t, { projectId, status: to, progress: value, changed });
   return rows[0];
 }
 

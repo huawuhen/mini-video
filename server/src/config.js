@@ -53,6 +53,8 @@ export function loadConfig(env = process.env) {
       maxSeconds: int(env.PROJECTS_MAX_SECONDS, 90),
       ideaCharThreshold: int(env.PROJECTS_IDEA_CHAR_THRESHOLD, 60),
       retentionDays: int(env.PROJECTS_RETENTION_DAYS, 90),
+      genPollIntervalSeconds: int(env.PROJECTS_GEN_POLL_INTERVAL_SECONDS, 5),
+      maxVideoBytes: int(env.PROJECTS_MAX_VIDEO_BYTES, 536_870_912), // 上游成片下载上限 512MB
     },
     // 定时任务（M1-BE-03）：调度循环每 tickSeconds 秒用「cron:<任务>:<窗口起点>」去重键入队，
     // 多个 Worker 同时调度也只入队一次；清理任务分批（每批 sweepBatchSize 行、每批一个短事务）

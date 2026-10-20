@@ -43,3 +43,18 @@ export function createDevStoryAgent() {
     },
   };
 }
+
+/** 开发缺省视频渠道：提交即返回受理，轮询永远失败——真实渠道以 M0 结论为准（M2-BE-01 接入）。 */
+export function createDevVideoProvider() {
+  let seq = 0;
+  return {
+    id: 'dev-video',
+    prepare(input) { return input; },
+    async submit(prepared, { idempotencyKey } = {}) {
+      seq += 1;
+      return { status: 'running', upstreamId: `dev-${idempotencyKey ?? seq}` };
+    },
+    async query() { return { status: 'failed', error: '开发环境没有真实视频渠道' }; },
+    normalize(raw) { return raw; },
+  };
+}

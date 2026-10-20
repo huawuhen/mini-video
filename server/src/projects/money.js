@@ -31,14 +31,6 @@ export function settleSegment(t, { userId, projectId, takeId, amountFen }) {
   });
 }
 
-export function refundSegment(t, { userId, projectId, takeId, amountFen }) {
-  if (amountFen <= 0) return;
-  return refund(t, {
-    userId, amountFen, refType: REF.type, refId: projectId,
-    idempotencyKey: `project:${projectId}:video:${takeId}:refund`, title: '片段失败退回',
-  });
-}
-
 /** 取消/过期时的兜底退回（次数幂等键按用途传入，如 cancel:video）。 */
 export function refundProject(t, { userId, projectId, amountFen, purpose }) {
   if (amountFen <= 0) return;
@@ -61,11 +53,16 @@ export async function videoUnitFen(t, tierMappingId) {
   return rows[0].price_fen;
 }
 
-/** Pricing 聚合（API §6.2）：从账本按作品归集预占/结算/退回。 */
+/** Pricing 聚合（API §6.2）：视频流水的 ref 是 project；形象结算/退回（BE-04 惯例）的
+ * ref 是 look/versionId，需经 project_cast 关联归集到作品。 */
 export async function projectMoneySummary(t, { userId, projectId }) {
   const { rows } = await t.query(
-    `SELECT kind, COALESCE(SUM(frozen_delta_fen), 0) AS frozen, COALESCE(SUM(amount_fen), 0) AS available
-       FROM ledger WHERE user_id = $1 AND ref_type = 'project' AND ref_id = $2
+    `SELECT kind, COALESCE(SUM(l.frozen_delta_fen), 0) AS frozen, COALESCE(SUM(l.amount_fen), 0) AS available
+       FROM ledger l
+      WHERE l.user_id = $1
+        AND (l.ref_type = 'project' AND l.ref_id = $2
+          OR l.ref_type = 'look' AND l.ref_id IN (
+            SELECT pc.look_version_id FROM project_cast pc WHERE pc.project_id = $2))
       GROUP BY kind`,
     [userId, projectId],
   );

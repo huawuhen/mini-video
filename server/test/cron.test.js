@@ -245,7 +245,7 @@ describe('cron（M1-BE-03）', () => {
     // 非生产环境缺省内存实现可用；M1-BE-05 起注册 project.understand（开发用确定性 story 桩）
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
     assert.deepEqual(Object.keys(dev).sort(),
-      ['auth.sweep', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.understand', 'projects.expire_sweep', 'uploads.sweep']);
+      ['auth.sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'segment.generate', 'uploads.sweep']);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {
