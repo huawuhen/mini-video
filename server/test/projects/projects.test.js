@@ -28,6 +28,15 @@ import { createStoryAgent } from '../../src/engine/story/index.js';
 
 const config = loadConfig({ NODE_ENV: 'test' });
 
+// 片段链测试用：对象在内存，但 signedUrl 返回 https 链接（与七牛驱动形态一致）
+function httpMemoryStorage() {
+  const memory = createMemoryStorage();
+  return {
+    put: memory.put, remove: memory.remove,
+    async signedUrl(key, opts) { return `https://signed.example/${key}?ttl=${opts?.ttlSeconds ?? 3600}`; },
+  };
+}
+
 // 供片段链测试使用的合成样片（lavfi 生成，无真实模型）
 async function makeVideo(name, { video = `testsrc2=size=720x1280:rate=30`, audio = 'sine=frequency=440',
   duration = 3 } = {}) {
@@ -45,6 +54,23 @@ async function makeVideo(name, { video = `testsrc2=size=720x1280:rate=30`, audio
     child.on('error', reject);
   });
   return file;
+}
+
+function fakeVideoProvider({ pollResults = {} }) {
+  const submissions = [];
+  const polls = {};
+  return {
+    id: 'fake-video',
+    submissions,
+    prepare(input) { return input; },
+    async submit(prepared) { submissions.push(prepared); return { status: 'running', upstreamId: `up_${submissions.length}` }; },
+    // 每个上游任务按轮询次数推进 pollResults[upstreamId] 序列，耗尽后维持 running
+    async query(upstreamId) {
+      polls[upstreamId] = (polls[upstreamId] ?? 0) + 1;
+      return pollResults[upstreamId]?.[polls[upstreamId] - 1] ?? { status: 'running' };
+    },
+    normalize(raw) { return raw; },
+  };
 }
 
 // 引擎契约同构的 mock LLM：返回带 bible/场景/结束状态的完整规划（STORY_EXAMPLE 形态）。
@@ -355,7 +381,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       request: { kind: 'cast_looks', projectId } }));
     await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0002', config });
     const imageProvider = mockImageProvider();
-    const storage = createMemoryStorage();
+    const storage = httpMemoryStorage();
     const handler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger, storage, imageProvider });
     // 只跑缺口任务（妈妈）；宝宝用已有形象
     const versionIds = (await ctx.db.query(
@@ -552,22 +578,6 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
         { ...SHOT(4, 21, 30), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }]
     : [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21), SHOT(4, 21, 30)], avoid: [] });
 
-  function fakeVideoProvider({ pollResults = {} }) {
-    const submissions = [];
-    const polls = {};
-    return {
-      id: 'fake-video',
-      submissions,
-      prepare(input) { return input; },
-      async submit(prepared) { submissions.push(prepared); return { status: 'running', upstreamId: `up_${submissions.length}` }; },
-      // 每个上游任务按轮询次数推进 pollResults[upstreamId] 序列，耗尽后维持 running
-      async query(upstreamId) {
-        polls[upstreamId] = (polls[upstreamId] ?? 0) + 1;
-        return pollResults[upstreamId]?.[polls[upstreamId] - 1] ?? { status: 'running' };
-      },
-      normalize(raw) { return raw; },
-    };
-  }
 
   async function driveToRendering(idemKey, { llmScript } = {}) {
     // 建项目 → understand（PLAN，2×30 秒）→ 补齐形象缺口并推进 → confirmCast → bind_prompts
@@ -604,10 +614,11 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       up_1: [{ status: 'running' }, { status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
       up_2: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v2.mp4', kind: 'video' }] }],
     } });
-    const storage = createMemoryStorage();
+    const storage = httpMemoryStorage();
     const render = createRender({ logger: silentLogger });
     const downloadToTempFile = async (_url, localPath) => { await copyFile(sample, localPath); return localPath; };
-    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage });
     const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage, render, downloadToTempFile });
     const queue = [];
     const ctxOf = () => ({ db: ctx.db, logger: silentLogger, enqueue: async (spec) => queue.push(spec), extendLease: async () => {} });
@@ -619,8 +630,16 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     await generate({ projectId, idx: 0 }, ctxOf());
     assert.equal(videoProvider.submissions.length, 1);
     assert.equal(videoProvider.submissions[0].imageRefs.length, 2, '两个角色各一张形象图（第 1 段无尾帧）');
-    assert.ok(videoProvider.submissions[0].imageRefs.every((key) => key && !key.includes('takes/')),
-      '第 1 段不含尾帧');
+    // 复审必改 3：提交给上游的是签名 URL，gen_tasks.request 里仍是存储 key
+    assert.ok(videoProvider.submissions[0].imageRefs.every((url) => /^https?:\/\//.test(url)),
+      `imageRefs 应为签名链接：${JSON.stringify(videoProvider.submissions[0].imageRefs)}`);
+    const storedRequest = (await ctx.db.query(
+      `SELECT request FROM gen_tasks WHERE idempotency_key = $1`,
+      [(await ctx.db.query(`SELECT id FROM segment_takes WHERE segment_id = (SELECT id FROM segments WHERE project_id = $1 AND idx = 0)`,
+        [projectId])).rows[0].id])).rows[0].request;
+    const stored = typeof storedRequest === 'string' ? JSON.parse(storedRequest) : storedRequest;
+    assert.ok(stored.imageRefs.every((key) => !/^https?:\/\//.test(key) && key.includes('looks/')),
+      'gen_tasks.request 保存存储 key');
     await poll({ takeId: (await ctx.db.query(
       `SELECT id FROM segment_takes WHERE segment_id = (SELECT id FROM segments WHERE project_id = $1 AND idx = 0)`,
       [projectId])).rows[0].id }, ctxOf());
@@ -633,7 +652,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       `SELECT t.id, t.last_frame_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
         WHERE s.project_id = $1 AND s.idx = 0`, [projectId])).rows[0];
     assert.ok(seg1Take.last_frame_key, '第 1 段已提取尾帧');
-    assert.equal(videoProvider.submissions[1].imageRefs[0], seg1Take.last_frame_key, '第 2 段以尾帧为首个参考');
+    assert.ok(videoProvider.submissions[1].imageRefs[0].includes('takes/'),
+      '第 2 段以尾帧为首个参考（签名链接）');
+    assert.ok(videoProvider.submissions[1].imageRefs[0].startsWith('http'), '尾帧同样是签名链接');
     await poll({ takeId: (await ctx.db.query(
       `SELECT t.id FROM segment_takes t JOIN segments s ON s.id = t.segment_id
         WHERE s.project_id = $1 AND s.idx = 1`, [projectId])).rows[0].id }, ctxOf());
@@ -665,9 +686,10 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       up_2: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
       up_3: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v2.mp4', kind: 'video' }] }],
     } });
-    const storage = createMemoryStorage();
+    const storage = httpMemoryStorage();
     const render = createRender({ logger: silentLogger });
-    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage });
     const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage, render,
       downloadToTempFile: async (_url, localPath) => { await copyFile(black, localPath); return localPath; } });
     const queue = [];
@@ -716,7 +738,8 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
         ? { status: 'unknown' }
         : { status: 'running', upstreamId: `up_${videoProvider.submissions.length}` };
     };
-    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage: httpMemoryStorage() });
     await generate({ projectId, idx: 0 }, { db: ctx.db, logger: silentLogger, enqueue: async () => {}, extendLease: async () => {} });
     const detail = await getProjectDetail(ctx.db, { userId, projectId });
     assert.equal(detail.status, 'failed');
@@ -726,6 +749,11 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       `SELECT t.status FROM segment_takes t JOIN segments s ON s.id = t.segment_id
         WHERE s.project_id = $1 AND s.idx = 0`, [projectId]);
     assert.equal(takes[0].status, 'unknown');
+    // 复审必改 1：unknown 后 retry 必须拒绝，上游不会收到第二次提交
+    const submissionsBefore = videoProvider.submissions.length;
+    await assert.rejects(() => retryProject(ctx.db, { userId, projectId }),
+      (err) => err.code === 'PROJECT_STATE_INVALID');
+    assert.equal(videoProvider.submissions.length, submissionsBefore, 'unknown 后不重提');
     // 取消：unknown 段保持冻结，未提交的第 2 段退回（600 分）
     const before = (await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId])).rows[0].frozen_fen;
     const cancelled = await cancelProject(ctx.db, { userId, projectId });
@@ -740,9 +768,10 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
       up_1: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
       up_2: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v2.mp4', kind: 'video' }] }],
     } });
-    const storage = createMemoryStorage();
+    const storage = httpMemoryStorage();
     const render = createRender({ logger: silentLogger });
-    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage });
     const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage, render,
       downloadToTempFile: async (_url, localPath) => { await copyFile(sample, localPath); return localPath; } });
     const queue = [];
@@ -771,4 +800,222 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const detail = await getProjectDetail(ctx.db, { userId, projectId });
     assert.equal(detail.status, 'delivered');
   }, { timeout: 240_000 });
+});
+
+// ───────────── 复审修复补充测试 ─────────────
+
+describe('projects（M1-BE-05 复审修复）', () => {
+  let ctx;
+  let userId = 'usr_user00000001';
+  let config;
+  const SHOT = (index, start, end, dialogue = []) => ({ start, end, size: 'Medium shot', transition: 'cut',
+    action: `Shot ${index}: the characters continue naturally.`, dialogue,
+    reaction: '', environment: 'Soft daylight.', camera: 'static' });
+
+  before(async () => {
+    ctx = await createTestDb();
+    await seedCatalog(ctx.db);
+    config = loadConfig({ NODE_ENV: 'test' });
+    await ctx.db.query(`UPDATE wallets SET available_fen = 10000, frozen_fen = 0 WHERE user_id = $1`, [userId]);
+  });
+  after(async () => { await ctx.drop(); });
+  beforeEach(async () => {
+    await ctx.db.query('DELETE FROM rate_counters');
+    await ctx.db.query('DELETE FROM jobs');
+    await ctx.db.query('DELETE FROM ledger');
+    await ctx.db.query('UPDATE wallets SET available_fen = 10000, frozen_fen = 0');
+  });
+
+  async function driveToRendering(idemKey) {
+    const created = await createProject(ctx.db, { userId,
+      input: input({ storyText: '妈妈带宝宝在公园野餐。妈妈说：「慢一点，看看树叶。」宝宝说：「这个苹果真甜！」',
+        idempotencyKey: idemKey }), config });
+    const PLAN2 = { title: '野餐', synopsis: 's',
+      bible: { mood: 'warm', characters: [{ castIndex: 0, handle: 'the mother', brief: 'a mother' }, { castIndex: 1, handle: 'the girl', brief: 'a girl' }],
+        scenes: [{ id: 's1', nameZh: '公园', description: 'a park lawn in daylight' }], props: [] },
+      cast: [{ name: '妈妈', description: '温柔', gender: 'female', ageGroup: 'middle' },
+        { name: '宝宝', description: '活泼', gender: 'female', ageGroup: 'child', characterId: 'chr_baby00000001' }],
+      segments: [{ durationSeconds: 30, sceneId: 's1', propIds: [], endState: 'both sit', plot: '野餐。', cameraNotes: '',
+        dialogue: [{ castIndex: 0, line: '慢一点。' }], ambience: '', transition: 'hard_cut', castIndexes: [0, 1] },
+        { durationSeconds: 30, sceneId: 's1', propIds: [], endState: 'still sitting', plot: '收线。', cameraNotes: '',
+        dialogue: [], ambience: '', transition: 'prev_tail', castIndexes: [0, 1] }] };
+    const understand = createUnderstandHandler({ db: ctx.db, logger: silentLogger,
+      storyAgent: createStoryAgent({ llm: createMockLlm([JSON.stringify(PLAN2)]), logger: silentLogger }), config });
+    const job = (await ctx.db.query(`SELECT * FROM jobs WHERE dedupe_key = $1`,
+      [`project:understand:${created.projectId}`])).rows[0];
+    await understand(job.payload, { db: ctx.db, logger: silentLogger, job, enqueue: async () => {} });
+    const { quoteId: looksQuote } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'cast_looks', projectId: created.projectId } }));
+    await confirmStory(ctx.db, { userId, projectId: created.projectId, quoteId: looksQuote,
+      idempotencyKey: `${idemKey}-cs`, config });
+    // 生成缺口形象（成功）→ 全部就绪推进 cast_review
+    const lookHandler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger,
+      storage: httpMemoryStorage(), imageProvider: mockImageProvider() });
+    const versionIds = (await ctx.db.query(
+      `SELECT lv.id FROM look_versions lv JOIN gen_tasks gt ON gt.id = lv.gen_task_id
+        JOIN project_cast pc ON pc.look_version_id = lv.id
+       WHERE pc.project_id = $1`, [created.projectId])).rows.map((row) => row.id);
+    for (const versionId of versionIds) {
+      await lookHandler({ versionId }, { db: ctx.db, logger: silentLogger,
+        job: { attempts: 1 }, enqueue: async () => {}, extendLease: async () => {} });
+    }
+    return created.projectId;
+  }
+
+  test('必改 2：形象失败 → 项目 failed(LOOK_FAILED) → retry 复制原请求 → 成功推进 cast_review', async () => {
+    const projectId = await driveToRendering('relook-0001');
+    // 项目已因全部形象就绪进入 cast_review；为复现失败，把一个角色切到「新的 pending 版本」，
+    // 并把项目拉回 casting（与运行时状态一致：pending 版本正是 casting 中等待生成的版本）
+    const detailNow = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detailNow.status, 'cast_review');
+    const mother = detailNow.cast.find((member) => member.name === '妈妈');
+    // 复现 casting 中的失败：为妈妈建一个新的 pending 版本（gen_task 带原始请求），
+    // 项目拉回 casting，用失败的图片模型跑 look.generate
+    await ctx.db.query(`UPDATE projects SET status = 'casting' WHERE id = $1`, [projectId]);
+    const pendingVersionId = 'lkv_relook_pending01';
+    const pendingGenTaskId = 'gt_relook_pending001';
+    await ctx.db.query(
+      `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
+       VALUES ($1, $2, 'image', 'image.mock.2k', 1, 'unassigned', 'created', $3, $4)`,
+      [pendingGenTaskId, userId, JSON.stringify({
+        versionId: pendingVersionId, characterId: mother.characterId, styleId: 'anime',
+        storageKey: `users/${userId}/looks/${pendingVersionId}`, amountFen: 0,
+        promptHint: 'Japanese anime, cel shading, vivid colors', description: '温柔', referenceKeys: [],
+      }), `relook:${projectId}:${pendingVersionId}`],
+    );
+    await ctx.db.query(
+      `INSERT INTO look_versions (id, look_id, gen_task_id, status)
+       SELECT $1, cl.id, $2, 'pending' FROM character_looks cl
+        WHERE cl.character_id = $3 AND cl.style_id = 'anime'`,
+      [pendingVersionId, pendingGenTaskId, mother.characterId],
+    );
+    await ctx.db.query(`UPDATE project_cast SET look_version_id = $2 WHERE id = $1`,
+      [mother.id, pendingVersionId]);
+    const imageProvider = mockImageProvider({ result: 'failed' });
+    const storage = httpMemoryStorage();
+    const lookHandler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger, storage, imageProvider });
+    await lookHandler({ versionId: pendingVersionId }, { db: ctx.db, logger: silentLogger,
+      job: { attempts: 1 }, enqueue: async () => {}, extendLease: async () => {} });
+    let detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'failed');
+    assert.equal(detail.error.code, 'LOOK_FAILED');
+    // retry：新版本的请求必须复制原 description/referenceKeys/promptHint
+    await retryProject(ctx.db, { userId, projectId });
+    detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'casting');
+    const retryRequests = (await ctx.db.query(
+      `SELECT gt.request FROM gen_tasks gt JOIN look_versions lv ON lv.gen_task_id = gt.id
+        JOIN project_cast pc ON pc.look_version_id = lv.id
+       WHERE pc.project_id = $1 AND lv.status = 'pending'`, [projectId])).rows
+      .map((row) => (typeof row.request === 'string' ? JSON.parse(row.request) : row.request));
+    assert.equal(retryRequests.length, 1);
+    for (const request of retryRequests) {
+      assert.equal(request.description, '温柔', '复制原 description');
+      assert.equal(request.promptHint, 'Japanese anime, cel shading, vivid colors', '复制原 promptHint');
+      assert.deepEqual(request.referenceKeys, [], '原请求本就无照片，复制后一致');
+    }
+    // 重试成功：形象生成成功 → cast_review；账面一致（frozen 已随失败退款清零，成功 amountFen=0 不再动钱）
+    const successProvider = mockImageProvider();
+    const successHandler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger, storage, imageProvider: successProvider });
+    for (const versionId of (await ctx.db.query(
+      `SELECT lv.id FROM look_versions lv JOIN gen_tasks gt ON gt.id = lv.gen_task_id
+        JOIN project_cast pc ON pc.look_version_id = lv.id
+       WHERE pc.project_id = $1 AND lv.status = 'pending'`, [projectId])).rows.map((row) => row.id)) {
+      await successHandler({ versionId }, { db: ctx.db, logger: silentLogger,
+        job: { attempts: 1 }, enqueue: async () => {}, extendLease: async () => {} });
+    }
+    detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'cast_review', '重试成功后推进');
+    const { rows: wallet } = await ctx.db.query(`SELECT frozen_fen, available_fen FROM wallets WHERE user_id = $1`, [userId]);
+    assert.equal(wallet[0].frozen_fen, 0, '失败已退款、重试金额为 0：无冻结残留');
+  });
+
+  test('必改 4：轮询超时按 unknown 处理（冻结、failed、不重提）', async () => {
+    const tight = loadConfig({ NODE_ENV: 'test', PROJECTS_GEN_POLL_TIMEOUT_SECONDS: '1' });
+    const projectId = await driveToRendering('repoll-0001');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'project_render', projectId } }));
+    await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'repoll-cc', config });
+    const timeline = JSON.stringify({ shots: [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21,
+      [{ castIndex: 0, line: '慢一点。', delivery: 'gently' }]), SHOT(4, 21, 30)], avoid: [] });
+    const bind = createBindPromptsHandler({ db: ctx.db, logger: silentLogger,
+      storyAgent: createStoryAgent({ llm: createMockLlm([timeline, timeline]), logger: silentLogger }) });
+    await bind({ projectId }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
+    // 先提交第 1 段（take/gen_task 落库、上游受理），再回拨提交时间制造「轮询已超过 1 秒上限」
+    const videoProvider = fakeVideoProvider({ pollResults: {} });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config: tight,
+      videoProvider, storage: httpMemoryStorage() });
+    await generate({ projectId, idx: 0 }, { db: ctx.db, logger: silentLogger, enqueue: async () => {},
+      extendLease: async () => {} });
+    assert.equal(videoProvider.submissions.length, 1);
+    await ctx.db.query(
+      `UPDATE gen_tasks SET created_at = now() - interval '10 seconds'
+        WHERE idempotency_key IN (SELECT id FROM segment_takes)`);
+    const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config: tight, videoProvider,
+      storage: httpMemoryStorage(), render: createRender({ logger: silentLogger }),
+      downloadToTempFile: async () => { throw new Error('超时后不应下载'); } });
+    const takeId = (await ctx.db.query(`SELECT id FROM segment_takes ORDER BY created_at LIMIT 1`)).rows[0].id;
+    await poll({ takeId }, { db: ctx.db, logger: silentLogger, enqueue: async () => {}, extendLease: async () => {} });
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'failed');
+    assert.equal(detail.error.code, 'TAKE_UNKNOWN');
+  });
+
+  test('必改 5：gen.poll 与 compose 的临时产物不残留', async () => {
+    const tmp = '/tmp';
+    const countTempDirs = async () => {
+      const { readdir } = await import('node:fs/promises');
+      const entries = await readdir(tmp);
+      return entries.filter((name) => name.startsWith('miv-take-') || name.startsWith('miv-compose-')).length;
+    };
+    const before = await countTempDirs();
+    const sample = await makeVideo('re-chain-30s.mp4', { duration: 30 });
+    const projectId = await driveToRendering('rechain-0001');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'project_render', projectId } }));
+    await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'rechain-cc', config });
+    const timeline = JSON.stringify({ shots: [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21,
+      [{ castIndex: 0, line: '慢一点。', delivery: 'gently' }]), SHOT(4, 21, 30)], avoid: [] });
+    const bind = createBindPromptsHandler({ db: ctx.db, logger: silentLogger,
+      storyAgent: createStoryAgent({ llm: createMockLlm([timeline, timeline]), logger: silentLogger }) });
+    await bind({ projectId }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
+    const videoProvider = fakeVideoProvider({ pollResults: {
+      up_1: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
+      up_2: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v2.mp4', kind: 'video' }] }] } });
+    const storage = httpMemoryStorage();
+    const render = createRender({ logger: silentLogger });
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage });
+    const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage, render,
+      downloadToTempFile: async (_url, localPath) => { await copyFile(sample, localPath); return localPath; } });
+    const compose = createComposeHandler({ db: ctx.db, logger: silentLogger, config, storage, render,
+      fetchLocal: async (_key, localPath) => { await copyFile(sample, localPath); return localPath; } });
+    const ctxOf = () => ({ db: ctx.db, logger: silentLogger, enqueue: async (spec) => {
+      if (spec.type === 'segment.generate') {
+        return generate(spec.payload, ctxOf());
+      }
+      if (spec.type === 'project.compose') {
+        return compose(spec.payload, ctxOf());
+      }
+      if (spec.type === 'gen.poll') {
+        return poll(spec.payload, ctxOf());
+      }
+    }, extendLease: async () => {} });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    await poll({ takeId: (await ctx.db.query(
+      `SELECT t.id FROM segment_takes t JOIN segments s ON s.id = t.segment_id WHERE s.project_id = $1 AND s.idx = 0`,
+      [projectId])).rows[0].id }, ctxOf());
+    await poll({ takeId: (await ctx.db.query(
+      `SELECT t.id FROM segment_takes t JOIN segments s ON s.id = t.segment_id WHERE s.project_id = $1 AND s.idx = 1`,
+      [projectId])).rows[0].id }, ctxOf());
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'delivered');
+    assert.equal(await countTempDirs(), before, 'job 结束后无临时目录残留');
+  }, { timeout: 240_000 });
+
+  test('建议 9：创建幂等键同键不同内容返回 IDEMPOTENCY_CONFLICT', async () => {
+    await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-mismatch' }), config });
+    await assert.rejects(() => createProject(ctx.db, { userId,
+      input: input({ storyText: '完全不同的另一个故事，内容不一样。', idempotencyKey: 'idem-mismatch' }), config }),
+      (err) => err.code === 'IDEMPOTENCY_CONFLICT');
+  });
 });

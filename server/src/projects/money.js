@@ -62,7 +62,10 @@ export async function projectMoneySummary(t, { userId, projectId }) {
       WHERE l.user_id = $1
         AND (l.ref_type = 'project' AND l.ref_id = $2
           OR l.ref_type = 'look' AND l.ref_id IN (
-            SELECT pc.look_version_id FROM project_cast pc WHERE pc.project_id = $2))
+            SELECT lv2.id FROM look_versions lv2
+              JOIN character_looks cl2 ON cl2.id = lv2.look_id
+             WHERE cl2.character_id IN (
+               SELECT pc.character_id FROM project_cast pc WHERE pc.project_id = $2)))
       GROUP BY kind`,
     [userId, projectId],
   );

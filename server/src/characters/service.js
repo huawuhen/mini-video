@@ -8,6 +8,24 @@ import { appendEvent, transition } from '../projects/state.js';
 import { consumeQuote } from '../wallet/pricing.js';
 import { refund, reserve, settle } from '../wallet/service.js';
 
+/** look.generate 终态失败/未知：同事务把引用该版本的 casting 中作品置 failed（M1-BE-05 复审必改 2）。
+ * 只吞状态竞争（PROJECT_STATE_INVALID），其他错误照抛。 */
+async function failProjectsForVersion(t, { versionId, userId, code, message }) {
+  const { rows } = await t.query(
+    `SELECT pc.project_id FROM project_cast pc JOIN projects p ON p.id = pc.project_id
+      WHERE pc.look_version_id = $1 AND p.status = 'casting'`,
+    [versionId],
+  );
+  for (const { project_id: projectId } of rows) {
+    await transition(t, { projectId, userId, from: ['casting'], to: 'failed',
+      error: { code, message, step: 'casting' },
+      progress: { percent: 0, message: '角色形象生成失败' },
+    }).catch((error) => {
+      if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+    });
+  }
+}
+
 /**
  * 项目角色形象回填（M1-BE-05）：项目 casting 阶段的 look.generate 成功后，把版本回填到
  * project_cast 缺口；当作品内全部角色都有形象时推进 casting → cast_review。
@@ -36,7 +54,9 @@ async function backfillProjectCasts(t, { characterId, styleId, versionId, userId
     );
     if (!missing.length) {
       await transition(t, { projectId, userId, from: ['casting'], to: 'cast_review',
-        progress, changed: ['cast'] }).catch(() => {}); // 已被并发的兄弟形象推进
+        progress, changed: ['cast'] }).catch((error) => {
+        if (error?.code !== 'PROJECT_STATE_INVALID') throw error; // 已被并发的兄弟形象推进
+      });
     }
   }
 }
@@ -419,20 +439,28 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
         ));
         throw err;
       }
-      await db.tx((t) => t.query(
-        `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1 AND status = 'submitting'`,
-        [version.gen_task_id],
-      ));
+      await db.tx(async (t) => {
+        await t.query(
+          `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1 AND status = 'submitting'`,
+          [version.gen_task_id],
+        );
+        await failProjectsForVersion(t, { versionId, userId: version.user_id,
+          code: 'LOOK_UNKNOWN', message: '角色形象生成结果未知，金额已冻结，请联系客服处理' });
+      });
       ctx.logger.error('look_generate_submission_unknown', { versionId, code: err?.code });
       return; // 未明确证明未提交：不再重提，版本 pending，费用冻结待对账
     }
     await ctx.extendLease?.();
 
     if (result.status === 'unknown') {
-      await db.tx((t) => t.query(
-        `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1`,
-        [version.gen_task_id],
-      ));
+      await db.tx(async (t) => {
+        await t.query(
+          `UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1`,
+          [version.gen_task_id],
+        );
+        await failProjectsForVersion(t, { versionId, userId: version.user_id,
+          code: 'LOOK_UNKNOWN', message: '角色形象生成结果未知，金额已冻结，请联系客服处理' });
+      });
       ctx.logger.warn('look_generate_unknown', { versionId }); // 保持 pending 与冻结，不自动重提
       return;
     }
@@ -488,6 +516,9 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
       if (request.amountFen > 0) {
         await refundReserved(t, { userId: version.user_id, versionId, amountFen: request.amountFen });
       }
+      // M1-BE-05 复审必改 2：让引用该版本的 casting 中作品进入 failed（可 retry）
+      await failProjectsForVersion(t, { versionId, userId: version.user_id,
+        code: 'LOOK_FAILED', message: '角色形象生成失败，可重试' });
       return true;
     });
     ctx.logger[done ? 'info' : 'warn']('look_generate_failed', { versionId, idempotentSkip: !done });

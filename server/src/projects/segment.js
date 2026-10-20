@@ -8,12 +8,12 @@ import { join } from 'node:path';
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
 import { PermanentJobError } from '../queue/index.js';
-import { requireProject, transition, updateProgress } from './state.js';
+import { appendEvent, requireProject, transition } from './state.js';
 import { settleSegment, videoUnitFen } from './money.js';
 
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
-export function createSegmentGenerateHandler({ db, logger, config, videoProvider }) {
+export function createSegmentGenerateHandler({ db, logger, config, videoProvider, storage }) {
   return async function segmentGenerate(payload, ctx) {
     const { projectId, idx, takeId } = payload;
     const { rows: current } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
@@ -128,8 +128,13 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     await ctx.extendLease?.();
     let submitted;
     try {
+      // 复审必改 3：上游只能访问签名 URL；gen_tasks.request 里保存 key（过期后重签）
+      const toUrls = (keys) => Promise.all((keys ?? []).map((key) => storage.signedUrl(key,
+        { ttlSeconds: config.projects.refUrlTtlSeconds })));
       const prepared = videoProvider.prepare({
-        prompt: request.prompt, imageRefs: request.imageRefs, audioRefs: request.audioRefs,
+        prompt: request.prompt,
+        imageRefs: await toUrls(request.imageRefs),
+        audioRefs: await toUrls(request.audioRefs),
         durationSeconds: request.durationSeconds, ratio: request.ratio, resolution: request.resolution,
       }, { durations: request.allowedDurations });
       submitted = await videoProvider.submit(prepared, { idempotencyKey: takeIdResolved });
@@ -175,7 +180,9 @@ async function markTakeUnknown(db, ctx, { take, projectId, userId, genTaskId, lo
     await t.query(`UPDATE segment_takes SET status = 'unknown' WHERE id = $1`, [take]);
     await transition(t, { projectId, userId, from: ['rendering'], to: 'failed',
       error: { code: 'TAKE_UNKNOWN', message: '片段提交结果未知，金额已冻结，请联系客服处理', step: 'rendering' },
-      progress: { percent: 0, message: '片段处理出现异常' } }).catch(() => {});
+      progress: { percent: 0, message: '片段处理出现异常' } }).catch((error) => {
+      if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+    });
   });
   logger.error('segment_take_unknown', { take, projectId });
 }
@@ -196,7 +203,9 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
     }
     await transition(t, { projectId, userId, from: ['rendering'], to: 'failed',
       error: { code: 'SEGMENT_FAILED', message: error.message ?? '片段生成失败，可重试', step: 'rendering' },
-      progress: { percent: 0, message: '片段生成失败' } }).catch(() => {});
+      progress: { percent: 0, message: '片段生成失败' } }).catch((error) => {
+      if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+    });
   });
   logger.warn('segment_failed', { takeId, projectId, reason: error.message });
 }
@@ -223,6 +232,18 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       `SELECT status, ratio, tier_mapping_id, user_id, style_id FROM projects WHERE id = $1`, [projectId]);
     const project = projectRows[0];
     if (!project) throw new PermanentJobError('作品不存在');
+
+    // 复审必改 4：轮询超时（从提交时刻起算，默认 7200 秒 = 120 分钟，用户 2026-10-20 指定）。
+    // 超时按结果未知处理：金额保持冻结、不重提、项目 failed(TAKE_UNKNOWN)，等 M2 对账。
+    const { rows: ageRows } = await db.query(
+      `SELECT extract(epoch FROM (now() - created_at))::int AS seconds FROM gen_tasks WHERE id = $1`,
+      [take.gen_task_id]);
+    if (Number(ageRows[0]?.seconds ?? 0) > config.projects.genPollTimeoutSeconds) {
+      logger.error('gen_poll_timeout', { takeId, seconds: ageRows[0]?.seconds });
+      await markTakeUnknown(db, ctx, { take: takeId, projectId, userId: take.user_id,
+        genTaskId: take.gen_task_id, logger });
+      return;
+    }
 
     await ctx.extendLease?.();
     let result;
@@ -307,7 +328,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
         [projectId, JSON.stringify({ percent: 45 + Math.round((done / total) * 45),
           message: `正在生成片段 ${Math.min(done + 1, total)}/${total}` })]);
       if (stillRendering) {
-        await appendEventDb(db, { projectId,
+        await appendEvent(db, { projectId,
           progress: { percent: 45 + Math.round((done / total) * 45),
             message: `正在生成片段 ${Math.min(done + 1, total)}/${total}` }, changed: ['segments'] });
       }
@@ -315,7 +336,9 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       if (done >= total) {
         await db.tx(async (t) => transition(t, { projectId, userId: take.user_id,
           from: ['rendering'], to: 'composing',
-          progress: { percent: 95, message: '正在拼接成片' }, changed: ['segments'] }).catch(() => {}));
+          progress: { percent: 95, message: '正在拼接成片' }, changed: ['segments'] }).catch((error) => {
+          if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+        }));
         await ctx.enqueue({ type: 'project.compose', payload: { projectId },
           dedupeKey: `project:compose:${projectId}` });
       } else if (project.status === 'rendering') {
@@ -326,5 +349,3 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
     }
   };
 }
-
-import { appendEvent as appendEventDb } from './state.js';

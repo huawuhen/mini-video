@@ -169,7 +169,18 @@ export async function createProject(db, { userId, input, config }) {
       `SELECT id FROM projects WHERE user_id = $1 AND idempotency_key = $2 AND deleted_at IS NULL`,
       [userId, input.idempotencyKey],
     );
-    if (replayed.length) return { replayed: true, projectId: replayed[0].id };
+    if (replayed.length) {
+      // 同键不同内容：拒绝，避免静默拿到旧行
+      const { rows: existing } = await t.query(`SELECT * FROM projects WHERE id = $1`, [replayed[0].id]);
+      const same = existing[0]
+        && existing[0].story_text === storyText
+        && existing[0].style_id === input.styleId
+        && existing[0].quality_tier_id === input.qualityTierId
+        && existing[0].ratio === ratio
+        && JSON.stringify(existing[0].selected_character_ids ?? []) === JSON.stringify(characterIds);
+      if (!same) throw appError('IDEMPOTENCY_CONFLICT', '相同的幂等键已被不同的创建请求使用');
+      return { replayed: true, projectId: replayed[0].id };
+    }
     await requireActiveStyle(t, input.styleId);
     await requireActiveTier(t, input.qualityTierId);
     await requireOwnCharacters(t, userId, characterIds);
@@ -562,23 +573,41 @@ export async function retryProject(db, { userId, projectId }) {
     const project = await requireProject(t, { userId, projectId });
     if (project.status !== 'failed') throw appError('PROJECT_STATE_INVALID');
     const step = project.error?.step ?? 'rendering';
-    // 恢复到失败步骤（失败时该段/该形象预占已按 §5① 退回，重试免费重新生成）
+    // 提交结果未知（unknown）的片段/形象：金额保持冻结、绝不重提（上游可能已受理，重提=双倍生成）。
+    // 用户只能 cancel 拿回未冻结部分；冻结部分等 M2 对账。
+    if (step === 'rendering' || step === 'casting') {
+      const unknownSql = step === 'rendering'
+        ? `SELECT 1 FROM segment_takes t JOIN segments s ON s.id = t.segment_id
+            WHERE s.project_id = $1 AND t.status = 'unknown' LIMIT 1`
+        : `SELECT 1 FROM look_versions lv
+            WHERE lv.status = 'unknown' AND lv.id IN (
+              SELECT look_version_id FROM project_cast WHERE project_id = $1) LIMIT 1`;
+      const { rows: unknownRows } = await t.query(unknownSql, [projectId]);
+      if (unknownRows.length) {
+        throw appError('PROJECT_STATE_INVALID', '该片段结果待核对，请联系客服');
+      }
+    }
+    // 恢复到失败步骤（失败金额按 A 口径保持冻结，重试成功后照常结算）
     await transition(t, { projectId, userId, from: ['failed'], to: step,
       progress: null, changed: [] });
     if (step === 'understanding') {
       await enqueue(t, { type: 'project.understand', payload: { projectId },
         dedupeKey: `project:understand:${projectId}:retry` });
     } else if (step === 'casting') {
-      // 为失败的形象版本补建新版本（amountFen=0：钱已在失败时退回），重新入队 look.generate
+      // 为失败的形象版本补建新版本（amountFen=0：钱已在失败时退回，平台承担），
+      // 并从失败版本的原始请求复制 description/referenceKeys/promptHint，保证生成一致
       const { rows: failedCasts } = await t.query(
-        `SELECT pc.id AS cast_id, pc.character_id, lv.id AS failed_version_id
+        `SELECT pc.id AS cast_id, pc.character_id, lv.id AS failed_version_id, gt.request AS original_request
            FROM project_cast pc JOIN look_versions lv ON lv.id = pc.look_version_id
+           JOIN gen_tasks gt ON gt.id = lv.gen_task_id
           WHERE pc.project_id = $1 AND lv.status = 'failed' ORDER BY pc.idx`, [projectId]);
       const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [project.style_id]);
       const { rows: imageSku } = await t.query(
         `SELECT sku_code, version FROM skus WHERE kind = 'image' AND status = 'active'
           ORDER BY version DESC, effective_at DESC LIMIT 1`);
       for (const member of failedCasts) {
+        const original = typeof member.original_request === 'string'
+          ? JSON.parse(member.original_request) : member.original_request ?? {};
         const versionId = newId('lkv');
         const genTaskId = newId('gt');
         await t.query(
@@ -587,8 +616,9 @@ export async function retryProject(db, { userId, projectId }) {
           [genTaskId, userId, imageSku[0].sku_code, imageSku[0].version, JSON.stringify({
             versionId, characterId: member.character_id, styleId: project.style_id,
             storageKey: `users/${userId}/looks/${versionId}`, amountFen: 0,
-            promptHint: styleRows[0]?.prompt_hint ?? '', description: '',
-            referenceKeys: [],
+            promptHint: original.promptHint ?? styleRows[0]?.prompt_hint ?? '',
+            description: original.description ?? '',
+            referenceKeys: original.referenceKeys ?? [],
           }), `project:${projectId}:look:${member.cast_id}:${member.failed_version_id}`],
         );
         await t.query(
@@ -633,7 +663,7 @@ export async function cancelProject(db, { userId, projectId }) {
       unknownFrozen = Number(unknownRows[0].seconds) * unit;
     }
     const refundable = Math.max(0, money.frozenFen - unknownFrozen);
-    const purpose = `cancel:${Date.now()}`; // 幂等由金额与账户一致性保证；多次取消不可达（状态迁移守卫）
+    const purpose = 'cancel'; // 状态迁移守卫保证 cancel 只会成功一次，幂等键固定即可
     await refundProject(t, { userId, projectId, amountFen: refundable, purpose });
     await transition(t, { projectId, userId,
       from: ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'],

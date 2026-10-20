@@ -34,7 +34,9 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
 
     if (project.status === 'rendering') {
       await db.tx(async (t) => transition(t, { projectId, userId, from: ['rendering'], to: 'composing',
-        progress: { percent: 95, message: '正在拼接成片' }, changed: [] }).catch(() => {}));
+        progress: { percent: 95, message: '正在拼接成片' }, changed: [] }).catch((error) => {
+          if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+        }));
     }
     const renderId = newId('rnd');
     await db.tx(async (t) => {
@@ -54,7 +56,7 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
         inputs.push({ localPath, transition: segment.transition });
       }
       await ctx.extendLease?.();
-      const composed = await render.compose({ inputs, ratio: project.ratio, resolution });
+      const composed = await render.compose({ inputs, ratio: project.ratio, resolution, workDir });
       await ctx.extendLease?.();
       const videoKey = `users/${userId}/projects/${projectId}/renders/${renderId}.mp4`;
       const coverKey = `users/${userId}/projects/${projectId}/renders/${renderId}.cover.jpg`;
@@ -82,7 +84,9 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
           [renderId, JSON.stringify({ message: String(error.message).slice(0, 300) })]);
         await transition(t, { projectId, userId, from: ['composing'], to: 'failed',
           error: { code: 'COMPOSE_FAILED', message: '成片拼接失败，可重试', step: 'composing' },
-          progress: { percent: 0, message: '拼接失败' } }).catch(() => {});
+          progress: { percent: 0, message: '拼接失败' } }).catch((error) => {
+        if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+      });
       });
       logger.error('project_compose_failed', { projectId, renderId, err: String(error.message) });
     } finally {

@@ -67,7 +67,7 @@
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待审查（状态机与全部 job 完成，228/228；§5 两项口径待追认） | 2026-10-20 |
+| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待复审（5 条必改与 6 条建议已修复，232/232） | 2026-10-20 |
 | M1-BE-06 | — | — | — | 待认领（BE-Core 串行，依赖 BE-05） | — |
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
@@ -160,6 +160,21 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-20 · BE-Core · M1-BE-05 复审修复（unknown 重试守卫、形象失败通知、签名链接、轮询超时、临时文件）
+
+- **背景**：按 §6 M1-BE-05 复审修复 5 条必改、6 条建议。已合并 `origin/main`（d2d074a），修复 2 个提交推同一分支。
+- **改动**：
+  - **必改 1**：`retryProject` 在 step 为 rendering/casting 时先查 `unknown` 状态的 take / look_versions，存在即 409（文案「该片段结果待核对，请联系客服」），只可 cancel；unknown 后上游不再收到第二次提交。
+  - **必改 2**：`characters/service.js` 新增 `failProjectsForVersion`——look.generate 终态失败（LOOK_FAILED）/未知（LOOK_UNKNOWN，含停滞 submitting、提交异常、result unknown 三处）时同事务把引用该版本的 casting 作品置 `failed(step=casting)`；`retryProject` casting 分支从失败版本 `gen_tasks.request` 复制 `description/referenceKeys/promptHint`（金额 0）；`projectMoneySummary` 的形象流水聚合从「当前 look_version_id」扩展为「角色全部版本」，换版本后退款/结算流水不丢。
+  - **必改 3**：`segment.generate` 提交前把 `imageRefs/audioRefs` 经 `storage.signedUrl(key, { ttlSeconds: projects.refUrlTtlSeconds（默认 6 小时，可配） })` 转签名 URL；`gen_tasks.request` 仍存 key（重新提交/对账重签）。测试 storage 加 `httpMemoryStorage` 包装（https 链接形态）。
+  - **必改 4**：`gen.poll` 开头检查 `gen_tasks.created_at` 距今超过 `projects.genPollTimeoutSeconds`（默认 7200 秒 = 120 分钟，用户 2026-10-20 指定，可配）即按 unknown 处理（冻结、项目 failed(TAKE_UNKNOWN)、写 error 日志、不重提）。
+  - **必改 5**：`gen.poll` 的 `extractLastFrame` 与 `project.compose` 的 `render.compose` 都传入 job 自己的 `workDir`，随 job 的 finally 一并清理；测试断言 job 结束后 /tmp 下无 `miv-take-*`/`miv-compose-*` 残留。
+  - **建议 6~11**：`projects.story.usage` 保存扩写+理解累计的 LLM usage；`understand` 与 bind 同口径按 SKU 的 model 选 Skill；cancel 幂等键固定为 `cancel`；创建幂等键重放时比对 storyText/styleId/qualityTierId/ratio/characterIds，不一致 409 `IDEMPOTENCY_CONFLICT`；`segment.js` 顶部 import；所有 `.catch(() => {})` 收敛为只吞 `PROJECT_STATE_INVALID`。
+- **测试**：新增复审修复 describe（4 例）——look 失败→failed(LOOK_FAILED)→retry 复制请求→成功推进（含钱包一致性）；轮询超时（回拨 created_at）；unknown 后 retry 拒绝且上游提交次数不变；临时目录无残留；另改 2 处断言（签名 URL 形态、串行链 imageRefs）。`npm run test:server` 232/232。
+- **验证**：`npm run test:server` 232/232；`npm run check` 通过（本次未动前端，build 不受影响）；`git merge origin/main` 无冲突。
+- **未完成 / 风险**：签名 URL 的 TTL（6 小时）与轮询上限（120 分钟）是可配参数，M0 按真实耗时调；`retryProject` 对 LOOK_UNKNOWN 同样拒绝（与必改 1 同口径）。
+
+### 2026-10-20 · BE-Core · M1-BE-05 作品状态机与各 job（待审查）
 ### 2026-10-20 · BE-Core · M1-BE-05 作品状态机与各 job（待审查）
 
 - **背景**：引擎与渲染线完成后，实现作品状态机、各 job 与钱包流（docs/TASKS.md M1-BE-05、ARCHITECTURE §4/§5、API §6）。分支 `agent/be/M1-BE-05-projects`（基于 main `fddb5df`），按阶段 6 个提交（认领 0e0ef76 → C2 17ebb8b/e9554fc → C3 c2941a8 → C4 9832e00/065cde9 → C5~C7 5743f25），每个提交全量测试通过。

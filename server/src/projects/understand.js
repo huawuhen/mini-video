@@ -2,6 +2,7 @@
 // 规划 → 持久化 story/cast/segments → story_review。LLM 通过注入的 storyAgent 调用；
 // 引擎自带修复重试与确定性兜底，处理器只在重试耗尽的意外错误把项目置为 failed。
 import { classifyInput } from '../engine/story/index.js';
+import { createSkillRegistry } from '../engine/skills/index.js';
 import { PermanentJobError } from '../queue/index.js';
 import { newId } from '../db/ids.js';
 import { transition } from './state.js';
@@ -54,6 +55,9 @@ async function existingLookVersion(t, characterId, styleId) {
   return rows[0]?.id ?? null;
 }
 
+// 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径，复审建议 7）
+const skillRegistry = createSkillRegistry();
+
 export function createUnderstandHandler({ db, logger, storyAgent, config }) {
   const maxAttempts = config.worker.maxAttempts ?? 5;
   return async function projectUnderstand(payload, ctx) {
@@ -75,7 +79,9 @@ export function createUnderstandHandler({ db, logger, storyAgent, config }) {
           projectId, userId, from: ['understanding'], to: 'failed',
           error: { code: 'STORY_FAILED', message: '故事理解失败，请稍后重试', step: 'understanding' },
           progress: { percent: 0, message: '故事理解失败' },
-        }).catch(() => {})); // 竞争（已取消/重分析）时放弃置败
+        }).catch((error) => {
+          if (error?.code !== 'PROJECT_STATE_INVALID') throw error; // 竞争（已取消/重分析）时放弃置败
+        }));
       }
       throw error;
     }
@@ -95,16 +101,26 @@ async function runUnderstand({ db, logger, storyAgent, config, projectId, userId
   const inputKind = classifyInput(project.story_text, { ideaCharThreshold: config.projects.ideaCharThreshold });
   let expanded = false;
   let scriptText = project.story_text;
+  let expandedUsage;
   if (inputKind === 'idea') {
     const expandedResult = await storyAgent.expandIdea({
       idea: project.story_text, style, maxSeconds, allowedDurations, characters });
     scriptText = expandedResult.script;
     expanded = true;
+    expandedUsage = expandedResult.usage;
     logger.info('project_idea_expanded', { projectId, degraded: expandedResult.degraded });
   }
+  const skillId = skillRegistry.forModel(sku.model).id;
   const result = await storyAgent.understand({
     storyText: scriptText, inputKind, expanded, style, maxSeconds, allowedDurations, characters, voices,
+    skillId,
   });
+  // 平台成本核算（复审建议 6）：扩写 + 理解两次调用的 usage 累计
+  const usage = { inputTokens: 0, outputTokens: 0 };
+  for (const part of [expandedUsage, result.usage]) {
+    usage.inputTokens += Number.isSafeInteger(part?.inputTokens) ? part.inputTokens : 0;
+    usage.outputTokens += Number.isSafeInteger(part?.outputTokens) ? part.outputTokens : 0;
+  }
 
   await db.tx(async (t) => {
     const fresh = (await t.query(`SELECT status, selected_character_ids, style_id FROM projects WHERE id = $1`,
@@ -147,6 +163,7 @@ async function runUnderstand({ db, logger, storyAgent, config, projectId, userId
       inputKind: result.inputKind, expanded: result.expanded, script: result.script,
       synopsis: result.synopsis, totalSeconds: result.totalSeconds, segmentCount: result.segmentCount,
       compressed: result.compressed, ...(result.notice ? { notice: result.notice } : {}),
+      usage, // LLM 用量（扩写 + 理解累计；LLM 费用平台承担，仅内部核算）
       raw: result, // 引擎原始输出（bible/每段 endState/takeMode 等，bind_prompts 直接消费）
     };
     await t.query(
