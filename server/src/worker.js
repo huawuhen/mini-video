@@ -8,6 +8,8 @@ import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { createLogger } from './logger.js';
+import { createProjectHandlers } from './projects/handlers.js';
+import { createDevStoryAgent } from './projects/dev-stub.js';
 import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
@@ -31,13 +33,19 @@ function createDevImageProvider() {
  * @param {{ config, db, logger, storage?, imageProvider? }} deps
  *   storage / imageProvider：engine 完成前测试注入模拟；生产环境缺省时启动报错（同 BE-03 做法）。
  */
-export function buildHandlers({ config, db, logger, storage, imageProvider }) {
+export function buildHandlers({ config, db, logger, storage, imageProvider, storyAgent }) {
   // §6 审查 3（BE-03）：生产环境不允许缺省内存存储；未注入时按 config.storage.driver 解析
   const objectStorage = storage ?? createStorageFromConfig(config);
   let imageModel = imageProvider;
   if (!imageModel) {
     if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
     imageModel = createDevImageProvider();
+  }
+  // M1-BE-05：storyAgent（engine.story，含真实 LLM）生产必须注入；开发缺省确定性桩
+  let story = storyAgent;
+  if (!story) {
+    if (config.production) throw new Error('生产环境必须注入真实 storyAgent（engine/story + LLM 配置）');
+    story = createDevStoryAgent();
   }
   const cronOpts = { batchSize: config.cron.sweepBatchSize };
   const withLog = (name, run) => async (_payload, ctx) => {
@@ -50,8 +58,7 @@ export function buildHandlers({ config, db, logger, storage, imageProvider }) {
     'projects.expire_sweep': withLog('cron_projects_expired', (sdb, ctx) => runProjectsExpireSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
     'jobs.cleanup': withLog('cron_jobs_cleaned', (sdb) => runJobsCleanup(sdb, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
     'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel }), // M1-BE-04
-    // 'project.understand': understandHandler(deps),   M1-BE-05 + M1-ENG-01
-    // 'project.bind_prompts' / 'segment.generate' / 'gen.poll' / 'project.compose'   M1-BE-05
+    ...createProjectHandlers({ db, logger, config, storyAgent }), // M1-BE-05：understand → bind_prompts/segment/compose 逐阶段注册
   };
 }
 

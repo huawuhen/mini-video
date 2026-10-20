@@ -44,6 +44,15 @@ export function loadConfig(env = process.env) {
       concurrency: int(env.WORKER_CONCURRENCY, 2),
       pollIntervalMs: int(env.WORKER_POLL_INTERVAL_MS, 1000),
       leaseSeconds: int(env.WORKER_LEASE_SECONDS, 120),
+      maxAttempts: int(env.WORKER_MAX_ATTEMPTS, 5),
+    },
+    // 作品（M1-BE-05）：免费故事理解次数按北京日切日；时长上限与想法判定阈值见
+    // docs/skills/wan-3.0.md；交付后保存期 PRD 为 3 个月
+    projects: {
+      freeDailyQuota: int(env.PROJECTS_FREE_DAILY_QUOTA, 20),
+      maxSeconds: int(env.PROJECTS_MAX_SECONDS, 90),
+      ideaCharThreshold: int(env.PROJECTS_IDEA_CHAR_THRESHOLD, 60),
+      retentionDays: int(env.PROJECTS_RETENTION_DAYS, 90),
     },
     // 定时任务（M1-BE-03）：调度循环每 tickSeconds 秒用「cron:<任务>:<窗口起点>」去重键入队，
     // 多个 Worker 同时调度也只入队一次；清理任务分批（每批 sweepBatchSize 行、每批一个短事务）
