@@ -44,7 +44,7 @@
 | M2-BE-01 | BE-Core | 接入真实渠道（按 M0 结论配置 SKU 与档位映射）、对账与 unknown 处理工具 | M0-02、M1-BE-06 |
 | M2-BE-02 | BE-Core | 保存期清理与到期提醒数据、上传清理 | M1-BE-06 |
 | M2-WEB-01 | Web | 前端切换真实 API，联调全部流程；SSE | M1-BE-06 |
-| M2-OPS-01 | Ops | 生产 Dockerfile（web/api/worker，worker 含 FFmpeg）、Compose、备份与恢复脚本 | M1-BE-06 |
+| M2-OPS-01 | Ops | 生产 Dockerfile（Linux，web/api/worker，worker 含 FFmpeg 与中文字体如 Noto Sans CJK，并在镜像内跑 render 测试，amd64/arm64 都要能构建）、Compose、备份与恢复脚本 | M1-BE-06 |
 | M2-OPS-02 | Ops + BE-Core | 七牛真实桶联调（**需用户授权并写明费用上限**）：表单上传（小对象）、分片上传 v2（大于 8MB，含失败 abort）、签名下载链接（含中文与空格的 key、`attname` 文件名是否生效、过期后 401）、删除（含对象不存在）；联调后把结论写进 `engine/README.md` | 联调记录与结论；若 `attname` 或 key 编码与预期不符，据实调整 `signedUrl` | M1-ENG-03 |
 | M2-QA-01 | Lead | 浏览器端到端验收（手机 + PC，模拟上游）+ 代码审查 | 以上全部 |
 

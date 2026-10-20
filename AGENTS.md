@@ -57,6 +57,8 @@
 
 ## 6. 测试与验证
 
+- **运行环境**：开发在 Mac，**上线运行在 Linux 云服务器**。FFmpeg、字体、路径、磁盘一律按 Linux 容器设计；不得依赖 Mac 特有行为或本机路径；平台相关的东西（FFmpeg 滤镜、原生依赖）要在 Linux 上验证，详见 `CODEX_HANDOFF.md` §3 的 2026-10-20 条。
+
 - 前端：`npm run check -w apps/web`（vue-tsc 类型检查）与 `npm run build -w apps/web`。
 - 后端：`node --test`；测试使用隔离 PostgreSQL（Compose 项目 `miv-test`，端口 `127.0.0.1:56432`），模拟上游，**不产生任何真实模型费用**。
 - 真实模型调用（如 M0 技术验证）必须先在 handoff「待用户确认」中获得用户明确授权，并写明费用上限。
