@@ -42,11 +42,12 @@ async function makeVideo(name, { video = `testsrc2=size=${SIZE}:rate=30`, audio 
   return file;
 }
 
-/** Mean luma of (optionally cropped) first/seek frame via signalstats metadata print. */
+/** Mean luma of (optionally cropped) seek frame via signalstats metadata print. */
 function frameYavg(file, { crop, seek = 0 } = {}) {
   const vf = `${crop ? `crop=${crop},` : ''}signalstats,metadata=print:file=-`;
+  const args = seek > 0 ? ['-ss', String(seek)] : [];
   return new Promise((resolve, reject) => {
-    const child = spawn('ffmpeg', ['-v', 'info', '-ss', String(seek), '-i', file, '-vf', vf, '-f', 'null', '-'],
+    const child = spawn('ffmpeg', ['-v', 'info', ...args, '-i', file, '-vf', vf, '-f', 'null', '-'],
       { stdio: ['ignore', 'pipe', 'ignore'] });
     let text = '';
     child.stdout.on('data', (chunk) => { text += chunk; });
@@ -111,9 +112,7 @@ describe('render（M1-RND-01）', () => {
     assert.ok(durationResult.issues.some((issue) => issue.code === 'DURATION_MISMATCH'));
     const withinTolerance = await render.inspect(normal, { durationSeconds: DURATION + 1 });
     assert.ok(!withinTolerance.issues.some((issue) => issue.code === 'DURATION_MISMATCH'), '±2 秒内算相符');
-
-    const resolutionResult = await render.inspect(normal, { ratio: '16:9', resolution: RESOLUTION });
-    assert.ok(resolutionResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));
+    // 分辨率判定的四种情形见下一个用例（放宽后 9:16 文件对 16:9 请求不再判不符：比例族相同）
 
     const corrupt = join(SAMPLE_DIR, 'corrupt.mp4');
     await copyFile(normal, corrupt);
@@ -123,19 +122,64 @@ describe('render（M1-RND-01）', () => {
     assert.deepEqual(corruptResult.issues.map((issue) => issue.code), ['UNDECODABLE']);
   });
 
-  test('extractLastFrame：取到最后一帧（红→蓝视频的尾帧是蓝）', async () => {
+  test('extractLastFrame：取到真正的最后一帧（红3秒→绿0.5→蓝0.5，尾帧必须是蓝）', async () => {
     await mkdir(SAMPLE_DIR, { recursive: true });
-    const rb = join(SAMPLE_DIR, 'rb.mp4');
-    await ffmpeg(['-y', '-f', 'lavfi', '-i', 'color=c=red:size=320x480:rate=30:duration=1',
-      '-f', 'lavfi', '-i', 'color=c=blue:size=320x480:rate=30:duration=1',
-      '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0', '-c:v', 'libx264', '-preset', 'veryfast',
-      '-pix_fmt', 'yuv420p', rb]);
-    const imagePath = await render.extractLastFrame(rb);
+    const rgb = join(SAMPLE_DIR, 'rgb.mp4');
+    await ffmpeg(['-y',
+      '-f', 'lavfi', '-i', 'color=c=red:size=320x480:rate=30:duration=3',
+      '-f', 'lavfi', '-i', 'color=c=green:size=320x480:rate=30:duration=0.5',
+      '-f', 'lavfi', '-i', 'color=c=blue:size=320x480:rate=30:duration=0.5',
+      '-filter_complex', '[0:v][1:v][2:v]concat=n=3:v=1:a=0',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', rgb]);
+    const imagePath = await render.extractLastFrame(rgb);
     await access(imagePath);
     const last = await frameYavg(imagePath);
-    const first = await frameYavg(rb);
-    assert.ok(last < 50, `尾帧应为蓝色（YAVG=${last}，红色约为 76）`);
+    const first = await frameYavg(rgb);
+    assert.ok(last < 50, `尾帧应为蓝色（YAVG=${last}，绿约 150、红约 76）——旧实现取到倒数第 1 秒处的帧会挂在这里`);
     assert.ok(first > 60, `首帧应为红色（YAVG=${first}）作对照`);
+    // 极短（<0.3 秒，-sseof 会越过头）：仍能产出一帧
+    const tiny = await makeVideo('tiny.mp4', { duration: 0.2 });
+    const tinyPath = await render.extractLastFrame(tiny);
+    await access(tinyPath);
+    const tinyYavg = await frameYavg(tinyPath);
+    assert.ok(tinyYavg > 0, `极短样片也能提取（YAVG=${tinyYavg}）`);
+  });
+
+  test('inspect：分辨率放宽——720x1280 与 1088x1920 通过，360x640 与比例错判不符', async () => {
+    const atTier = await render.inspect(normal, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(!atTier.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));
+    // 上游模型常输出 16 的倍数规格：1088x1920 短边高于档位、比例误差 <2%，应通过
+    const above = await makeVideo('r1088.mp4', { video: 'testsrc2=size=1088x1920:rate=30' });
+    const aboveResult = await render.inspect(above, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(!aboveResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'),
+      JSON.stringify(aboveResult));
+    // 短边 360 低于档位 90%（648）：不符
+    const below = await makeVideo('r360.mp4', { video: 'testsrc2=size=360x640:rate=30' });
+    const belowResult = await render.inspect(below, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(belowResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));
+    // 比例错（1:1）：不符
+    const square = await makeVideo('square.mp4', { video: 'testsrc2=size=720x720:rate=30' });
+    const squareResult = await render.inspect(square, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(squareResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));
+  });
+
+  test('inspect：全黑/静止阈值可调（frozenRatio 调低后 80% 静止被检出）', async () => {
+    await mkdir(SAMPLE_DIR, { recursive: true });
+    const mixed = join(SAMPLE_DIR, 'mixed-freeze.mp4');
+    await ffmpeg(['-y',
+      '-f', 'lavfi', '-i', 'testsrc2=size=720x1280:rate=30:duration=1',
+      '-f', 'lavfi', '-i', 'color=c=red:size=720x1280:rate=30:duration=4',
+      '-f', 'lavfi', '-i', 'sine=frequency=440:duration=5',
+      '-filter_complex', '[2:a]asplit=2[a1][a2];[0:v][a1][1:v][a2]concat=n=2:v=1:a=1[v][a]',
+      '-map', '[v]', '-map', '[a]', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+      '-pix_fmt', 'yuv420p', '-c:a', 'aac', mixed]);
+    const lenient = await render.inspect(mixed, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(!lenient.issues.some((issue) => issue.code === 'FROZEN_VIDEO'),
+      `80% 静止在缺省 0.9 阈值下通过：${JSON.stringify(lenient)}`);
+    const strict = createRender({ frozenRatio: 0.5 });
+    const strictResult = await strict.inspect(mixed, { ratio: RATIO, resolution: RESOLUTION });
+    assert.ok(strictResult.issues.some((issue) => issue.code === 'FROZEN_VIDEO'),
+      `frozenRatio=0.5 时应检出：${JSON.stringify(strictResult)}`);
   });
 
   test('compose：两段硬切拼接、规格与元数据标识、封面、显式标识叠加', async () => {

@@ -14,6 +14,8 @@ const render = createRender({
   watermarkPath: '…/render/assets/ai-mark.png',  // 显式标识 PNG（缺省内置资产）
   metadataMark: 'AI生成内容',      // 元数据隐式标识（写入 MP4 comment）
   drawtextFontFile,               // 可选：注入中文字体文件后，显式标识改走 drawtext（可自定义文案）
+  blackRatio: 0.9,               // inspect：黑色区间占时长达此比例判「全黑」（M0 后可调）
+  frozenRatio: 0.9,              // inspect：冻结区间占时长达此比例判「长时间静止」（M0 后可调）
   logger,
 });
 
@@ -24,7 +26,10 @@ await render.compose({
   workDir,                              // 可选；临时文件写这里（调用方控制磁盘与清理），缺省系统临时目录
 }) → { outputPath, coverPath, durationSeconds }      // 文件名含 UUID 防并发碰撞，转存后由调用方清理
 
-await render.extractLastFrame(videoPath, { workDir }) → imagePath  // 尾帧，给下一段做普通参考图（尽力而为）
+await render.extractLastFrame(videoPath, { workDir }) → imagePath
+// 用 `-sseof -0.3` 从片尾倒数 0.3 秒顺序解码、逐帧覆盖同一文件，拿到的是**真正的最后一帧**
+// （与该段 endState 对应；寻址索引异常时退回顺序解码，至少产出一帧）。输入必须可解码——
+// 在 inspect 通过后调用；BE-05 拿它给下一段做普通参考图（尽力而为）
 
 await render.inspect(videoPath, { durationSeconds, ratio, resolution, expectAudio = true })
   → { ok, issues: [{ code, message }] }
@@ -49,12 +54,14 @@ await render.inspect(videoPath, { durationSeconds, ratio, resolution, expectAudi
 | `VIDEO_STREAM_MISSING` | 有视频流 | — |
 | `AUDIO_STREAM_MISSING` | 有音频流 | 仅 `expectAudio: true` 时检查 |
 | `DURATION_MISMATCH` | 时长偏差 ≤ ±2 秒 | 传入 `durationSeconds` 才检查 |
-| `RESOLUTION_MISMATCH` | 画幅分辨率 | 传入 `ratio`+`resolution` 才检查，按 `dimensionsFor` 精确比对 |
-| `BLACK_VIDEO` | 非全黑 | `blackdetect`：黑色区间累计 ≥ 90% 时长 |
-| `FROZEN_VIDEO` | 非长时间卡住 | `freezedetect`（n=-60dB, d=2s）：冻结区间累计 ≥ 90% 时长 |
+| `RESOLUTION_MISMATCH` | 画幅/分辨率接近即可 | 传入 `ratio`+`resolution` 才检查：比例相对误差 ≤2%，且**短边不低于档位的 90%**（高于档位不算问题，如 9:16/720p 请求收到 1088x1920 通过） |
+| `BLACK_VIDEO` | 非全黑 | `blackdetect`：黑色区间累计 ≥ 时长 × `blackRatio`（缺省 0.9） |
+| `FROZEN_VIDEO` | 非长时间卡住 | `freezedetect`（n=-60dB, d=2s）：冻结区间累计 ≥ 时长 × `frozenRatio`（缺省 0.9；1 秒内容+4 秒定格=80% 会通过，M0 后按真实素材调参） |
 | `SILENT_AUDIO` | 非静音 | `volumedetect`：max_volume < -60 dB |
 
-`issues[].message` 为中文文案，`code` 供程序分支（BE-05：inspect 不通过 → 片段失败、退回该片段预占）。
+`issues[].message` 为中文文案，`code` 供程序分支。**调用方（BE-05）需在调用前保证本地文件存在**：
+`UNDECODABLE` 无法区分「本地文件丢失」（基础设施问题，应重试转存）与「视频损坏」（该段失败、退回预占），
+BE-05 调用前先检查文件存在即可区分。
 
 ## 错误（RenderError）
 

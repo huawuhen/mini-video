@@ -27,31 +27,34 @@ const DEFAULT_WATERMARK_PATH = fileURLToPath(new URL('./assets/ai-mark.png', imp
  * 显式标识缺省叠加 PNG 资产；仅当注入 drawtextFontFile（中文字体文件）时改走 drawtext。
  */
 export function createRender({ ffmpegPath = 'ffmpeg', ffprobePath = 'ffprobe', timeoutMs = 300_000,
-  watermarkPath = DEFAULT_WATERMARK_PATH, metadataMark = 'AI生成内容', drawtextFontFile, logger } = {}) {
+  watermarkPath = DEFAULT_WATERMARK_PATH, metadataMark = 'AI生成内容', drawtextFontFile,
+  blackRatio = 0.9, frozenRatio = 0.9, logger } = {}) {
   const run = (args, options) => runBin(ffmpegPath, args, options);
   const probe = (file) => probeStreams(ffprobePath, file, { timeoutMs: 60_000 });
   return {
     compose: createCompositor({ run, probe, watermarkPath, metadataMark, drawtextFontFile, timeoutMs, logger }),
-    extractLastFrame: createLastFrameExtractor({ run, probe, timeoutMs }),
-    inspect: createInspector({ run, probe }),
+    extractLastFrame: createLastFrameExtractor({ run, timeoutMs }),
+    inspect: createInspector({ run, probe, blackRatio, frozenRatio }),
   };
 }
 
-function createLastFrameExtractor({ run, probe, timeoutMs }) {
+// -sseof -0.3 从片尾倒数 0.3 秒起顺序解码，不加帧数限制，配合 `-update 1` 让 image2 muxer
+// 逐帧覆盖同一文件，进程结束时留下的就是真正的最后一帧（-frames:v 1 会停在倒数 0.3 秒处）。
+function createLastFrameExtractor({ run, timeoutMs }) {
+  const extract = (runArgs, videoPath, imagePath, timeoutMsMs) => run(
+    ['-y', ...runArgs, '-i', videoPath, '-update', '1', '-q:v', '3', imagePath],
+    { timeoutMs: Math.min(timeoutMsMs, 60_000) });
   return async function extractLastFrame(videoPath, { workDir } = {}) {
-    let duration = 0;
-    try {
-      duration = Number((await probe(videoPath)).format?.duration ?? 0);
-    } catch {
-      duration = 0; // 无法探测时从头取第一帧，让调用方拿到可检查的产物
-    }
-    const seek = Math.max(0, (Number.isFinite(duration) ? duration : 0) - 1);
     const baseDir = typeof workDir === 'string' && workDir.trim() ? workDir
       : await mkdtemp(join(tmpdir(), 'miv-frame-'));
     await mkdir(baseDir, { recursive: true });
     const imagePath = join(baseDir, `last-${randomUUID()}.jpg`);
-    await run(['-y', '-ss', String(Math.max(0, seek)), '-i', videoPath,
-      '-frames:v', '1', '-update', '1', '-q:v', '3', imagePath], { timeoutMs: Math.min(timeoutMs, 60_000) });
+    try {
+      await extract(['-sseof', '-0.3'], videoPath, imagePath, timeoutMs);
+    } catch {
+      // 个别容器寻址索引异常时退回顺序解码，至少产出一帧
+      await extract([], videoPath, imagePath, timeoutMs);
+    }
     return imagePath;
   };
 }

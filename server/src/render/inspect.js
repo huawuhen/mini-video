@@ -1,11 +1,14 @@
 // inspect: near-zero-cost technical acceptance of a generated segment (PRD §4.3).
-// Decodable, has video/audio streams, duration within ±2 s, ratio/resolution match,
+// Decodable, has video/audio streams, duration within ±2 s, ratio/resolution close enough,
 // not fully black, not frozen for long, not silent. No model calls, no smart QC.
 import { dimensionsFor } from './ffmpeg.js';
 
 const DURATION_TOLERANCE_SECONDS = 2;
 const SILENT_MAX_DB = -60;
-const MOSTLY_RATIO = 0.9;
+// 画幅比例 2% 相对误差；短边达到档位 90% 即算达标（上游模型常输出 16 的倍数，如 1088x1920），
+// 高于档位不算问题。
+const ASPECT_TOLERANCE = 0.02;
+const MIN_SHORT_SIDE_RATIO = 0.9;
 
 function seconds(value) {
   const parsed = Number(value);
@@ -33,7 +36,7 @@ export function detectEvents(stderr, duration) {
   return { black, frozen };
 }
 
-export function createInspector({ run, probe }) {
+export function createInspector({ run, probe, blackRatio = 0.9, frozenRatio = 0.9 }) {
   return async function inspect(file, { durationSeconds, ratio, resolution, expectAudio = true } = {}) {
     let info;
     try {
@@ -53,11 +56,18 @@ export function createInspector({ run, probe }) {
       issues.push({ code: 'DURATION_MISMATCH',
         message: `片段时长 ${Math.round(duration * 10) / 10} 秒，与请求的 ${durationSeconds} 秒不符` });
     }
-    if (ratio && resolution && video) {
+    if (ratio && resolution && video && video.width > 0 && video.height > 0) {
       const expected = dimensionsFor(ratio, resolution);
-      if (video.width !== expected.width || video.height !== expected.height) {
+      const expectedShort = Math.min(expected.width, expected.height);
+      const expectedAspect = Math.max(expected.width, expected.height) / expectedShort;
+      const actualShort = Math.min(video.width, video.height);
+      const actualAspect = Math.max(video.width, video.height) / actualShort;
+      const aspectError = Math.abs(actualAspect - expectedAspect) / expectedAspect;
+      // 比例在 2% 相对误差内、且短边不低于档位的 90%（高于档位不算问题）
+      if (aspectError > ASPECT_TOLERANCE || actualShort < expectedShort * MIN_SHORT_SIDE_RATIO) {
         issues.push({ code: 'RESOLUTION_MISMATCH',
-          message: `画面为 ${video.width}x${video.height}，预期 ${expected.width}x${expected.height}` });
+          message: `画面为 ${video.width}x${video.height}，预期 ${ratio}、分辨率不低于 ${expectedShort}，`
+            + `约 ${expected.width}x${expected.height}` });
       }
     }
     if (video && duration > 0) {
@@ -65,8 +75,8 @@ export function createInspector({ run, probe }) {
         ['-an', '-i', file, '-vf', 'blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2', '-f', 'null', '-'],
         { timeoutMs: 120_000 });
       const { black, frozen } = detectEvents(stderr, duration);
-      if (black >= duration * MOSTLY_RATIO) issues.push({ code: 'BLACK_VIDEO', message: '画面全黑' });
-      if (frozen >= duration * MOSTLY_RATIO) issues.push({ code: 'FROZEN_VIDEO', message: '画面长时间静止' });
+      if (black >= duration * blackRatio) issues.push({ code: 'BLACK_VIDEO', message: '画面全黑' });
+      if (frozen >= duration * frozenRatio) issues.push({ code: 'FROZEN_VIDEO', message: '画面长时间静止' });
     }
     if (audio) {
       const { stderr } = await run(['-vn', '-i', file, '-af', 'volumedetect', '-f', 'null', '-'],
