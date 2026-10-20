@@ -3,8 +3,9 @@
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
 import { enqueue } from '../queue/index.js';
-import { transition, requireProject, groupOf } from './state.js';
-import { projectMoneySummary, videoUnitFen } from './money.js';
+import { consumeQuote } from '../wallet/pricing.js';
+import { transition, requireProject, groupOf, appendEvent } from './state.js';
+import { projectMoneySummary, videoUnitFen, reserveProjectLooks } from './money.js';
 
 /** 作品详情（API §6.2 ProjectDetail）：story 去掉引擎原始输出，cast/segments/takes/render 聚合。 */
 export async function getProjectDetail(db, { userId, projectId, urlFor }) {
@@ -212,6 +213,17 @@ export async function reanalyzeProject(db, { userId, projectId, storyText, confi
   });
 }
 
+/** 数字人在指定风格下当前选中的成功形象；无则 null。 */
+async function existingLookVersionId(t, characterId, styleId) {
+  const { rows } = await t.query(
+    `SELECT lv.id FROM character_looks cl JOIN look_versions lv ON lv.id = cl.selected_version_id
+      WHERE cl.character_id = $1 AND cl.style_id = $2 AND lv.status = 'succeeded'
+      ORDER BY lv.created_at DESC, lv.id DESC LIMIT 1`,
+    [characterId, styleId],
+  );
+  return rows[0]?.id ?? null;
+}
+
 /** Pricing（API §6.2）：形象缺口按当前图片 SKU 计价，视频按锁定档位映射的当前 SKU 计价。 */
 export async function buildPricing(t, { userId, project }) {
   const { rows: cast } = await t.query(
@@ -231,3 +243,134 @@ export async function buildPricing(t, { userId, project }) {
     reservedFen: money.reservedFen, settledFen: money.settledFen, refundedFen: money.refundedFen,
   };
 }
+
+// ───────────── 确认点 A（API §6.3）─────────────
+
+/** 幂等确认：同作品同步骤同幂等键重放返回 { replayed: true }；新键登记后继续。 */
+async function claimConfirm(t, { projectId, step, idempotencyKey }) {
+  const { rows } = await t.query(
+    `INSERT INTO project_confirm_log (id, project_id, step, idempotency_key)
+     VALUES ($1, $2, $3, $4) ON CONFLICT (project_id, step, idempotency_key) DO NOTHING RETURNING id`,
+    [newId('prj'), projectId, step, idempotencyKey],
+  );
+  return { replayed: rows.length === 0 };
+}
+
+/** 为「将新建」的角色建数字人（PRD：故事确认后对未匹配角色自动新建），返回 castId → characterId。 */
+async function createCharactersForNewCast(t, { userId, projectId }) {
+  const { rows: newCast } = await t.query(
+    `SELECT id, name, description FROM project_cast
+      WHERE project_id = $1 AND character_id IS NULL ORDER BY idx`,
+    [projectId],
+  );
+  const map = new Map();
+  for (const member of newCast) {
+    const characterId = newId('chr');
+    await t.query(
+      `INSERT INTO characters (id, user_id, name, description) VALUES ($1, $2, $3, $4)`,
+      [characterId, userId, member.name, member.description ?? ''],
+    );
+    await t.query(`UPDATE project_cast SET character_id = $2 WHERE id = $1`, [member.id, characterId]);
+    map.set(member.id, characterId);
+  }
+  return map;
+}
+
+/**
+ * 确认故事（API §6.3）：未匹配角色自动新建数字人 → 缺形象的角色按 cast_looks 报价扣形象费并
+ * 预占 → 为每个缺口建 look_versions/gen_tasks 并入队 look.generate；缺口为 0 直接 cast_review。
+ */
+export async function confirmStory(db, { userId, projectId, quoteId, idempotencyKey, config, urlFor }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`project:confirm:${projectId}`]);
+    // 幂等重放先于状态校验：同键重放即使状态已推进也返回成功（手机双击/重试不报错）
+    const { replayed } = await claimConfirm(t, { projectId, step: 'story', idempotencyKey });
+    if (replayed) return { replayed: true, projectId };
+    if (project.status !== 'story_review') throw appError('PROJECT_STATE_INVALID');
+
+    await createCharactersForNewCast(t, { userId, projectId });
+    const { rows: missing } = await t.query(
+      `SELECT pc.id AS cast_id, pc.character_id, c.name, c.description,
+              COALESCE(c.default_voice_id, NULL) AS default_voice_id
+         FROM project_cast pc LEFT JOIN characters c ON c.id = pc.character_id
+        WHERE pc.project_id = $1 AND pc.look_version_id IS NULL ORDER BY pc.idx`,
+      [projectId],
+    );
+    if (missing.length) {
+      if (!quoteId) throw appError('VALIDATION_FAILED', '需要先获取形象生成报价', undefined);
+      const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'cast_looks', refType: 'project', refId: projectId });
+      const amountFen = quote.amount_fen;
+      await reserveProjectLooks(t, { userId, projectId, amountFen });
+      const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [project.style_id]);
+      const { rows: imageSku } = await t.query(
+        `SELECT sku_code, version, price_fen FROM skus WHERE kind = 'image' AND status = 'active'
+          ORDER BY version DESC, effective_at DESC LIMIT 1`);
+      for (const member of missing) {
+        const { rows: photos } = await t.query(
+          `SELECT up.storage_key FROM character_photos cp JOIN uploads up ON up.id = cp.upload_id
+            WHERE cp.character_id = $1 ORDER BY cp.sort, cp.id`, [member.character_id]);
+        const versionId = newId('lkv');
+        const genTaskId = newId('gt');
+        const replayKey = `project:${projectId}:look:${member.cast_id}`;
+        await t.query(
+          `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
+           VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
+          [genTaskId, userId, imageSku[0].sku_code, imageSku[0].version, JSON.stringify({
+            versionId, characterId: member.character_id, styleId: project.style_id,
+            storageKey: `users/${userId}/looks/${versionId}`,
+            amountFen: imageSku[0].price_fen, promptHint: styleRows[0]?.prompt_hint ?? '',
+            description: member.description ?? '', referenceKeys: photos.map((row) => row.storage_key),
+          }), replayKey],
+        );
+        await t.query(
+          `INSERT INTO character_looks (id, character_id, style_id) VALUES ($1, $2, $3)
+           ON CONFLICT (character_id, style_id) DO NOTHING`,
+          [newId('look'), member.character_id, project.style_id],
+        );
+        await t.query(
+          `INSERT INTO look_versions (id, look_id, gen_task_id, status)
+           SELECT $1, cl.id, $2, 'pending' FROM character_looks cl
+            WHERE cl.character_id = $3 AND cl.style_id = $4`,
+          [versionId, genTaskId, member.character_id, project.style_id],
+        );
+        await t.query(`UPDATE project_cast SET look_version_id = $2 WHERE id = $1`, [member.cast_id, versionId]);
+        await enqueue(t, { type: 'look.generate', payload: { versionId }, dedupeKey: `look:${versionId}` });
+      }
+      await transition(t, { projectId, userId, from: ['story_review'], to: 'casting',
+        progress: { percent: 30, message: '正在生成角色形象' }, changed: ['cast', 'pricing'] });
+    } else {
+      await transition(t, { projectId, userId, from: ['story_review'], to: 'cast_review',
+        progress: { percent: 40, message: '角色已就绪，等待你确认' }, changed: ['cast', 'pricing'] });
+    }
+    return { replayed: false, projectId };
+  });
+}
+
+/** 纠正匹配（API §6.3）：story_review 时改绑数字人；null 表示确认点后新建。 */
+export async function updateCastCharacter(db, { userId, projectId, castId, characterId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (characterId) {
+      const { rows } = await t.query(
+        `SELECT id FROM characters WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
+        [characterId, userId]);
+      if (!rows.length) throw appError('NOT_FOUND');
+    }
+    const lookVersionId = characterId
+      ? await existingLookVersionId(t, characterId, project.style_id)
+      : null;
+    const { rowCount } = await t.query(
+      `UPDATE project_cast SET character_id = $3, match_source = $4, look_version_id = $5
+        WHERE id = $1 AND project_id = $2 AND (SELECT status FROM projects WHERE id = $2) = 'story_review'`,
+      [castId, projectId, characterId, characterId ? 'user' : 'new', lookVersionId],
+    );
+    if (!rowCount) throw appError('PROJECT_STATE_INVALID');
+    await appendEvent(t, { projectId, status: 'story_review',
+      progress: { percent: 15, message: '故事已就绪，等待你确认' }, changed: ['cast'] });
+    return { ok: true };
+  });
+}
+
+// ───────────── 确认点 B 前置：角色形象/声音调整（API §6.4 的读侧与纠正）─────────────
+// （PUT /cast/:castId 与 cast looks 属确认点 B，C4 实现。）

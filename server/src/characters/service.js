@@ -4,8 +4,42 @@
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
 import { enqueue, PermanentJobError } from '../queue/index.js';
+import { appendEvent, transition } from '../projects/state.js';
 import { consumeQuote } from '../wallet/pricing.js';
 import { refund, reserve, settle } from '../wallet/service.js';
+
+/**
+ * 项目角色形象回填（M1-BE-05）：项目 casting 阶段的 look.generate 成功后，把版本回填到
+ * project_cast 缺口；当作品内全部角色都有形象时推进 casting → cast_review。
+ * 竞争安全：回填带 look_version_id IS NULL 与状态守卫；推进失败（他人已推进）静默忽略。
+ */
+async function backfillProjectCasts(t, { characterId, styleId, versionId, userId, progress }) {
+  // confirmStory 已把版本写入 project_cast，这里兜底回填漏网的缺口，再对引用该角色的
+  // casting 中作品做「是否全部就绪」检查（检查不能只看本次更新的行）。
+  await t.query(
+    `UPDATE project_cast pc SET look_version_id = $3
+       FROM projects p
+      WHERE p.id = pc.project_id AND p.status = 'casting' AND p.style_id = $2
+        AND pc.character_id = $1 AND pc.look_version_id IS NULL`,
+    [characterId, styleId, versionId],
+  );
+  const { rows } = await t.query(
+    `SELECT DISTINCT pc.project_id FROM project_cast pc
+       JOIN projects p ON p.id = pc.project_id
+      WHERE pc.character_id = $1 AND p.status = 'casting' AND p.style_id = $2`,
+    [characterId, styleId],
+  );
+  for (const { project_id: projectId } of rows) {
+    const { rows: missing } = await t.query(
+      `SELECT 1 FROM project_cast WHERE project_id = $1 AND look_version_id IS NULL LIMIT 1`,
+      [projectId],
+    );
+    if (!missing.length) {
+      await transition(t, { projectId, userId, from: ['casting'], to: 'cast_review',
+        progress, changed: ['cast'] }).catch(() => {}); // 已被并发的兄弟形象推进
+    }
+  }
+}
 
 async function requireCharacter(t, userId, id) {
   const { rows } = await t.query(
@@ -429,6 +463,10 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
         if (request.amountFen > 0) {
           await settleReserved(t, { userId: version.user_id, versionId, amountFen: request.amountFen });
         }
+        // M1-BE-05：作品 casting 缺口回填与推进（资产库形象生成不受影响：无 casting 项目时为空操作）
+        await backfillProjectCasts(t, { characterId: request.characterId, styleId: request.styleId,
+          versionId, userId: version.user_id,
+          progress: { percent: 40, message: '角色已就绪，等待你确认' } });
         return true;
       });
       ctx.logger.info('look_generate_succeeded', { versionId, selected: done });

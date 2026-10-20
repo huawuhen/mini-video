@@ -2,11 +2,15 @@
 // storyAgent 用注入的 mock（engine story mock 同构），不调用真实 LLM。
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
+import { createMemoryStorage } from '../../src/engine/storage/memory.js';
+import { createLookGenerateHandler } from '../../src/characters/service.js';
+import { createQuote } from '../../src/wallet/pricing.js';
 import { createTestDb } from '../helpers/db.js';
+import { mockImageProvider } from '../helpers/providers.js';
 import { silentLogger } from '../../src/logger.js';
 import { loadConfig } from '../../src/config.js';
-import { createProject, getProjectDetail, reanalyzeProject, consumeFreeQuota, beijingDayStartUtc }
-  from '../../src/projects/service.js';
+import { createProject, getProjectDetail, reanalyzeProject, confirmStory, updateCastCharacter,
+  consumeFreeQuota, beijingDayStartUtc } from '../../src/projects/service.js';
 import { createUnderstandHandler } from '../../src/projects/understand.js';
 import { classifyInput } from '../../src/engine/story/index.js';
 import { createMockLlm } from '../../src/engine/llm/mock.js';
@@ -264,5 +268,124 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const after = (await ctx.db.query(`SELECT count(*)::int AS n FROM segments WHERE project_id = $1`,
       [created.projectId])).rows[0].n;
     assert.equal(after, before, '取消后不写规划');
+  });
+
+  // ───────────── C3：确认点 A ─────────────
+
+  async function createAtStoryReview(idemKey) {
+    // 剧本文本（带对白标记）：让 mock 的 PLAN 被理解步骤消费，得到 妈妈(new)+宝宝(user) 两个角色
+    const created = await createProject(ctx.db, { userId,
+      input: input({ storyText: '妈妈带宝宝在公园野餐。妈妈说：「慢一点，看看树叶。」宝宝说：「这个苹果真甜！」',
+        idempotencyKey: idemKey }), config });
+    const { agent } = mockStoryAgent();
+    const understandMock = createUnderstandHandler({ db: ctx.db, logger: silentLogger, storyAgent: agent, config });
+    const job = (await ctx.db.query(`SELECT * FROM jobs WHERE dedupe_key = $1`,
+      [`project:understand:${created.projectId}`])).rows[0];
+    await understandMock(job.payload, { db: ctx.db, logger: silentLogger, job, enqueue: async () => {} });
+    if (process.env.DEBUG_C3) {
+      const row = (await ctx.db.query(`SELECT status, error FROM projects WHERE id = $1`, [created.projectId])).rows[0];
+      console.log('DEBUG createAtStoryReview:', created.projectId, row.status, JSON.stringify(row.error));
+    }
+    await ctx.db.query(`UPDATE wallets SET available_fen = 10000, frozen_fen = 0 WHERE user_id = $1`, [userId]);
+    return created.projectId;
+  }
+
+  test('confirmStory：缺口>0 时扣形象费、预占、建 look_versions 并进入 casting', async () => {
+    const projectId = await createAtStoryReview('c3-0001');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'cast_looks', projectId } }));
+    const result = await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0001', config });
+    assert.equal(result.replayed, false);
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'casting');
+    // 「妈妈」match_source=new → 自动新建数字人
+    const mother = detail.cast.find((member) => member.name === '妈妈');
+    assert.equal(mother.matchSource, 'new');
+    assert.ok(mother.characterId, '未匹配角色已自动新建数字人');
+    const { rows: lookTasks } = await ctx.db.query(
+      `SELECT gt.id, gt.request FROM gen_tasks gt JOIN look_versions lv ON lv.gen_task_id = gt.id
+        JOIN project_cast pc ON pc.look_version_id = lv.id
+       WHERE pc.project_id = $1`, [projectId]);
+    assert.equal(lookTasks.length, 1, '只为缺口（妈妈）建形象任务，宝宝已有形象不重建');
+    const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
+    assert.equal(wallet[0].frozen_fen, 50, '一个缺口 × 50 分预占');
+    // 同幂等键重放：replayed，不再新增 gen_tasks
+    const replay = await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0001', config });
+    assert.equal(replay.replayed, true);
+    const { rows: taskCount } = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM gen_tasks gt JOIN look_versions lv ON lv.gen_task_id = gt.id
+        JOIN project_cast pc ON pc.look_version_id = lv.id WHERE pc.project_id = $1`, [projectId]);
+    assert.equal(taskCount[0].n, 1, '重放不重复建任务');
+  });
+
+  test('look.generate 成功后回填并推进 cast_review；余额不足停 story_review', async () => {
+    const projectId = await createAtStoryReview('c3-0002');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'cast_looks', projectId } }));
+    await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0002', config });
+    const imageProvider = mockImageProvider();
+    const storage = createMemoryStorage();
+    const handler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger, storage, imageProvider });
+    // 只跑缺口任务（妈妈）；宝宝用已有形象
+    const versionIds = (await ctx.db.query(
+      `SELECT lv.id FROM look_versions lv JOIN gen_tasks gt ON gt.id = lv.gen_task_id
+        JOIN project_cast pc ON pc.look_version_id = lv.id
+       WHERE pc.project_id = $1`, [projectId])).rows.map((row) => row.id);
+    assert.equal(versionIds.length, 1);
+    for (const versionId of versionIds) {
+      const job = { id: 1, type: 'look.generate', payload: { versionId }, attempts: 1 };
+      await handler(job.payload, { db: ctx.db, logger: silentLogger, job, enqueue: async () => {}, extendLease: async () => {} });
+    }
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'cast_review', '全部形象就绪后推进');
+    assert.ok(detail.cast.every((member) => member.look.status === 'ready'));
+    const { rows: ledger } = await ctx.db.query(
+      `SELECT kind, frozen_delta_fen FROM ledger WHERE user_id = $1
+        AND idempotency_key = $2`, [userId, `look:${versionIds[0]}:settle`]);
+    assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -50),
+      '形象费已结算（BE-04 结算流水的 ref 是 look/versionId）');
+
+    // 余额不足：另一个项目清零钱包后确认 → 402，项目停在 story_review
+    const projectId2 = await createAtStoryReview('c3-0003');
+    await ctx.db.query(`UPDATE wallets SET available_fen = 0 WHERE user_id = $1`, [userId]);
+    const { quoteId: quoteId2 } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'cast_looks', projectId: projectId2 } }));
+    await assert.rejects(
+      () => confirmStory(ctx.db, { userId, projectId: projectId2, quoteId: quoteId2, idempotencyKey: 'confirm-0003', config }),
+      (err) => err.code === 'INSUFFICIENT_BALANCE');
+    const detail2 = await getProjectDetail(ctx.db, { userId, projectId: projectId2 });
+    assert.equal(detail2.status, 'story_review', '确认失败项目停在故事确认');
+    // 事务回滚后确认日志不残留：换键重试（充值后）可成功
+    await ctx.db.query(`UPDATE wallets SET available_fen = 10000 WHERE user_id = $1`, [userId]);
+    const retry = await confirmStory(ctx.db, { userId, projectId: projectId2, quoteId: quoteId2, idempotencyKey: 'confirm-0003-retry', config });
+    assert.equal(retry.replayed, false);
+  });
+
+  test('confirmStory：缺口为 0 直接 cast_review，无需报价；纠正匹配后缺口重算', async () => {
+    const projectId = await createAtStoryReview('c3-0004');
+    // 手工把两个 cast 都指到宝宝已有形象 → 缺口 0
+    await ctx.db.query(
+      `UPDATE project_cast SET look_version_id = 'lkv_baby000000001' WHERE project_id = $1`, [projectId]);
+    const result = await confirmStory(ctx.db, { userId, projectId, idempotencyKey: 'confirm-0004', config });
+    assert.equal(result.replayed, false);
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'cast_review');
+    assert.equal(detail.pricing.looksFen, 0);
+    // 纠正匹配：把「妈妈」改绑到宝宝的数字人（user 来源、形象重算）；null 表示新建
+    const mother = detail.cast.find((member) => member.name === '妈妈');
+    await assert.rejects(() => updateCastCharacter(ctx.db, { userId, projectId, castId: mother.id,
+      characterId: null }), null, 'story_review 才能纠正');
+    // 先退回 story_review 再测纠正
+    await ctx.db.query(`UPDATE projects SET status = 'story_review' WHERE id = $1`, [projectId]);
+    await updateCastCharacter(ctx.db, { userId, projectId, castId: mother.id, characterId: null });
+    const after = await getProjectDetail(ctx.db, { userId, projectId });
+    const motherAfter = after.cast.find((member) => member.name === '妈妈');
+    assert.equal(motherAfter.matchSource, 'new');
+    assert.equal(motherAfter.look.status, 'missing', '解除绑定后形象缺口重算');
+    await updateCastCharacter(ctx.db, { userId, projectId, castId: mother.id, characterId: 'chr_baby00000001' });
+    const rebound = await getProjectDetail(ctx.db, { userId, projectId });
+    const motherBound = rebound.cast.find((member) => member.name === '妈妈');
+    assert.equal(motherBound.matchSource, 'user');
+    assert.equal(motherBound.look.status, 'ready', '改绑后形象按新数字人重算');
   });
 });
