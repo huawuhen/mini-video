@@ -151,6 +151,16 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-20 · Render · M1-RND-01 补记：drawtext 分支修复与验证（用户提议升级本机 FFmpeg 引出）
+
+- **背景**：用户问「能否通过升级本机 FFmpeg 解决 drawtext 缺失」。查证结论：**升级无用**——Homebrew 的 `ffmpeg` 配方已刻意精简（配方注释明说其他依赖放 `ffmpeg-full`），8.1.2 与最新 9.0.2 都没有 drawtext。改为安装 keg-only 的 `ffmpeg-full` 9.0.2（不链接、不影响系统命令），把 render 的 `ffmpegPath` 注入指向它做端到端验证。
+- **验证发现并修复 2 个 bug**（系统 ffmpeg 无 drawtext，首轮测试从未走到该分支，全部靠 ffmpeg-full e2e 暴露）：
+  1. drawtext 的 y 表达式误用了 `overlay_h`（那是 `overlay` 滤镜的变量，drawtext 只有 `text_h`），滤镜初始化失败导致编码器 EINVAL。已修复并抽为 `drawtextFilter()` 导出，单测断言 `text_h` 且禁止 `overlay_h`。
+  2. **中文豆腐块合规风险**：即使 drawtext 可用，fontconfig 找不到 CJK 字形时把「AI 生成内容」画成方框（本机 ffmpeg-full 实测截图确认）。已改为：**显式标识缺省一律走 PNG 资产叠加**（渲染跨平台一致）；只有调用方注入 `drawtextFontFile`（中文字体文件路径）才启用 drawtext（文案可自定义）。注入本机字体后 e2e 截图复核「AI 生成内容」渲染正常。
+- **环境变化（本机）**：`brew install ffmpeg-full`（keg-only，路径 `/opt/homebrew/opt/ffmpeg-full/bin`）顺带升级了共享依赖，系统 ffmpeg 一度断链，已 `brew upgrade ffmpeg` 修复至 9.0.2（无 drawtext，render 缺省路径不受影响）；测试 PostgreSQL 容器一度未运行，已重启并全量回归。
+- **验证**：`npm run test:server` 206/206（新增 drawtextFilter 用例）；系统 ffmpeg 9.0.2 与 ffmpeg-full 9.0.2 双路径 e2e（drawtext 分支注入字体后水印区域 YAVG 差异 24.3 且截图确认中文渲染）；`npm run check`、`npm run build` 通过。
+- **M2 提醒**：服务器上若启用 drawtext，必须同时装 CJK 字体（如 Debian `fonts-noto-cjk`）并注入 `drawtextFontFile`、人工核对渲染，否则合规标识可能显示为方框（已写入 `server/src/render/README.md`）。
+
 ### 2026-10-19 · Render · M1-RND-01 成片合成与片段技术验收（待审查）
 
 - **背景**：M1-ENG-04 合并（`6daa673`）后引擎线完成，按 Lead 指示开工 M1-RND-01（`render.compose` / `extractLastFrame` / `inspect`）。分支 `agent/render/M1-RND-01-compose`（基于 main `6daa673`），认领 + 实现 + 交接共 3 个提交。本机 FFmpeg/FFprobe 8.1.2。

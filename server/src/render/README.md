@@ -13,6 +13,7 @@ const render = createRender({
   timeoutMs: 300_000,            // compose 单次上限；inspect 每趟 120 秒、封面/尾帧 60 秒
   watermarkPath: '…/render/assets/ai-mark.png',  // 显式标识 PNG（缺省内置资产）
   metadataMark: 'AI生成内容',      // 元数据隐式标识（写入 MP4 comment）
+  drawtextFontFile,               // 可选：注入中文字体文件后，显式标识改走 drawtext（可自定义文案）
   logger,
 });
 
@@ -35,7 +36,7 @@ await render.inspect(videoPath, { durationSeconds, ratio, resolution, expectAudi
 
 - 每段先归一：`scale+pad` 到目标画幅（不变形、黑边补齐）、`setsar=1`、`fps=30`、`yuv420p`；音频 `loudnorm=I=-16:TP=-1.5:LRA=11`（EBU R128）→ 48k 立体声 AAC 160k。
 - 段间一律硬切（`concat` 滤镜）；**不加 BGM、不加字幕**（PRD §4.4）。
-- 显式标识（画面角标，文案由调用方传入）：FFmpeg 构建**带 drawtext** 时直接绘制 `watermarkText`；否则叠加 `watermarkPath` 的 PNG 资产（`overlay` 是核心滤镜，任何构建都可用）。两者都不可用且 `watermarkText !== ''` 时记 `render_mark_skipped`，不静默丢失。
+- 显式标识（画面角标）：**缺省叠加 PNG 资产**（`overlay` 是核心滤镜，任何构建可用，中文渲染跨平台一致）。注入 `drawtextFontFile`（中文字体文件路径）后才改走 drawtext（文案可用 `watermarkText` 自定义）。不注入字体就用 drawtext 会把中文画成方框（fontconfig 缺 CJK 字形，本机实测），构成合规风险，故代码上禁止。两者都不可用且 `watermarkText !== ''` 时记 `render_mark_skipped`，不静默丢失。
 - 隐式标识：`-metadata comment=<metadataMark>`（MP4 元数据）。
 - 封面：成片 1 秒处（不足 1 秒取中点）抽帧 JPEG。
 - 输出规格：MP4（H.264 + AAC），`+faststart`。
@@ -63,8 +64,11 @@ await render.inspect(videoPath, { durationSeconds, ratio, resolution, expectAudi
 
 ## 生产注意事项
 
-- 本模块需要系统装有 FFmpeg/FFprobe（M2-OPS 镜像要装）。本机 Homebrew FFmpeg 8.1.2 **没有 drawtext**，
-  显式标识默认走内置 PNG 资产 `assets/ai-mark.png`——由 Swift CoreText 预渲染「AI 生成内容」半透明黑底
-  白字（生成脚本思路记录在本文件历史中），素材为本项目自制、无第三方版权内容。
-- 显式标识合规（PRD §11）上线前须复核可见性与文案；换用带 freetype 的 FFmpeg 构建后可自动改走
-  drawtext 绘制任意 `watermarkText`。
+- 本模块需要系统装有 FFmpeg/FFprobe（M2-OPS 镜像要装，含 `libx264`/`aac`，Homebrew 与 Debian 默认均满足）。
+- **显式标识缺省走 PNG 资产**（`assets/ai-mark.png`，由 Swift CoreText 预渲染「AI 生成内容」半透明黑底白字，
+  本项目自制素材）。注意：Homebrew 的 `ffmpeg` 配方已精简、**没有 drawtext 滤镜**（与版本无关，
+  9.0.2 实测同样没有；需要全功能构建用 `brew install ffmpeg-full`，keg-only 不影响系统命令）；
+  Linux 发行版的 ffmpeg 通常带 drawtext，但**中文渲染依赖运行环境的 CJK 字体**（Debian 需装
+  `fonts-noto-cjk` 之类），所以在服务器上启用 drawtext 时必须同时注入 `drawtextFontFile` 并人工
+  核对渲染结果（M2 验收项），否则合规标识可能显示为方框。
+- 显式标识合规（PRD §11）上线前须复核可见性与文案。

@@ -7,7 +7,7 @@ import { access, copyFile, mkdir, stat, truncate } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { createRender, dimensionsFor, escapeDrawtext, probeStreams, RenderError } from '../../src/render/index.js';
+import { createRender, dimensionsFor, drawtextFilter, escapeDrawtext, probeStreams, RenderError } from '../../src/render/index.js';
 
 const SAMPLE_DIR = join(tmpdir(), 'miv-render-samples');
 // 统一 9:16 720p（M1 默认档位）；3 秒让 freezedetect 的 2 秒阈值能触发。
@@ -170,5 +170,16 @@ describe('render（M1-RND-01）', () => {
 
   test('escapeDrawtext：drawtext 文案转义冒号、引号与百分号', () => {
     assert.equal(escapeDrawtext("AI: '生成' 50%"), "AI\\: \\'生成\\' 50\\%");
+  });
+
+  test('drawtextFilter：必须注入字体文件，y 用 text_h（drawtext 没有 overlay_h 变量）', () => {
+    assert.throws(() => drawtextFilter(1280, 'AI 生成内容'), /需要注入中文字体/,
+      '无字体文件的 drawtext 会把中文画成方框（本机 ffmpeg-full 实测）');
+    const filter = drawtextFilter(1280, 'AI 生成内容', '/System/Library/Fonts/STHeiti Medium.ttc');
+    assert.ok(filter.includes('y=main_h-text_h-36'), filter);
+    assert.ok(!filter.includes('overlay_h'), 'drawtext 表达式不能引用 overlay 滤镜的变量');
+    assert.ok(filter.includes("text='AI 生成内容'"));
+    assert.ok(filter.includes("fontfile='/System/Library/Fonts/STHeiti Medium.ttc'"));
+    assert.ok(filter.includes('fontsize=58'), '字号按高度 1/22 计算');
   });
 });

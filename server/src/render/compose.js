@@ -19,14 +19,22 @@ export function escapeDrawtext(text) {
     .replace(/%/g, '\\%');
 }
 
-export function createCompositor({ run, probe, watermarkPath, metadataMark,
-  timeoutMs, logger }) {
-  // 显式标识优先用 drawtext（构建带 freetype 时），否则叠加预渲染的 PNG 资产（overlay 为核心滤镜）。
-  // drawtext 是否可用在首次 compose 时探测一次并缓存。
-  let drawtextProbe;
-  const detectDrawtext = () => (drawtextProbe ??= run(['-hide_banner', '-filters'],
-    { timeoutMs: 15_000 }).then(({ stdout }) => stdout.includes(' drawtext ')).catch(() => false));
+/** Bottom-left explicit-mark filter. `fontFile` is required for drawtext: without it
+ * fontconfig may lack CJK glyphs and the mark renders as tofu boxes (compliance failure).
+ * drawtext only knows text_h (overlay_h belongs to the overlay filter). */
+export function drawtextFilter(height, text = 'AI 生成内容', fontFile) {
+  if (!fontFile) throw new RenderError('RENDER_INPUT_INVALID',
+    'drawtext 需要注入中文字体文件路径（drawtextFontFile），否则 AI 标识会渲染为方框');
+  return `drawtext=text='${escapeDrawtext(text)}':fontfile='${escapeDrawtext(fontFile)}'`
+    + `:fontcolor=white@0.85:fontsize=${Math.round(height / 22)}:x=36:y=main_h-text_h-36`
+    + ':box=1:boxcolor=black@0.45:boxborderw=18';
+}
 
+export function createCompositor({ run, probe, watermarkPath, metadataMark, drawtextFontFile,
+  timeoutMs, logger }) {
+  // 显式标识缺省走 PNG 资产叠加（overlay 是核心滤镜，渲染结果跨平台一致、不依赖字体）。
+  // 只有调用方注入了中文字体文件（drawtextFontFile）才改走 drawtext——fontconfig 缺
+  // CJK 字体时 drawtext 会画出方框（本机 ffmpeg-full 实测如此），构成合规风险。
   return async function compose({ inputs, ratio = '9:16', resolution = '720p', watermarkText, workDir } = {}) {
     if (!Array.isArray(inputs) || !inputs.length || inputs.length > MAX_INPUTS
       || inputs.some((item) => !item || typeof item.localPath !== 'string' || !item.localPath.trim()
@@ -63,10 +71,8 @@ export function createCompositor({ run, probe, watermarkPath, metadataMark,
     const wantMark = watermarkText !== '';
     const markText = watermarkText ?? 'AI 生成内容';
     let markInput;
-    if (wantMark && await detectDrawtext()) {
-      parts.push(`[vcat]drawtext=text='${escapeDrawtext(markText)}':fontcolor=white@0.85`
-        + `:fontsize=${Math.round(height / 22)}:x=36:y=main_h-overlay_h-36`
-        + ':box=1:boxcolor=black@0.45:boxborderw=18[vout]');
+    if (wantMark && drawtextFontFile) {
+      parts.push(`[vcat]${drawtextFilter(height, markText, drawtextFontFile)}[vout]`);
     } else if (wantMark && watermarkPath) {
       await access(watermarkPath).catch(() => {
         throw new RenderError('RENDER_INPUT_INVALID', `AI 标识图片不存在：${watermarkPath}`);
@@ -76,8 +82,8 @@ export function createCompositor({ run, probe, watermarkPath, metadataMark,
       parts.push('[vcat][wm]overlay=x=36:y=main_h-overlay_h-36[vout]');
     } else {
       parts.push('[vcat]null[vout]');
-      if (wantMark) logger?.warn?.('render_mark_skipped', { hasDrawtext: await detectDrawtext(),
-        hasAsset: Boolean(watermarkPath) });
+      if (wantMark) logger?.warn?.('render_mark_skipped',
+        { hasFontFile: Boolean(drawtextFontFile), hasAsset: Boolean(watermarkPath) });
     }
     const args = ['-y'];
     for (const item of inputs) args.push('-i', item.localPath);
