@@ -67,7 +67,7 @@
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` `server/src/engine/README.md` | 进行中（开工计划见 §7 认领说明；歧义见 §5 两项申请） | 2026-10-20 |
+| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待审查（状态机与全部 job 完成，228/228；§5 两项口径待追认） | 2026-10-20 |
 | M1-BE-06 | — | — | — | 待认领（BE-Core 串行，依赖 BE-05） | — |
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
@@ -156,6 +156,15 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-20 · BE-Core · M1-BE-05 作品状态机与各 job（待审查）
+
+- **背景**：引擎与渲染线完成后，实现作品状态机、各 job 与钱包流（docs/TASKS.md M1-BE-05、ARCHITECTURE §4/§5、API §6）。分支 `agent/be/M1-BE-05-projects`（基于 main `fddb5df`），按阶段 6 个提交（认领 0e0ef76 → C2 17ebb8b/e9554fc → C3 c2941a8 → C4 9832e00/065cde9 → C5~C7 5743f25），每个提交全量测试通过。
+- **受影响文件**：`server/src/projects/`（state/money/service/understand/bind/segment/compose/download/handlers/dev-stub，retry 内联在 service）、`server/migrations/002-projects-idempotency.sql`、`003-project-confirm-log.sql`、`server/src/worker.js`、`server/src/config.js`、`server/.env.example`、`server/test/projects/projects.test.js`（20 例）、`server/test/cron.test.js`（处理器清单断言随注册扩充同步）。
+- **状态机落地**（认领说明的迁移表已全实现）：创建 → understanding →（project.understand：classifyInput→想法先 expandIdea→understand→持久化 story/cast/segments→回填已有形象）→ story_review ◆A →（confirmStory：未匹配角色自动建数字人、缺口形象按 cast_looks 报价扣费预占→casting→look.generate 成功回填→全就绪 cast_review ◆B）→（confirmCast：project_render 报价扣费+视频费预占+锁定→rendering）→ bind_prompts（final_prompt 落库）→ segment.generate/gen.poll 严格串行（提交→轮询→下载→render.inspect→转存→尾帧→逐段结算→下一段）→ project.compose（成片+封面转存）→ delivered（delivered_at/expires_at=+90 天）。pause/resume/retry/cancel、重启续跑（job 落库，resume 按 pausedFrom 重入队，retry 按 error.step 续跑）、免费次数（rate_counters 按北京日切日，创建与重新整理各计 1 次，重放不重复计）全部实现。projects.expire_sweep 为 BE-03 既有实现。
+- **测试**：projects.test.js 20 例——创建校验/幂等重放/免额 429/北京日窗口；understand 剧本与想法分支、单片段无音色、幂等空转；confirmStory 扣费预占/重放/余额不足回滚；look 回填推进 cast_review；confirmCast 预占锁定/缺声音拒绝；bind_prompts final_prompt/startState=endState 串联/串行首段；全链（模拟上游）提交→轮询→转存→inspect→尾帧→逐段结算→拼接→delivered（时长≈60 秒、冻结清零）；inspect 全黑失败→failed→retry 免费重建→交付；take unknown→failed(TAKE_UNKNOWN)+取消只退未提交部分；暂停停链/恢复续跑。`npm run test:server` 228/228、check、build 通过；未调真实模型（story=mock LLM、视频=进程内假渠道、样片=lavfi/FFmpeg 合成）。
+- **口径与风险**：① §5① 已改按 A 口径实现并说明理由（B 在账本上不成立），**待 Lead 追认**；② §5② unknown 呈现为 failed 待确认；③ confirmStory/confirmCast 的幂等重放先于状态校验（双击不报错）；④ cast_review 内 POST cast looks 复用 BE-04 createLookVersion（自动选中写资产库，作品内绑定由 PUT cast 完成）；⑤ worker 生产守卫：storyAgent/videoProvider 缺省启动报错，开发为确定性桩（视频桩提交即失败——真实渠道 M0/M2）；⑥ compose 的 fetchLocal 需要存储驱动提供 HTTP 下载地址（生产 qiniu ✓，memory 驱动会明确报错）；⑦ failed 作品的冻结金额需用户 cancel 退回（或 retry 消化），无自动退款定时任务——如需「失败 N 天自动退款」请 Lead 指示（建议挂到 §4 待确认）。
+
+### 2026-10-20 · Render · M1-RND-01 复审修复（真末帧、悬空链接、分辨率放宽）
 ### 2026-10-20 · BE-Core · M1-BE-05 认领：状态迁移表与提交拆分（开工计划）
 
 - **背景**：引擎（ENG-01~04）与渲染（RND-01）均已合并，本任务把作品状态机、各 job 与钱包流接起来。模块：`server/src/projects/`（状态迁移 + 服务函数 + job 处理器）、`worker.js`/`config.js` 接线、`server/test/projects/`。API 路由与 SSE 属 M1-BE-06，本任务只提供服务函数（测试直接调用服务层）。
