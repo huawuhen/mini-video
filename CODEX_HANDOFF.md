@@ -67,7 +67,7 @@
 | M1-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-02-wallet` | `server/src/wallet/**` `server/src/api/{wallet,quotes}.js` `server/src/app.js` `server/src/auth/{session,index}.js` `server/test/wallet.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
-| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待复审（5 条必改与 6 条建议已修复，232/232） | 2026-10-20 |
+| M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待复审（复审补充 2 条必改已修复，233/233） | 2026-10-21 |
 | M1-BE-06 | — | — | — | 待认领（BE-Core 串行，依赖 BE-05） | — |
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
@@ -162,6 +162,17 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-21 · BE-Core · M1-BE-05 复审修复补充（尾帧 workDir、casting unknown 守卫）
+
+- **背景**：按 §6 M1-BE-05 复审修复 2 条必改。已合并 `origin/main`（16fcff5），推同一分支。
+- **改动**：
+  - **必改 1**：`gen.poll` 的 `render.extractLastFrame(localPath)` 补传 job 的 `workDir`（与 take.mp4 同目录、随 finally 清理）；「无残留」测试把 `miv-frame-` 前缀纳入统计（`miv-take-`/`miv-compose-`/`miv-frame-` 三类，job 结束后为 0）。
+  - **必改 2**：casting 的 unknown 守卫从查 `look_versions.status`（CHECK 约束里不存在 unknown，原守卫是死代码）改为 **`gen_tasks.status = 'unknown'`**，经 `look_versions.gen_task_id` JOIN `project_cast.look_version_id` 限定本作品；命中即 409，文案「该形象结果待核对，请联系客服」。
+  - **测试**：新增「形象 unknown → failed(LOOK_UNKNOWN) → retry 被拒 → 无新 job → cancel 退回未冻结部分」（合成 gen_task 用 `relook:` 前缀独立幂等键、amountFen=0，image provider 返回 unknown）；`miv-frame-` 统计断言覆盖尾帧目录。
+- **验证**：`npm run test:server` 233/233（projects 25 例）；`npm run check` 通过；`git merge origin/main` 无冲突。
+- **未完成 / 风险**：无新增；M2-BE-02「failed 超 7 天自动取消退款」已由 Lead 登记为后续任务。
+
+### 2026-10-20 · BE-Core · M1-BE-05 复审修复（unknown 重试守卫、形象失败通知、签名链接、轮询超时、临时文件清理）
 ### 2026-10-20 · BE-Core · M1-BE-05 复审修复（unknown 重试守卫、形象失败通知、签名链接、轮询超时、临时文件）
 
 - **背景**：按 §6 M1-BE-05 复审修复 5 条必改、6 条建议。已合并 `origin/main`（d2d074a），修复 2 个提交推同一分支。

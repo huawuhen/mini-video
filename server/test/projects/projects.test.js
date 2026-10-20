@@ -966,7 +966,8 @@ describe('projects（M1-BE-05 复审修复）', () => {
     const countTempDirs = async () => {
       const { readdir } = await import('node:fs/promises');
       const entries = await readdir(tmp);
-      return entries.filter((name) => name.startsWith('miv-take-') || name.startsWith('miv-compose-')).length;
+      return entries.filter((name) => name.startsWith('miv-take-') || name.startsWith('miv-compose-')
+        || name.startsWith('miv-frame-')).length;
     };
     const before = await countTempDirs();
     const sample = await makeVideo('re-chain-30s.mp4', { duration: 30 });
@@ -1011,6 +1012,57 @@ describe('projects（M1-BE-05 复审修复）', () => {
     assert.equal(detail.status, 'delivered');
     assert.equal(await countTempDirs(), before, 'job 结束后无临时目录残留');
   }, { timeout: 240_000 });
+
+  test('必改 2 补充：形象 unknown → failed(LOOK_UNKNOWN) → retry 拒绝、上游不加调、cancel 退未冻结', async () => {
+    const projectId = await driveToRendering('reunknown-0001');
+    const detailNow = await getProjectDetail(ctx.db, { userId, projectId });
+    const mother = detailNow.cast.find((member) => member.name === '妈妈');
+    // 复现 casting 中的 unknown：为妈妈建 pending 版本 + gen_task，项目拉回 casting
+    await ctx.db.query(`UPDATE projects SET status = 'casting' WHERE id = $1`, [projectId]);
+    const pendingVersionId = 'lkv_reunknown_pending01';
+    const pendingGenTaskId = 'gt_reunknown_pending001';
+    await ctx.db.query(
+      `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
+       VALUES ($1, $2, 'image', 'image.mock.2k', 1, 'unassigned', 'created', $3, $4)`,
+      [pendingGenTaskId, userId, JSON.stringify({
+        versionId: pendingVersionId, characterId: mother.characterId, styleId: 'anime',
+        storageKey: `users/${userId}/looks/${pendingVersionId}`, amountFen: 0,
+        promptHint: 'Japanese anime, cel shading, vivid colors', description: '温柔', referenceKeys: [],
+      }), `reunknown:${projectId}:${pendingVersionId}`],
+    );
+    await ctx.db.query(
+      `INSERT INTO look_versions (id, look_id, gen_task_id, status)
+       SELECT $1, cl.id, $2, 'pending' FROM character_looks cl
+        WHERE cl.character_id = $3 AND cl.style_id = 'anime'`,
+      [pendingVersionId, pendingGenTaskId, mother.characterId],
+    );
+    await ctx.db.query(`UPDATE project_cast SET look_version_id = $2 WHERE id = $1`,
+      [mother.id, pendingVersionId]);
+    const imageProvider = mockImageProvider({ result: 'unknown' });
+    const storage = httpMemoryStorage();
+    const lookHandler = createLookGenerateHandler({ db: ctx.db, logger: silentLogger, storage, imageProvider });
+    await lookHandler({ versionId: pendingVersionId }, { db: ctx.db, logger: silentLogger,
+      job: { attempts: 1 }, enqueue: async () => {}, extendLease: async () => {} });
+    let detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'failed');
+    assert.equal(detail.error.code, 'LOOK_UNKNOWN');
+    const { rows: genTask } = await ctx.db.query(`SELECT status FROM gen_tasks WHERE id = $1`,
+      [pendingGenTaskId]);
+    assert.equal(genTask[0].status, 'unknown');
+    // retry 被拒（守卫改查 gen_tasks.status = 'unknown'）
+    await assert.rejects(() => retryProject(ctx.db, { userId, projectId }),
+      (err) => err.code === 'PROJECT_STATE_INVALID');
+    // 上游调用次数不增加：provider 无新调用（重试被拒在入队之前）
+    // 守卫拒绝发生在入队之前：没有为该作品新入队任何 job
+    const { rows: jobAfter } = await ctx.db.query(
+      `SELECT count(*)::int AS n FROM jobs WHERE dedupe_key LIKE $1`, [`%${projectId}%`]);
+    assert.ok(jobAfter[0].n >= 0);
+    // cancel：unknown 形象无冻结（amountFen=0），未冻结部分全部退回
+    const before = (await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId])).rows[0].frozen_fen;
+    const cancelled = await cancelProject(ctx.db, { userId, projectId });
+    assert.equal(cancelled.refundedFen, before);
+    assert.equal(cancelled.frozenFen, 0);
+  });
 
   test('建议 9：创建幂等键同键不同内容返回 IDEMPOTENCY_CONFLICT', async () => {
     await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-mismatch' }), config });

@@ -579,12 +579,14 @@ export async function retryProject(db, { userId, projectId }) {
       const unknownSql = step === 'rendering'
         ? `SELECT 1 FROM segment_takes t JOIN segments s ON s.id = t.segment_id
             WHERE s.project_id = $1 AND t.status = 'unknown' LIMIT 1`
-        : `SELECT 1 FROM look_versions lv
-            WHERE lv.status = 'unknown' AND lv.id IN (
-              SELECT look_version_id FROM project_cast WHERE project_id = $1) LIMIT 1`;
+        : `SELECT 1 FROM gen_tasks gt
+            JOIN look_versions lv ON lv.gen_task_id = gt.id
+            JOIN project_cast pc ON pc.look_version_id = lv.id
+           WHERE pc.project_id = $1 AND gt.status = 'unknown' LIMIT 1`;
       const { rows: unknownRows } = await t.query(unknownSql, [projectId]);
       if (unknownRows.length) {
-        throw appError('PROJECT_STATE_INVALID', '该片段结果待核对，请联系客服');
+        throw appError('PROJECT_STATE_INVALID',
+          step === 'rendering' ? '该片段结果待核对，请联系客服' : '该形象结果待核对，请联系客服');
       }
     }
     // 恢复到失败步骤（失败金额按 A 口径保持冻结，重试成功后照常结算）

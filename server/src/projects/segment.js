@@ -298,7 +298,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       }
       await ctx.extendLease?.();
       await storage.put(request.videoKey, await readFile(localPath));
-      const lastFramePath = await render.extractLastFrame(localPath);
+      const lastFramePath = await render.extractLastFrame(localPath, { workDir });
       await storage.put(request.lastFrameKey, await readFile(lastFramePath));
 
       const settled = await db.tx(async (t) => {
