@@ -126,7 +126,7 @@ type Quote = {
 ```ts
 type PayType = 'alipay' | 'wxpay';
 type RechargeOptions = {
-  amountsFen: number[];                       // 预设档位，如 [1000, 3000, 5000, 10000, 20000, 50000]
+  amountsFen: number[];                       // 预设档位，默认 [5000, 10000, 50000, 100000]（50/100/500/1000 元）
   maxAmountFen: number;
   payTypes: { id: PayType; name: string }[];  // 后台启用的支付方式；为空表示充值暂不可用
 };
