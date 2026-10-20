@@ -144,7 +144,7 @@ story_review ──reanalyze──► understanding
 story_review ──confirm-story(looks>0, 扣形象费)──► casting ──job:look.generate×N──► cast_review (◆B)
 story_review ──confirm-story(looks=0)──► cast_review
 cast_review ──confirm-cast(预占视频费)──► rendering
-rendering: job:project.bind_prompts → job:segment.generate（**全部片段按顺序串行**，用户 2026-10-19 决定；并行是 M0 对比之后的优化）→ job:gen.poll → 转存 → render.inspect（基础技术检查，不通过 → 该片段失败并退回预占）→ 提取尾帧 → 下一段
+rendering: job:project.bind_prompts → job:segment.generate（**全部片段按顺序串行**，用户 2026-10-19 决定；并行是 M0 对比之后的优化）→ job:gen.poll → 转存 → render.inspect（基础技术检查，不通过 → 该片段失败，作品进入 failed；**该段预占保持冻结**，用户免费重试时沿用并在成功后结算，取消时退回全部未结算部分；见 CODEX_HANDOFF §3 2026-10-20）→ 提取尾帧 → 下一段
          → 全部成功 ──job:project.compose──► composing ──► delivered（写 delivered_at / expires_at）
 delivered ──segment take / selection──► 重新 compose（status 保持 delivered）
 delivered ──cron:projects.expire_sweep──► expired
