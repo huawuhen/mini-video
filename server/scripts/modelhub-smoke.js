@@ -230,7 +230,47 @@ async function main() {
     }
   }
 
-  console.error('未知子命令；可用：models / image / video。');
+  if (command === 'video-query') {
+    // 对账/续查：按 taskId 继续轮询已提交任务并回写账本（不产生新费用）
+    const taskId = options.task;
+    if (!taskId) throw new Error('用法：video-query --task <taskId> [--timeout 秒]');
+    const timeoutSeconds = Number(options.timeout ?? 1800);
+    const ledger = await readLedger();
+    const entry = ledger.entries.find((item) => item.taskId === taskId);
+    if (!entry) throw new Error(`账本中找不到任务 ${taskId}`);
+    const adapter = createSeedance25Adapter(transport);
+    console.log(`续查任务 ${taskId}，每 ${config.projects.genPollIntervalSeconds} 秒轮询，上限 ${timeoutSeconds} 秒…`);
+    const deadline = Date.now() + timeoutSeconds * 1000;
+    for (;;) {
+      let state;
+      try {
+        state = await adapter.query(taskId);
+      } catch (error) {
+        // 瞬时网络错误（与 gen.poll 的队列退避同口径）：不放弃，继续轮询到截止时间
+        if (error?.retryable !== true && Date.now() > deadline) throw error;
+        process.stdout.write('?');
+        await new Promise((resolve) => setTimeout(resolve, config.projects.genPollIntervalSeconds * 1000));
+        continue;
+      }
+      if (state.status === 'succeeded') {
+        console.log('视频生成成功，开始下载…');
+        await saveArtifact(ledger, entry, await download(state.outputs[0].url, config.projects.maxVideoBytes));
+        return;
+      }
+      if (state.status === 'failed') {
+        await finish(ledger, entry, { status: `failed：${state.providerMessage ?? state.error}` });
+        throw new Error(`上游明确失败：${state.providerMessage ?? state.error}`);
+      }
+      if (Date.now() > deadline) {
+        await finish(ledger, entry, { status: `timeout：续查超过 ${timeoutSeconds} 秒仍未终态，待人工对账` });
+        throw new Error(`续查超时，任务仍未到终态。`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, config.projects.genPollIntervalSeconds * 1000));
+      process.stdout.write('.');
+    }
+  }
+
+  console.error('未知子命令；可用：models / image / video / video-query。');
   process.exit(1);
 }
 
