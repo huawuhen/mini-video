@@ -5,7 +5,7 @@ import { appError } from '../http/errors.js';
 import { enqueue } from '../queue/index.js';
 import { createLookVersion } from '../characters/service.js';
 import { consumeQuote } from '../wallet/pricing.js';
-import { transition, requireProject, groupOf, appendEvent } from './state.js';
+import { transition, requireProject, groupOf, appendEvent, GROUPS } from './state.js';
 import { projectMoneySummary, videoUnitFen, reserveProjectLooks, reserveProjectVideo, refundProject } from './money.js';
 
 /** 作品详情（API §6.2 ProjectDetail）：story 去掉引擎原始输出，cast/segments/takes/render 聚合。 */
@@ -672,4 +672,199 @@ export async function cancelProject(db, { userId, projectId }) {
       to: 'canceled', progress: { percent: 0, message: '已取消' } });
     return { ok: true, refundedFen: refundable, frozenFen: unknownFrozen };
   });
+}
+
+// ───────────── API §6.1 列表/详情/删除 与 §6.6 交付后 ─────────────
+
+const SUMMARY_SELECT = `
+  SELECT p.*,
+    (SELECT r.cover_key FROM renders r WHERE r.project_id = p.id AND r.cover_key IS NOT NULL
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS cover_key,
+    (SELECT r.duration_seconds FROM renders r WHERE r.project_id = p.id AND r.status = 'succeeded'
+      ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS duration_seconds
+    FROM projects p`;
+
+export function projectSummary(row, urlFor) {
+  const summary = {
+    id: row.id, title: row.title, status: row.status, group: groupOf(row.status),
+    progress: row.progress ?? { percent: 0, message: '' },
+    createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
+  };
+  const coverUrl = row.cover_key && urlFor ? urlFor(row.cover_key) : undefined;
+  if (coverUrl) summary.coverUrl = coverUrl;
+  if (row.duration_seconds) summary.durationSeconds = row.duration_seconds;
+  if (row.expires_at) summary.expiresAt = row.expires_at.toISOString();
+  return summary;
+}
+
+/** 列表（API §6.1）：group 过滤 + 游标翻页（(updated_at, id) 倒序，cursor 为 base64 编码）。 */
+export async function listProjects(db, { userId, group, cursor, limit = 20, urlFor }) {
+  const statuses = group ? GROUPS[group] : null;
+  if (group && !statuses) throw appError('VALIDATION_FAILED', undefined, { fields: { group: '取值不正确' } });
+  let cursorTuple = null;
+  if (cursor) {
+    try {
+      const [updatedAt, id] = Buffer.from(cursor, 'base64url').toString('utf8').split('|');
+      cursorTuple = { updatedAt, id };
+    } catch { throw appError('VALIDATION_FAILED', undefined, { fields: { cursor: '取值不正确' } }); }
+  }
+  const size = Math.min(Math.max(Number.isSafeInteger(limit) ? limit : 20, 1), 50);
+  const params = [userId];
+  const where = ['p.user_id = $1', 'p.deleted_at IS NULL'];
+  if (statuses) { params.push(statuses); where.push(`p.status = ANY($${params.length}::text[])`); }
+  if (cursorTuple) {
+    params.push(cursorTuple.updatedAt, cursorTuple.id);
+    where.push(`(p.updated_at, p.id) < ($${params.length - 1}::timestamptz, $${params.length})`);
+  }
+  params.push(size + 1);
+  const { rows } = await db.query(
+    `${SUMMARY_SELECT} WHERE ${where.join(' AND ')}
+      ORDER BY p.updated_at DESC, p.id DESC LIMIT $${params.length}`, params,
+  );
+  const page = rows.slice(0, size);
+  const nextCursor = rows.length > size
+    ? Buffer.from(`${page.at(-1).updated_at.toISOString()}|${page.at(-1).id}`).toString('base64url') : null;
+  return { items: page.map((row) => projectSummary(row, urlFor)), nextCursor };
+}
+
+/** 删除作品（API §6.1）：进行中先走取消（退未结算），软删除并立即删除视频文件；
+ * 标题/封面引用与故事文字保留（PRD：过期/删除后仍可展示与「再做一部」）。 */
+export async function deleteProject(db, { userId, projectId, storage }) {
+  const project = await requireProject(db, { userId, projectId });
+  if (project.status !== 'delivered' && project.status !== 'expired' && project.status !== 'canceled') {
+    await cancelProject(db, { userId, projectId });
+  }
+  const { rows: videoRows } = await db.query(
+    `SELECT video_key, cover_key FROM renders WHERE project_id = $1 AND (video_key IS NOT NULL OR cover_key IS NOT NULL)`,
+    [projectId],
+  );
+  const keys = videoRows.flatMap((row) => [row.video_key, row.cover_key]).filter(Boolean);
+  await db.tx(async (t) => {
+    await t.query(
+      `UPDATE projects SET deleted_at = now(), updated_at = now() WHERE id = $1 AND deleted_at IS NULL`,
+      [projectId],
+    );
+    if (keys.length) {
+      await t.query(`UPDATE renders SET video_key = NULL, cover_key = NULL WHERE project_id = $1`, [projectId]);
+      await t.query(
+        `UPDATE segment_takes SET video_key = NULL, last_frame_key = NULL
+          WHERE segment_id IN (SELECT id FROM segments WHERE project_id = $1) AND (video_key IS NOT NULL OR last_frame_key IS NOT NULL)`,
+        [projectId],
+      );
+    }
+  });
+  if (keys.length) await storage.remove(keys);
+  return { ok: true };
+}
+
+/** 交付后改剧情（API §6.6 PATCH）：仅 delivered；下一次 re-take 生效。 */
+export async function updateSegmentPlot(db, { userId, projectId, segmentId, plot }) {
+  const value = typeof plot === 'string' ? plot.trim() : '';
+  if (!value || value.length > 1000) throw appError('VALIDATION_FAILED', '剧情为 1~1000 字');
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (project.status === 'expired') throw appError('PROJECT_EXPIRED');
+    if (project.status !== 'delivered') throw appError('PROJECT_STATE_INVALID');
+    const { rowCount } = await t.query(
+      `UPDATE segments SET plot = $2 WHERE id = $1 AND project_id = $3`,
+      [segmentId, value, projectId],
+    );
+    if (!rowCount) throw appError('NOT_FOUND');
+    await appendEvent(t, { projectId, status: 'delivered',
+      progress: { percent: 100, message: '已完成' }, changed: ['segments'] });
+    return { ok: true };
+  });
+}
+
+/** 交付后重新生成片段（API §6.6 POST takes）：新增候选 take（永不覆盖旧版本），
+ * segment_take 报价扣费预占；成功后 gen.poll 自动切换选中并按新 render 重新拼接。 */
+export async function createSegmentTake(db, { userId, projectId, segmentId, quoteId, idempotencyKey, config }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (project.status === 'expired') throw appError('PROJECT_EXPIRED');
+    if (project.status !== 'delivered') throw appError('PROJECT_STATE_INVALID');
+    const { rows: segmentRows } = await t.query(
+      `SELECT * FROM segments WHERE id = $1 AND project_id = $2`, [segmentId, projectId]);
+    if (!segmentRows.length) throw appError('NOT_FOUND');
+    const segment = segmentRows[0];
+    const replayKey = `segment.take.create:${userId}:${idempotencyKey}`;
+    await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [replayKey]);
+    // gen_tasks 幂等：同键已有任务直接复用其 take
+    const { rows: existing } = await t.query(`SELECT id FROM gen_tasks WHERE idempotency_key = $1`, [replayKey]);
+    if (existing.length) {
+      const { rows: takes } = await t.query(`SELECT id FROM segment_takes WHERE gen_task_id = $1`, [existing[0].id]);
+      return { replayed: true, takeId: takes[0]?.id };
+    }
+    const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'segment_take', refType: 'segment', refId: segmentId });
+    const takeId = newId('take');
+    await reserveProjectVideo(t, { userId, projectId, amountFen: quote.amount_fen,
+      purpose: `retake:${takeId}` });
+    const genTaskId = newId('gt');
+    const { rows: skuRows } = await t.query(
+      `SELECT s.sku_code, s.version, s.resolution FROM tier_mappings tm
+         JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+        WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`, [project.tier_mapping_id]);
+    const { rows: castRows } = await t.query(`SELECT id FROM project_cast WHERE project_id = $1 ORDER BY idx`, [projectId]);
+    await t.query(
+      `INSERT INTO segment_takes (id, segment_id, status) VALUES ($1, $2, 'pending')`,
+      [takeId, segment.id],
+    );
+    await t.query(
+      `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, idempotency_key)
+       VALUES ($1, $2, 'video', $3, $4, 'unassigned', 'created', $5, $6)`,
+      [genTaskId, userId, skuRows[0].sku_code, skuRows[0].version, JSON.stringify({
+        takeId, projectId, segmentId: segment.id, idx: segment.idx,
+        prompt: segment.final_prompt?.prompt ?? '', imageRefs: segment.final_prompt?.imageRefs ?? [],
+        audioRefs: segment.final_prompt?.audioRefs ?? [], durationSeconds: segment.duration_seconds,
+        ratio: project.ratio, videoKey: `users/${userId}/projects/${projectId}/takes/${takeId}.mp4`,
+        lastFrameKey: `users/${userId}/projects/${projectId}/takes/${takeId}.last.jpg`,
+        amountFen: quote.amount_fen, resolution: skuRows[0].resolution ?? '720p',
+        redelivery: true, castCount: castRows.length,
+      }), replayKey],
+    );
+    await t.query(`UPDATE segment_takes SET gen_task_id = $2 WHERE id = $1`, [takeId, genTaskId]);
+    await enqueue(t, { type: 'segment.generate', payload: { projectId, idx: segment.idx, takeId, redelivery: true } });
+    return { replayed: false, takeId };
+  });
+}
+
+/** 交付后切换选中版本（API §6.6 PUT selection）：只能选本片段 succeeded 的 take；
+ * 切换后按新 render 重新拼接（免费，状态保持 delivered）。 */
+export async function selectSegmentTake(db, { userId, projectId, segmentId, takeId }) {
+  return db.tx(async (t) => {
+    const project = await requireProject(t, { userId, projectId });
+    if (project.status === 'expired') throw appError('PROJECT_EXPIRED');
+    if (project.status !== 'delivered') throw appError('PROJECT_STATE_INVALID');
+    const { rows } = await t.query(
+      `SELECT id FROM segment_takes WHERE id = $1 AND segment_id = $2 AND status = 'succeeded'`,
+      [takeId, segmentId],
+    );
+    if (!rows.length) throw appError('VALIDATION_FAILED', '只能选择生成成功的片段版本');
+    const { rowCount } = await t.query(
+      `UPDATE segments SET selected_take_id = $2 WHERE id = $1 AND project_id = $3`,
+      [segmentId, takeId, projectId],
+    );
+    if (!rowCount) throw appError('NOT_FOUND');
+    await transition(t, { projectId, userId, from: ['delivered'], to: 'delivered',
+      progress: { percent: 100, message: '正在重新拼接' }, changed: ['segments'] }).catch((error) => {
+      if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+    });
+    await enqueue(t, { type: 'project.compose', payload: { projectId },
+      dedupeKey: `project:compose:${projectId}:reselect:${takeId}` });
+    return { ok: true };
+  });
+}
+
+/** 下载地址（API §6.6 GET download）：delivered 且成片存在；302 到带 attname 的签名链接。 */
+export async function projectDownload(db, { userId, projectId, storage, ttlSeconds }) {
+  const project = await requireProject(db, { userId, projectId });
+  if (project.status === 'expired') throw appError('PROJECT_EXPIRED');
+  if (project.status !== 'delivered') throw appError('PROJECT_STATE_INVALID');
+  const { rows } = await db.query(
+    `SELECT video_key FROM renders WHERE project_id = $1 AND status = 'succeeded' AND video_key IS NOT NULL
+      ORDER BY created_at DESC, id DESC LIMIT 1`, [projectId],
+  );
+  if (!rows.length) throw appError('NOT_FOUND', '成片尚未就绪');
+  const filename = `${(project.title || '我的作品').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60) || 'video'}.mp4`;
+  return storage.signedUrl(rows[0].video_key, { ttlSeconds: ttlSeconds ?? 600, download: filename });
 }

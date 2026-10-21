@@ -15,7 +15,7 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
       `SELECT id, user_id, status, ratio, tier_mapping_id FROM projects WHERE id = $1`, [projectId]);
     if (!current.length) throw new PermanentJobError('作品不存在');
     const project = current[0];
-    if (!['rendering', 'composing'].includes(project.status)) {
+    if (!['rendering', 'composing', 'delivered'].includes(project.status)) {
       ctx.logger.info('project_compose_skip', { projectId, status: project.status });
       return;
     }
@@ -70,10 +70,17 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
           [renderId, videoKey, coverKey, Math.round(composed.durationSeconds)],
         );
         if (!claimed.rows.length) return;
-        await transition(t, { projectId, userId, from: ['composing'], to: 'delivered',
-          progress: { percent: 100, message: '已完成' }, changed: ['render'] });
+        if (project.status === 'composing') {
+          await transition(t, { projectId, userId, from: ['composing'], to: 'delivered',
+            progress: { percent: 100, message: '已完成' }, changed: ['render'] });
+        } else {
+          // delivered 重新拼接：状态保持，仅发事件
+          await updateProgress(t, { projectId,
+            progress: { percent: 100, message: '已完成' }, changed: ['render'] });
+        }
         await t.query(
-          `UPDATE projects SET delivered_at = now(), expires_at = $2, updated_at = now() WHERE id = $1`,
+          `UPDATE projects SET delivered_at = COALESCE(delivered_at, now()), expires_at = $2, updated_at = now()
+            WHERE id = $1`,
           [projectId, expiresAt],
         );
       });
@@ -82,11 +89,13 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
       await db.tx(async (t) => {
         await t.query(`UPDATE renders SET status = 'failed', error = $2 WHERE id = $1 AND status = 'running'`,
           [renderId, JSON.stringify({ message: String(error.message).slice(0, 300) })]);
-        await transition(t, { projectId, userId, from: ['composing'], to: 'failed',
-          error: { code: 'COMPOSE_FAILED', message: '成片拼接失败，可重试', step: 'composing' },
-          progress: { percent: 0, message: '拼接失败' } }).catch((error) => {
-        if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
-      });
+        if (project.status !== 'delivered') {
+          await transition(t, { projectId, userId, from: ['composing'], to: 'failed',
+            error: { code: 'COMPOSE_FAILED', message: '成片拼接失败，可重试', step: 'composing' },
+            progress: { percent: 0, message: '拼接失败' } }).catch((error) => {
+            if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+          });
+        }
       });
       logger.error('project_compose_failed', { projectId, renderId, err: String(error.message) });
     } finally {

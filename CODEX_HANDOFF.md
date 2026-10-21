@@ -68,7 +68,7 @@
 | M1-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-03-cron` | `server/src/queue/cron.js` `server/src/worker.js` `server/src/config.js` `server/test/cron.test.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-04 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-04-assets` | `server/src/characters/**` `server/src/api/{uploads,characters}.js` `server/src/app.js` `server/src/worker.js` `server/src/config.js` `server/test/{assets.test.js,cron.test.js,helpers/providers.js}` `server/src/db/ids.js` | ✅ 完成（Lead 复审通过并合并） | 2026-10-17 |
 | M1-BE-05 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-05-projects` | `server/src/projects/**` `server/migrations/00{2,3}*.sql` `server/src/worker.js` `server/src/config.js` `server/test/projects/**` `server/.env.example` | 待复审（复审补充 2 条必改已修复，233/233） | 2026-10-21 |
-| M1-BE-06 | — | — | — | 待认领（BE-Core 串行，依赖 BE-05） | — |
+| M1-BE-06 | BE-Core（本机开发 Agent） | `agent/be/M1-BE-06-project-api` | `server/src/api/projects.js` `server/src/app.js` `server/src/projects/service.js` `server/src/projects/segment.js` `server/src/projects/compose.js` `server/test/projects/project-api.test.js` | 复审修复完成（4 必改 + 3 建议全做），待复审 | 2026-10-21 |
 | M1-ENG-01 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-01-story` | `server/src/engine/{story,llm}/**` `server/test/engine/{story*,pi-llm*,fixtures/story/**}` `server/package.json` | ✅ 完成（Lead 第三轮复审通过并合并 `298929d`） | 2026-10-19 |
 | M1-ENG-02 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-02-providers` | `server/src/engine/providers/**` `server/test/engine/{providers*,fixtures/**}` | ✅ 完成（Lead 第三轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
@@ -128,6 +128,7 @@
 
 | 日期 | 申请人 | 内容 | 影响 | 处理结果 |
 |---|---|---|---|---|
+| 2026-10-21 | BE-Core（M1-BE-06） | **types.ts 与 API.md §6.2 的 StoryResult 字段不一致**：API.md 有 `inputKind`/`expanded`/`script`（M1-WEB-01 确认点 A 需要 script 与 expanded 标注），apps/web/src/api/types.ts 的 StoryResult 缺这三个字段。契约测试按「types.ts 声明的字段必须存在且类型一致（API.md 多出的字段允许）」执行，后端按 API.md 全量返回。请 Web 角色把 types.ts 的 StoryResult 补齐为与 API.md 一致（补丁 3 行），避免后续契约漂移。 | 影响：apps/web/src/api/types.ts（Web 角色）；后端不变 | 待 Web/Lead 处理 |
 | 2026-10-20 | BE-Core（M1-BE-05） | ① **「失败即退回 + 重试免费」的资损口径**：ARCHITECTURE §4 写「inspect 不通过 → 该片段失败并退回预占」，API §6.5 的 `retry` 不带 quoteId（免费重试、无次数限制）。实现时发现按字面（B）**在账本上不成立**：失败退回该段冻结后，重试成功无处可结算。**已按 A 口径实现：失败保持冻结（不退回），重试免费重建并照常结算，取消/放弃（failed → cancel）时按未结算部分一次性退回**；重试无次数限制的资损敞口同前。如需改回「失败即退回」请同时给 retry 定价（quoteId），我再调整。② **片段提交结果未知（take unknown）时项目的呈现**：gen_task/take 置 unknown、金额保持冻结、不自动重提（BE-04 既有惯例）已定；项目本身我实现为进入 `failed`（`error.code=TAKE_UNKNOWN`、中文提示、`retry` 空转不重提），让用户看到终态而不是永远「生成中」。请确认两项。 | 影响：确认点 B 预占 → 片段失败/取消/重试的钱包流；BE-06 API 呈现 | 待 Lead 追认（实现按 A） |
 | 2026-10-19 | Engine（M1-ENG-04） | 按规格实现时做了以下解释口径，请 Lead 确认；如需调整都是小改动：① `understand` 输出的 segments[].takeMode（`multi_shot`/`single_take`，缺省 `multi_shot`）——wan-3.0.md §8 说 takeMode 由规划阶段逐段指定，但 ARCHITECTURE §5 的输出清单未列该字段，已按 §8 实现并写入 README；② `bindPrompts` 的 `ratio` 参数保留但不再进提示词正文（wan-3.0.md §6 拼装模板没有画幅块），画幅由生成请求的 ratio 字段表达；③ `assemble` 注入 startState/endState/mood/brief 前去掉尾部英文句号、按模板补标点——§6 模板与成品示例在「连贯性」行尾差一个字符（模板 `。` vs 示例 `.`），按模板执行，成品示例逐字测试按此口径；④ `classifyInput` 确定性细则：不超过阈值（默认 60 字，可配置）且不含对白标记（「」『』引号对白、说/问/答/喊等+冒号）与场景字段（场景/地点/时间/内景/外景+冒号）判为「想法」；⑤ 设定集与 endState 的英文-only、handle 唯一、sceneId/propIds 引用存在为**硬校验**（进修复重试），词数上限（mood ≤8、brief ≤25、场景 ≤50、endState ≤50 词）为**软限制**（归一化截断并记 warn），避免真实模型频繁被打回兜底；⑥ `single_take`（一镜到底）整段即一个镜头，豁免逐镜头 3~8 秒上限（否则 30 秒一镜到底必然校验失败，§7 未明确此例外；兜底时间线同理）。 | 影响：BE-05 需按 `server/src/engine/README.md` 的新字段对接（bible/script/final_prompt/expandIdea/classifyInput）；无数据库变更 | ✅ 已裁决：六条全部接受（Lead 2026-10-19，见 §6 M1-ENG-04 审查记录；①已同步写入 ARCHITECTURE §5） |
 
@@ -164,6 +165,30 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-21 · BE-Core · M1-BE-06 复审修复（re-take 退款、剧情重绑定、SSE 两处、结算价）
+
+- **背景**：§6 复审 4 条必改 + 3 条建议全部处理；已合并 origin/main（`6308742`），分支不变 `agent/be/M1-BE-06-project-api`。
+- **受影响文件**：`server/src/projects/segment.js`、`server/src/projects/bind.js`、`server/src/projects/handlers.js`、`server/src/api/projects.js`、`server/src/config.js`、`server/.env.example`、`server/test/projects/project-api.test.js`。
+- **必改 1（re-take 失败退款）**：`failSegment` 的 `keepDelivered` 分支在同事务调用 `refundRetake`（金额取下单时 `amountFen`，幂等键按 takeId 区分，重复执行只退一次）；「明确失败」判定前置——`segment.generate` 的提交结果分支把 `failed` 判定移到 `unknown/!upstreamId` 之前（上游明确拒绝提交本就没有 upstreamId，原顺序会把它误记成 unknown 冻结不退）；「结果未知/轮询超时」仍保持冻结待对账（与首次生成同口径）。测试：re-take 失败 → 可用额恢复、冻结归零、旧 take 仍选中、项目仍 delivered、重复执行只退一次。
+- **必改 2（改剧情重绑定）**：`bind_prompts` 写 `final_prompt` 时记录绑定时的剧情快照 `plot`；redelivery 的 `segment.generate`（新增注入 `storyAgent`）提交前比对 `segments.plot` 与快照，改过才用 `bindPrompts` 只为这一段重新生成镜头时间线与最终提示词（输入数组首部放上一段占位使 `startState` 取其 `endState`，bible 取 `story.raw.bible`，形象/音色沿用已锁定的，对白以 `segments.dialogue` 为准），写回 `final_prompt` 与 `gen_tasks.request`；绑定意外失败沿用旧提示词不阻塞；顺带修复 redelivery 提交缺尾帧参考的问题（createSegmentTake/重绑定均只存形象 key，提交前按当前上一段选中 take 的尾帧补在最前）。测试：改 plot → 提交上游的提示词含新时间线内容、没改 plot 不调 LLM。
+- **必改 3（SSE）**：(a) 无 `Last-Event-ID` 的新连接 `lastId` 初始化为该作品当前最大事件 id（快照代表当前，不重放历史）；(b) 超过最长存活期直接 `res.end()`（清理定时器与连接计数），客户端按 EventSource 默认行为带 `Last-Event-ID` 重连。存活期与每用户并发上限可配置（`PROJECTS_SSE_MAX_AGE_MS` 默认 30 分钟、`PROJECTS_SSE_MAX_CONNECTIONS` 默认 5，建议 6）。测试：新连接只收 1 条快照；极短存活期下服务端主动结束连接；超限 429。
+- **必改 4（结算价）**：`gen.poll` 结算与 `failSegment` 退款一律使用 `gen_tasks.request.amountFen`（下单时写入），不再结算时重新查价；`amountFen` 缺失按 PermanentJobError 暴露（内部不变量）。测试：生成中途把 SKU 调到 50 分/秒，结算仍按下单时 600 分、无冻结残留。
+- **建议 5~7**：删除测试内 DEBUG `console.log`；SSE 每用户并发连接上限（默认 5）；`PUT /cast/:castId` 的 `lookVersionId`/`voiceId` 显式 `null` 按 hasOwnProperty 传透（可清除选择，测试覆盖 null → missing → 重选 ready）。
+- **测试**：`npm run test:server` 242/242（新增 4 例）；`npm run check`、`npm run build` 通过；`/tmp` 无 `miv-frame-`/`miv-take-`/`miv-compose-` 残留；未调真实模型。
+- **未完成 / 风险**：与上条相同（types.ts 的 StoryResult 字段待 Web 补齐；SSE 单进程内存态，M2 评估 LISTEN/NOTIFY）。
+
+### 2026-10-21 · BE-Core · M1-BE-06 作品 API + SSE + 交付后替换 + 下载（待审查）
+
+- **背景**：M1-BE-05 合并（`3c69ae7`）后实现 docs/API.md §6 全部路由。分支 `agent/be/M1-BE-06-project-api`（基于 main `3c69ae7`）。
+- **受影响文件**：`server/src/api/projects.js`（新增，全部路由）、`server/src/app.js`（挂载）、`server/src/projects/service.js`（listProjects/deleteProject/updateSegmentPlot/createSegmentTake/selectSegmentTake/projectDownload）、`server/src/projects/segment.js`（delivered re-take：redelivery 放行、选中覆盖、失败退回该笔预占）、`server/src/projects/compose.js`（delivered 重拼接：状态保持、新 render 行、失败不置 failed）、`server/src/projects/money.js`（reserveProjectVideo 增加 purpose，re-take 用独立键；新增 refundRetake）、`server/test/projects/{helpers/projects-http.js,project-api.test.js}`（新增）。
+- **路由与语义**（全部 requireAuth；写操作走既有 csrfGuard 同源+CSRF；他人资源一律 404）：GET /projects（group 过滤+游标翻页）、POST /projects（201/幂等重放 200）、GET /projects/:id、GET /projects/:id/events（SSE）、DELETE（进行中先 cancel→软删除→立即删除视频文件并清 key）、story/reanalyze、cast/:castId/character、confirm-story、PUT cast/:castId、cast/:castId/looks、confirm-cast、pause/resume/retry/cancel、PATCH segments/:segmentId（delivered 改剧情）、POST segments/:segmentId/takes（delivered re-take，segment_take 报价，独立预占键）、PUT segments/:segmentId/selection（切换选中→新 render 重拼接）、GET download（302 到带 attname 的签名链接）。
+- **SSE**：会话鉴权；他人 404；先发当前快照，再按 `Last-Event-ID` 从 project_events 增量补发（每秒轮询+15 秒心跳+30 分钟服务端断开由客户端重连）；事件格式 `id/event: project/data: {projectId,status,progress,changed}` 与 API.md ProjectEvent 一致。
+- **交付后替换**（新增候选+切换选中，永不覆盖）：POST takes 建新 take（segment_take 报价、预占键 `video:retake:<takeId>:reserve`）→ gen.poll 成功后**直接切换选中**（旧 take 保留）并入队重拼接；selection 免费切换→重拼接；两者都走**新的 render 记录**（delivered 状态保持、delivered_at 不变、expires_at 续期由现有逻辑 COALESCE 处理）；re-take 失败立即退回该笔预占（delivered 无 retry/cancel 入口，不适用 A 口径的保持冻结）。
+- **契约测试**：project-api.test.js 从 `apps/web/src/api/types.ts` 抽取 interface 声明（逐行解析，支持单行/多行/extends），对 ProjectDetail/CastMember/Segment/Pricing/ProjectSummary 运行时校验「声明的字段存在且 JSON 类型/枚举取值一致」；5 例 HTTP 测试覆盖：CSRF/同源 403、未登录 401、他人 404、幂等重放、交付后 PATCH/re-take/selection/下载 attname、SSE 鉴权与 Last-Event-ID 补发、删除清 key、expired 410。
+- **测试**：`npm run test:server` 238/238（新增 5 例）；`npm run check` 通过；未调真实模型。
+- **未完成 / 风险**：① §5 已登记 types.ts 的 StoryResult 缺 inputKind/expanded/script（后端按 API.md 全量返回，契约测试按「声明字段必须一致、多余字段允许」），请 Web 补齐；② SSE 是单进程内存态实现（每连接每秒查库），M2 若多实例部署建议改 LISTEN/NOTIFY 或 Redis pub/sub（已按「M1~M2 不引入 Redis」约定暂缓）；③ download 的 302 目标是七牛签名链接（含 attname），文件名取作品标题清洗后 + `.mp4`。
+
+### 2026-10-21 · BE-Core · M1-BE-05 复审修复补充（尾帧 workDir、casting unknown 守卫）
 ### 2026-10-21 · BE-Core · M1-BE-05 复审修复补充（尾帧 workDir、casting unknown 守卫）
 
 - **背景**：按 §6 M1-BE-05 复审修复 2 条必改。已合并 `origin/main`（16fcff5），推同一分支。
