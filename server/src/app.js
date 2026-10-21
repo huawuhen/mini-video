@@ -9,6 +9,7 @@ import { characterRoutes } from './api/characters.js';
 import { quoteRoutes } from './api/quotes.js';
 import { uploadRoutes } from './api/uploads.js';
 import { walletRoutes } from './api/wallet.js';
+import { projectRoutes } from './api/projects.js';
 import { extractText } from './engine/extract/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { loadConfig } from './config.js';
@@ -63,8 +64,8 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   api.use(uploadRoutes({ config, db, logger, storage: objectStorage, urlFor, extractText }));
   api.use(characterRoutes({ db, urlFor }));
 
-  // ── 以下由 BE-Core 按 docs/TASKS.md 接入 ──
-  // M1-BE-06  api.use(projectRoutes(...));
+  // 作品（M1-BE-06）：API §6 全部路由 + SSE
+  api.use(projectRoutes({ config, db, logger, storage: objectStorage, urlFor }));
 
   api.use(notFound());
   api.use(errorHandler(logger));

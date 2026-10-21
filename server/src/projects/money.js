@@ -14,11 +14,24 @@ export function reserveProjectLooks(t, { userId, projectId, amountFen }) {
   });
 }
 
-export function reserveProjectVideo(t, { userId, projectId, amountFen }) {
+export function reserveProjectVideo(t, { userId, projectId, amountFen, purpose = 'initial' }) {
   if (amountFen <= 0) return;
+  // purpose 区分确认 B 首次预占（initial）与交付后 re-take（retake:<takeId>）——
+  // 同键不同额会被幂等层拒掉，且初始预占会被静默重放导致结算冻结不足。
+  const suffix = purpose === 'initial' ? 'reserve' : `retake:${purpose}:reserve`;
   return reserve(t, {
     userId, amountFen, refType: REF.type, refId: projectId,
-    idempotencyKey: `project:${projectId}:video:reserve`, title: '视频生成预占',
+    idempotencyKey: `project:${projectId}:video:${suffix}`, title: '视频生成预占',
+  });
+}
+
+/** 交付后 re-take 失败退回：该笔预占专属退款（不走 A 口径的「保持冻结」——delivered
+ * 作品没有 retry/cancel 入口，钱会永久冻结）。 */
+export function refundRetake(t, { userId, projectId, takeId, amountFen }) {
+  if (amountFen <= 0) return;
+  return refund(t, {
+    userId, amountFen, refType: REF.type, refId: projectId,
+    idempotencyKey: `project:${projectId}:video:retake:${takeId}:refund`, title: '片段重新生成失败退回',
   });
 }
 

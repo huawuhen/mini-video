@@ -19,7 +19,8 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     const { rows: current } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
     if (!current.length) throw new PermanentJobError('作品不存在');
     const project = current[0];
-    if (project.status !== 'rendering') {
+    // 交付后 re-take（redelivery）也放行：delivered 项目状态保持不变
+    if (project.status !== 'rendering' && !(project.status === 'delivered' && payload.redelivery === true)) {
       ctx.logger.info('segment_generate_skip', { projectId, idx, status: project.status });
       return; // 暂停/取消/重分析：链条在此停住（resume 时重新入队）
     }
@@ -59,6 +60,9 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
 
     const takeIdResolved = takeId ?? newId('take');
     await db.tx(async (t) => {
+      const { rows: existingTake } = await t.query(
+        `SELECT gen_task_id FROM segment_takes WHERE id = $1`, [takeIdResolved]);
+      if (takeId && existingTake[0]?.gen_task_id) return; // redelivery：take 与任务已在，幂等
       const { rows: genRows } = await t.query(`SELECT id FROM gen_tasks WHERE idempotency_key = $1`, [takeIdResolved]);
       if (!genRows.length) {
         const { rows: skuRows } = await t.query(
@@ -88,7 +92,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
 
     const { rows: takeRows } = await db.query(
       `SELECT t.*, gt.id AS gen_task_id, gt.status AS task_status, gt.updated_at AS task_updated_at, gt.request
-         FROM segment_takes t LEFT JOIN gen_tasks gt ON gt.idempotency_key = t.id
+         FROM segment_takes t LEFT JOIN gen_tasks gt ON gt.id = t.gen_task_id
         WHERE t.id = $1`, [takeIdResolved]);
     const take = takeRows[0];
     if (!take.gen_task_id) throw new PermanentJobError('片段任务缺少 gen_task');
@@ -157,6 +161,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     }
     if (submitted.status === 'failed') {
       await failSegment(db, ctx, { takeId: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id,
+        keepDelivered: request.redelivery === true,
         error: { message: '视频生成失败，请稍后重试' }, logger });
       return;
     }
@@ -190,7 +195,7 @@ async function markTakeUnknown(db, ctx, { take, projectId, userId, genTaskId, lo
 /** 片段失败（上游业务失败/inspect 不通过）：该段预占**保持冻结**，重试成功后照常结算、
  * 取消时按未结算部分退回（§5① A 口径——「失败即退回+重试免费」会让重试段无钱可结算）。
  * 项目进入 failed，用户可 retry（免费重建 take，复用冻结金额）或 cancel 拿回退款。 */
-export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskId,
+export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskId, keepDelivered,
   error, logger }) {
   await db.tx(async (t) => {
     const claimed = await t.query(
@@ -201,11 +206,15 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
       await t.query(`UPDATE gen_tasks SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
         [genTaskId, JSON.stringify(error)]);
     }
-    await transition(t, { projectId, userId, from: ['rendering'], to: 'failed',
-      error: { code: 'SEGMENT_FAILED', message: error.message ?? '片段生成失败，可重试', step: 'rendering' },
-      progress: { percent: 0, message: '片段生成失败' } }).catch((error) => {
-      if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
-    });
+    if (!keepDelivered) {
+      await transition(t, { projectId, userId, from: ['rendering'], to: 'failed',
+        error: { code: 'SEGMENT_FAILED', message: error.message ?? '片段生成失败，可重试', step: 'rendering' },
+        progress: { percent: 0, message: '片段生成失败' } }).catch((error) => {
+        if (error?.code !== 'PROJECT_STATE_INVALID') throw error;
+      });
+    } else {
+      logger.warn('redelivery_take_failed', { takeId, projectId });
+    }
   });
   logger.warn('segment_failed', { takeId, projectId, reason: error.message });
 }
@@ -218,7 +227,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
     const { rows } = await db.query(
       `SELECT t.id AS take_id, t.status AS take_status, t.segment_id, gt.user_id, gt.status AS task_status,
               gt.upstream_id, gt.id AS gen_task_id, gt.request
-         FROM segment_takes t JOIN gen_tasks gt ON gt.idempotency_key = t.id
+         FROM segment_takes t JOIN gen_tasks gt ON gt.id = t.gen_task_id
         WHERE t.id = $1`, [takeId]);
     const take = rows[0];
     if (!take) throw new PermanentJobError('片段任务不存在');
@@ -292,8 +301,8 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       if (!inspection.ok) {
         const reason = inspection.issues.map((issue) => issue.message).join('；');
         await failSegment(db, ctx, { takeId, projectId, userId: take.user_id,
-          genTaskId: take.gen_task_id,
-          error: { message: `片段技术检查未通过：${reason}` }, logger });
+          genTaskId: take.gen_task_id, keepDelivered: request.redelivery === true,
+          amountFen, error: { message: `片段技术检查未通过：${reason}` }, logger });
         return;
       }
       await ctx.extendLease?.();
@@ -301,6 +310,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       const lastFramePath = await render.extractLastFrame(localPath, { workDir });
       await storage.put(request.lastFrameKey, await readFile(lastFramePath));
 
+      const redelivery = request.redelivery === true;
       const settled = await db.tx(async (t) => {
         const claimed = await t.query(
           `UPDATE segment_takes SET status = 'succeeded', video_key = $2, last_frame_key = $3
@@ -311,8 +321,14 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
         await t.query(`UPDATE gen_tasks SET status = 'succeeded', result = $2, updated_at = now() WHERE id = $1`,
           [take.gen_task_id, JSON.stringify({ videoKey: request.videoKey })]);
         await settleSegment(t, { userId: take.user_id, projectId, takeId, amountFen });
-        await t.query(`UPDATE segments SET selected_take_id = $2 WHERE id = $1 AND selected_take_id IS NULL`,
-          [take.segment_id, takeId]);
+        if (redelivery) {
+          // 交付后重生成：新增候选成功 → 直接切换选中（旧 take 保留），按新 render 重新拼接
+          await t.query(`UPDATE segments SET selected_take_id = $2 WHERE id = $1`,
+            [take.segment_id, takeId]);
+        } else {
+          await t.query(`UPDATE segments SET selected_take_id = $2 WHERE id = $1 AND selected_take_id IS NULL`,
+            [take.segment_id, takeId]);
+        }
         return true;
       });
       if (!settled) return;
@@ -333,6 +349,14 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
             message: `正在生成片段 ${Math.min(done + 1, total)}/${total}` }, changed: ['segments'] });
       }
       logger.info('segment_succeeded', { takeId, projectId, done, total });
+      if (redelivery) {
+        // 交付后重生成：状态保持 delivered，重新拼接走新的 render 记录
+        await appendEvent(db, { projectId,
+          progress: { percent: 100, message: '正在重新拼接' }, changed: ['segments'] });
+        await ctx.enqueue({ type: 'project.compose', payload: { projectId },
+          dedupeKey: `project:compose:${projectId}:retake:${takeId}` });
+        return;
+      }
       if (done >= total) {
         await db.tx(async (t) => transition(t, { projectId, userId: take.user_id,
           from: ['rendering'], to: 'composing',
