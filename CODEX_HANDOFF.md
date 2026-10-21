@@ -75,7 +75,7 @@
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
 | M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
-| M1-WEB-01 | — | — | — | 待认领 | — |
+| M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views` | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | 进行中（视图打磨：确认点 A 剧本展示/编辑 + expanded 标注、详情覆盖全部状态、制作中排队文案、StoryResult 契约补齐；mock） | 2026-10-21 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。

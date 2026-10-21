@@ -70,6 +70,7 @@ interface MockProject extends ProjectDetail {
   rerenderAt?: number;                  // 交付后重新拼接完成时间
   lookTargets?: Record<string, string>; // cast id → 正在生成的形象版本 id
   selectedCharacterIds: string[];       // 首页托盘勾选
+  asScript?: boolean;                   // 重新整理后按剧本处理，不再扩写（API.md §6.3）
   deletedAt?: string;
 }
 interface MockState {
@@ -187,6 +188,19 @@ function voiceFor(gender: Gender, age: AgeGroup, used: Set<string>): string | un
   if (pick) used.add(pick.id);
   return pick?.id;
 }
+/** 把一句话想法扩写成简版剧本（模拟 AI 编剧：分幕 + 画面与情绪描述，确认点 A 可继续编辑）。 */
+function expandIdea(idea: string, castNames: string[]): string {
+  const who = castNames.slice(0, 2).join('和') || '主角';
+  return [
+    `【第一幕 · 开场】${idea.trim()}`,
+    `${who}出现在画面里，是熟悉的生活场景，光线明亮温暖，气氛轻松。`,
+    `【第二幕 · 展开】故事推进`,
+    `${who}开始行动，表情从期待慢慢变成惊喜，镜头跟随动作移动，配轻松的日常声。`,
+    `【第三幕 · 收尾】圆满结束`,
+    `事情顺利完成，大家相视一笑，画面停在笑脸的特写上，故事结束。`,
+  ].join('\n');
+}
+
 function understand(p: MockProject) {
   const text = p.storyText.replace(/\s+/g, '');
   const segmentCount = Math.min(MAX_SECONDS / 30, Math.max(1, Math.ceil(text.length / 120)));
@@ -216,7 +230,13 @@ function understand(p: MockProject) {
   p.cast = cast;
   syncCast(p);
   const totalSeconds = segmentCount * 30;
+  // 剧本判定（演示 engine 的 classifyInput）：短输入按想法扩写成剧本；重新整理后一律按剧本处理
+  const asIdea = !p.asScript && text.length < 60;
+  const script = asIdea ? expandIdea(p.storyText, cast.map((m) => m.name)) : p.storyText.trim();
   p.story = {
+    inputKind: asIdea ? 'idea' : 'script',
+    expanded: asIdea,
+    script,
     synopsis: `${p.storyText.replace(/\s+/g, ' ').slice(0, 80)}${p.storyText.length > 80 ? '…' : ''}（AI 已补全画面细节和情绪）`,
     totalSeconds, segmentCount, compressed,
     notice: compressed ? `故事较长，已为您精简为 ${totalSeconds} 秒` : undefined,
@@ -347,8 +367,8 @@ function toSummary(p: MockProject): ProjectSummary {
   return clone({ id, title, status, group, coverUrl, durationSeconds, progress, expiresAt, createdAt, updatedAt });
 }
 function toDetail(p: MockProject): ProjectDetail {
-  const { stageAt, pausedAt, readyAt, rerenderAt, lookTargets, selectedCharacterIds, ...detail } = p;
-  void stageAt; void pausedAt; void readyAt; void rerenderAt; void lookTargets; void selectedCharacterIds;
+  const { stageAt, pausedAt, readyAt, rerenderAt, lookTargets, selectedCharacterIds, asScript, ...detail } = p;
+  void stageAt; void pausedAt; void readyAt; void rerenderAt; void lookTargets; void selectedCharacterIds; void asScript;
   return clone(detail);
 }
 
@@ -374,7 +394,7 @@ function seedDemo() {
       id: uid('prj'), title, status: 'delivered', group: 'done', coverUrl: cover, durationSeconds: 60, progress: { percent: 100, message: '成片已完成' },
       expiresAt: iso(delivered + RETENTION_DAYS * DAY), createdAt: iso(delivered - 600_000), updatedAt: iso(delivered),
       storyText: '周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', sourceType: 'text', styleId: 'cartoon_3d', qualityTierId: 'standard', ratio: '9:16',
-      story: { synopsis: '周末一家人去公园野餐，宝宝第一次放风筝。', totalSeconds: 60, segmentCount: 2, compressed: false },
+      story: { inputKind: 'script', expanded: false, script: '周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', synopsis: '周末一家人去公园野餐，宝宝第一次放风筝。', totalSeconds: 60, segmentCount: 2, compressed: false },
       cast: [baby, mom].map((c) => ({ id: uid('cast'), name: c.name, description: c.description || '', gender: c === mom ? 'female' : 'unknown', ageGroup: c === mom ? 'middle' : 'child', characterId: c.id, matchSource: 'user', look: { status: 'ready', versionId: c.looks[0].selectedVersionId, imageUrl: c.looks[0].imageUrl, versions: clone(c.looks[0].versions) }, voice: { voiceId: c.defaultVoiceId!, source: 'default' } })),
       segments: segs, voicesEnabled: true,
       pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 1200, refundedFen: 0 },
@@ -564,6 +584,7 @@ export const mockApi: MivApi = {
     expectState(p, 'story_review');
     useFreeQuota();
     p.storyText = storyText.trim();
+    p.asScript = true; // API.md §6.3：重新整理按剧本处理，不会再扩写
     p.story = undefined; p.cast = []; p.segments = [];
     setStatus(p, 'understanding', 'AI 正在重新整理您的故事…', 5);
     save();
