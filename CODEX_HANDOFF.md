@@ -75,7 +75,7 @@
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
 | M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
-| M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views` | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | 进行中（视图打磨：确认点 A 剧本展示/编辑 + expanded 标注、详情覆盖全部状态、制作中排队文案、StoryResult 契约补齐；mock） | 2026-10-21 |
+| M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views`（worktree `~/Documents/mini-video-web01`） | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | 待审查（视图打磨完成，check/build 过，375/1280 走查过） | 2026-10-21 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -169,6 +169,19 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-21 · Web · M1-WEB-01 视图打磨（确认点 A 剧本、状态全覆盖、排队文案、契约补齐）
+
+- **背景**：在 L-04 骨架上打磨首页、资产库、作品列表、作品详情（mock 演示），重点落实 TASKS 中 M1-WEB-01 的 5 项要求。分支 `agent/web/M1-WEB-01-views`（基于 main `8946e61`）。
+- **受影响文件**：`apps/web/src/api/types.ts`、`apps/web/src/api/mock/index.ts`、`apps/web/src/utils/status.ts`、`apps/web/src/pages/ProjectDetailPage.vue`、`apps/web/src/pages/HomePage.vue`、`apps/web/src/pages/project/{StoryReviewView,ProducingView,DeliveryView}.vue`。
+- **重点 1（确认点 A 剧本）**：StoryReviewView 改为展示并可编辑 `story.script` 剧本全文；`expanded` 时标题旁标注「AI 已为你扩写成剧本」；「重新整理」确认文案写明「按剧本处理，不会再扩写」，比对与提交都以剧本为准；原始输入与梗概收进折叠区。mock `understand` 模拟 engine 的 classifyInput：短输入（<60 字）判为想法并扩写成三幕剧本（`expanded: true`）；`reanalyzeStory` 置 `asScript` 后一律按剧本处理（`inputKind: 'script'`），与 API.md §6.3 一致；首页故事输入下加「一句话也没关系，AI 会帮你扩写成完整剧本」提示。
+- **重点 2（契约漂移）**：types.ts 的 `StoryResult` 补齐 `inputKind`/`expanded`/`script` 三字段（BE-06 §5 变更申请），与 docs/API.md §6.2 一致。
+- **重点 3（状态覆盖）**：详情页 11 个状态全部有对应视图（understanding/story_review/casting/cast_review/rendering/composing/delivered/expired/paused/failed/canceled）；mock 新增「制作失败」示例作品（含 error 与技术详情），点「重试」后剩余片段随即完成，可走查 failed → rendering → delivered 全链路；顺手修复既有 bug：详情页 `van-collapse` 绑定固定的 `:model-value="[]"`，「技术详情」永远展不开，改为 `v-model`。
+- **重点 4（排队文案）**：ProducingView 按「分钟级常见、高峰小时级」设计（M0 实测渠道排队约 44 分钟）：「视频正在云端的制作队列里排队生成，通常几分钟完成，高峰期可能要等一阵子」+ 已完成片段可先预览 + 锁屏保活提示；composing 单独文案。
+- **重点 5（规范）**：画幅改中文业务名（`ratioLabel`：竖屏/横屏/方形），界面不再出现 `9:16` 式参数；复查全部组件无硬编码色值（只有 tokens.css），内部 ID/错误码只在「技术详情」折叠区出现。
+- **验证**：`npm run check -w apps/web`、`npm run build -w apps/web` 通过；ego-browser 走查（mock）：375px——登录 → 作品列表 → 失败详情（技术详情展开含错误码）→ 新建作品 → 确认点 A（扩写标注/剧本编辑/按剧本重新整理后标注消失）→ 形象费弹窗 → 确认点 B（费用明细、单段无声音区）→ 制作中排队文案 → 交付页；1280px——失败详情两栏与交付页两栏；失败示例重试走到交付。截图存 `/tmp/miv-web-check/`。
+- **未完成 / 风险**：① **跨分支混入事故，请 Lead 注意**：本分支与 `agent/eng/M2-OPS-02-qiniu` 曾在同一工作目录工作（未用 worktree），Engine Agent 切分支时把本任务的 apps/web 未提交改动带进了它的提交 `f926706`（该提交信息写「产品代码零改动」，实际混入了本分支 7 个 apps/web 文件）。本分支已用 worktree 隔离，并从 `f926706` 原样恢复这些改动（与走查验证的内容 bit 级一致）；`f926706` 合并前请 Lead 知悉 apps/web 部分属于本任务。② Playwright 正式截图验收（TASKS 要求 375/1280）留给 Lead 复核，本轮用 ego-browser 截图自查。③ 声音 Tab 与资产库页本轮未大改（骨架已完整），M1-WEB-02 联调时再对齐真实接口。
+
 
 ### 2026-10-21 · Engine · M0-02 渠道接入（Modelhub seedance-2.5 + gpt-image-2.5-flare）
 

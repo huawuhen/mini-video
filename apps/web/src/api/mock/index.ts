@@ -394,7 +394,7 @@ function seedDemo() {
       id: uid('prj'), title, status: 'delivered', group: 'done', coverUrl: cover, durationSeconds: 60, progress: { percent: 100, message: '成片已完成' },
       expiresAt: iso(delivered + RETENTION_DAYS * DAY), createdAt: iso(delivered - 600_000), updatedAt: iso(delivered),
       storyText: '周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', sourceType: 'text', styleId: 'cartoon_3d', qualityTierId: 'standard', ratio: '9:16',
-      story: { inputKind: 'script', expanded: false, script: '周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', synopsis: '周末一家人去公园野餐，宝宝第一次放风筝。', totalSeconds: 60, segmentCount: 2, compressed: false },
+      story: { inputKind: 'idea', expanded: true, script: expandIdea('周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', ['宝宝', '妈妈']), synopsis: '周末一家人去公园野餐，宝宝第一次放风筝。', totalSeconds: 60, segmentCount: 2, compressed: false },
       cast: [baby, mom].map((c) => ({ id: uid('cast'), name: c.name, description: c.description || '', gender: c === mom ? 'female' : 'unknown', ageGroup: c === mom ? 'middle' : 'child', characterId: c.id, matchSource: 'user', look: { status: 'ready', versionId: c.looks[0].selectedVersionId, imageUrl: c.looks[0].imageUrl, versions: clone(c.looks[0].versions) }, voice: { voiceId: c.defaultVoiceId!, source: 'default' } })),
       segments: segs, voicesEnabled: true,
       pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 1200, refundedFen: 0 },
@@ -403,7 +403,34 @@ function seedDemo() {
     };
     return p;
   };
-  state.projects.push(demo('周末公园野餐', RETENTION_DAYS - 5), demo('宝宝第一次学走路', RETENTION_DAYS + 3));
+  /** 制作失败的示例：可走查 failed 视图；点「重试」后剩余片段随即完成，能一直走到成片。 */
+  const failedDemo = (): MockProject => {
+    const created = now() - 2 * 3600_000;
+    const okId = uid('take');
+    const runningId = uid('take');
+    const segs: Segment[] = [
+      { id: uid('seg'), index: 0, durationSeconds: 30, plot: '宝宝在公园门口看到卖气球的，拉着妈妈的手跑了过去。', dialogue: [], transition: 'hard_cut', castIds: [], selectedTakeId: okId,
+        takes: [{ id: okId, status: 'succeeded', posterUrl: placeholderImage('片段 1', hueOf('风筝0'), '9:16'), createdAt: iso(created) }] },
+      { id: uid('seg'), index: 1, durationSeconds: 30, plot: '宝宝第一次放风筝，风筝飞起来的那一刻全家一起欢呼。', dialogue: [], transition: 'prev_tail', castIds: [],
+        takes: [{ id: runningId, status: 'running', createdAt: iso(now() - 60_000) }] },
+    ];
+    return {
+      id: uid('prj'), title: '宝宝第一次放风筝', status: 'failed', group: 'failed',
+      coverUrl: placeholderImage('宝宝第一次放风筝', hueOf('风筝'), '9:16'), durationSeconds: 60,
+      progress: { percent: 67, message: '片段生成失败' },
+      createdAt: iso(created), updatedAt: iso(now() - 600_000),
+      storyText: '周末带宝宝去公园放风筝，风筝飞起来的那一刻，宝宝开心极了。',
+      sourceType: 'text', styleId: 'manga_drama', qualityTierId: 'standard', ratio: '9:16',
+      story: { inputKind: 'idea', expanded: true, script: expandIdea('周末带宝宝去公园放风筝，风筝飞起来的那一刻，宝宝开心极了。', ['宝宝', '妈妈']), synopsis: '周末带宝宝去公园放风筝，宝宝第一次放飞成功。', totalSeconds: 60, segmentCount: 2, compressed: false },
+      cast: [{ id: uid('cast'), name: baby.name, description: baby.description || '', gender: 'unknown', ageGroup: 'child', characterId: baby.id, matchSource: 'user', look: { status: 'ready', versionId: baby.looks[0].selectedVersionId, imageUrl: baby.looks[0].imageUrl, versions: clone(baby.looks[0].versions) }, voice: { voiceId: baby.defaultVoiceId!, source: 'default' } }],
+      segments: segs, voicesEnabled: true,
+      // 第 1 段已结算、第 2 段失败已退回；reservedFen 保持 0，重试完成后不会重复动钱包
+      pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 600, refundedFen: 600 },
+      error: { code: 'SEGMENT_FAILED', message: '片段 2 生成失败，可重试', step: 'rendering' },
+      stageAt: now(), readyAt: { [runningId]: now() - 30_000 }, selectedCharacterIds: [baby.id],
+    };
+  };
+  state.projects.push(demo('周末公园野餐', RETENTION_DAYS - 5), demo('宝宝第一次学走路', RETENTION_DAYS + 3), failedDemo());
 }
 
 // ── 接口实现 ──
