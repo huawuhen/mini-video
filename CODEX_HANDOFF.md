@@ -74,6 +74,7 @@
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
+| M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 进行中（用户 2026-10-21 提供渠道密钥并指定模型） | 2026-10-21 |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
