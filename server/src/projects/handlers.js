@@ -10,7 +10,7 @@ export function createProjectHandlers({ db, logger, config, storyAgent, videoPro
   return {
     'project.understand': createUnderstandHandler({ db, logger, storyAgent, config }),
     'project.bind_prompts': createBindPromptsHandler({ db, logger, storyAgent }),
-    'segment.generate': createSegmentGenerateHandler({ db, logger, config, videoProvider, storage }),
+    'segment.generate': createSegmentGenerateHandler({ db, logger, config, videoProvider, storage, storyAgent }),
     'gen.poll': createGenPollHandler({ db, logger, config, videoProvider, storage, render, downloadToTempFile }),
     'project.compose': createComposeHandler({ db, logger, config, storage, render, fetchLocal }),
   };

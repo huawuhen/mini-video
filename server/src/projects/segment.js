@@ -2,18 +2,25 @@
 // segment.generate：建 take/gen_task（幂等键 = take id）→ 提交上游（prev_tail 先取上段尾帧）。
 // gen.poll：轮询上游 → 成功后下载→render.inspect→转存→提取尾帧→结算该段→入队下一段/拼接。
 // 提交结果未知：take/gen_task 置 unknown、金额保持冻结、不自动重提，项目进入 failed（§5② 口径）。
+// 交付后 re-take（redelivery）：改过剧情的片段提交前只为这一段重新绑定提示词；明确失败当场退回
+// 该笔预占（delivered 没有 retry/cancel 入口）；结算一律用任务创建时写入的下单金额。
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
 import { PermanentJobError } from '../queue/index.js';
+import { createSkillRegistry } from '../engine/skills/index.js';
 import { appendEvent, requireProject, transition } from './state.js';
-import { settleSegment, videoUnitFen } from './money.js';
+import { refundRetake, settleSegment, videoUnitFen } from './money.js';
+import { videoSkuForMapping } from './understand.js';
 
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
-export function createSegmentGenerateHandler({ db, logger, config, videoProvider, storage }) {
+// 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径）
+const skillRegistry = createSkillRegistry();
+
+export function createSegmentGenerateHandler({ db, logger, config, videoProvider, storage, storyAgent }) {
   return async function segmentGenerate(payload, ctx) {
     const { projectId, idx, takeId } = payload;
     const { rows: current } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
@@ -96,11 +103,17 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
         WHERE t.id = $1`, [takeIdResolved]);
     const take = takeRows[0];
     if (!take.gen_task_id) throw new PermanentJobError('片段任务缺少 gen_task');
-    const request = typeof take.request === 'string' ? JSON.parse(take.request) : take.request;
+    let request = typeof take.request === 'string' ? JSON.parse(take.request) : take.request;
 
     if (take.status === 'succeeded' || take.status === 'failed' || take.status === 'unknown') {
       ctx.logger.info('segment_generate_skip_done', { takeId: takeIdResolved, status: take.status });
       return;
+    }
+
+    // 复审必改 2：交付后改过剧情的 re-take，提交前只为这一段重新绑定提示词（没改不调 LLM）
+    if (request.redelivery === true && storyAgent) {
+      request = await rebindRetakePrompt(db, { logger, storyAgent, project, segment, request,
+        genTaskId: take.gen_task_id });
     }
 
     // 提交守卫（同 BE-04）：只有 created → submitting；停滞的 submitting 置 unknown 绝不重提
@@ -135,9 +148,14 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
       // 复审必改 3：上游只能访问签名 URL；gen_tasks.request 里保存 key（过期后重签）
       const toUrls = (keys) => Promise.all((keys ?? []).map((key) => storage.signedUrl(key,
         { ttlSeconds: config.projects.refUrlTtlSeconds })));
+      // redelivery 的请求只存形象 key（createSegmentTake / 重绑定均不含尾帧），提交前按当前
+      // 上一段选中 take 的尾帧补在最前（与提示词 图1 口径一致）；首次生成的请求建任务时已带尾帧
+      const submitImageRefs = request.redelivery === true && tailRef
+        ? [tailRef, ...(request.imageRefs ?? []).filter((key) => key !== tailRef)]
+        : request.imageRefs;
       const prepared = videoProvider.prepare({
         prompt: request.prompt,
-        imageRefs: await toUrls(request.imageRefs),
+        imageRefs: await toUrls(submitImageRefs),
         audioRefs: await toUrls(request.audioRefs),
         durationSeconds: request.durationSeconds, ratio: request.ratio, resolution: request.resolution,
       }, { durations: request.allowedDurations });
@@ -155,14 +173,16 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
       return;
     }
 
-    if (submitted.status === 'unknown' || !submitted.upstreamId) {
-      await markTakeUnknown(db, ctx, { take: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id, logger });
-      return;
-    }
+    // 明确失败（上游拒绝提交，本就没有 upstreamId）必须先于 unknown 判定——
+    // 否则会把「明确失败」误记成 unknown：金额冻结、交付后 re-take 也没有退款入口
     if (submitted.status === 'failed') {
       await failSegment(db, ctx, { takeId: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id,
-        keepDelivered: request.redelivery === true,
+        keepDelivered: request.redelivery === true, amountFen: request.amountFen,
         error: { message: '视频生成失败，请稍后重试' }, logger });
+      return;
+    }
+    if (submitted.status === 'unknown' || !submitted.upstreamId) {
+      await markTakeUnknown(db, ctx, { take: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id, logger });
       return;
     }
     await db.tx(async (t) => {
@@ -192,11 +212,89 @@ async function markTakeUnknown(db, ctx, { take, projectId, userId, genTaskId, lo
   logger.error('segment_take_unknown', { take, projectId });
 }
 
-/** 片段失败（上游业务失败/inspect 不通过）：该段预占**保持冻结**，重试成功后照常结算、
+/** 交付后 re-take 的剧情重绑定（复审必改 2）：PATCH plot 只改展示列，提交前在这里生效——
+ * plot 与上次绑定时不一致（final_prompt.plot 为绑定时的剧情快照，旧行回退到理解输出），
+ * 就用 storyAgent.bindPrompts 只为这一段重新生成镜头时间线与最终提示词：
+ * startState 取上一段绑定时的 endState、bible 从 projects.story.raw、形象/音色沿用已锁定的、
+ * 对白以 segments.dialogue 为准。绑定走引擎的修复重试与确定性兜底；意外失败沿用旧提示词不阻塞。 */
+async function rebindRetakePrompt(db, { logger, storyAgent, project, segment, request, genTaskId }) {
+  const raw = project.story?.raw;
+  if (!raw) return request;
+  const rawSegment = raw.segments?.[segment.idx] ?? {};
+  const boundPlot = typeof segment.final_prompt?.plot === 'string'
+    ? segment.final_prompt.plot : rawSegment.plot;
+  if (segment.plot === boundPlot) return request; // 没改剧情：不重复调 LLM
+
+  const { rows: styleRows } = await db.query(
+    `SELECT name, prompt_hint AS "promptHint" FROM styles WHERE id = $1`, [project.style_id]);
+  const { rows: castRows } = await db.query(
+    `SELECT pc.id, pc.voice_id, lv.image_key AS look_image_key, v.ref_audio_key
+       FROM project_cast pc
+       LEFT JOIN look_versions lv ON lv.id = pc.look_version_id
+       LEFT JOIN voices v ON v.id = pc.voice_id
+      WHERE pc.project_id = $1 ORDER BY pc.idx`, [project.id]);
+  const cast = castRows.map((row) => ({
+    id: row.id,
+    ...(row.look_image_key ? { lookImageKey: row.look_image_key } : {}),
+    ...(row.ref_audio_key ? { refAudioKey: row.ref_audio_key } : {}),
+  }));
+  const { rows: countRows } = await db.query(
+    `SELECT count(*)::int AS n FROM segments WHERE project_id = $1`, [project.id]);
+  const voicesEnabled = countRows[0].n >= 2;
+  // 输入数组下标 0 放上一段占位（bindPrompts 的 startState 取数组前一项的 endState），
+  // 目标段落在自己的位置上，usePrevTail / startState 与整链绑定的口径一致
+  const bindSegments = [];
+  if (segment.idx > 0) {
+    const { rows: prevRows } = await db.query(
+      `SELECT final_prompt FROM segments WHERE project_id = $1 AND idx = $2`,
+      [project.id, segment.idx - 1]);
+    bindSegments.push({ endState: prevRows[0]?.final_prompt?.endState ?? '' });
+  }
+  bindSegments.push({
+    ...rawSegment,
+    durationSeconds: segment.duration_seconds,
+    transition: segment.transition,
+    plot: segment.plot,
+    dialogue: segment.dialogue ?? [],
+    castIds: segment.cast_ids ?? [],
+  });
+  let entry;
+  try {
+    const sku = await videoSkuForMapping(db, project.tier_mapping_id);
+    const bound = await storyAgent.bindPrompts({
+      style: styleRows[0] ?? {}, ratio: project.ratio, segments: bindSegments, cast,
+      bible: raw.bible, voicesEnabled, skillId: skillRegistry.forModel(sku.model).id,
+    });
+    entry = bound[bindSegments.length - 1];
+  } catch (error) {
+    logger.error('segment_rebind_failed', { takeId: request.takeId, projectId: project.id,
+      err: String(error.message).slice(0, 200) });
+    return request; // 不阻塞：沿用旧提示词
+  }
+  const finalPrompt = {
+    prompt: entry.prompt, imageRefs: entry.imageRefs, audioRefs: entry.audioRefs,
+    usePrevTail: entry.usePrevTail, droppedRefs: entry.droppedRefs ?? 0,
+    startState: entry.startState, endState: entry.endState, shots: entry.shots,
+    skillId: entry.skillId, skillVersion: entry.skillVersion, degraded: entry.degraded,
+    plot: segment.plot, // 绑定时的剧情快照：下一次改动以此为基准比对
+  };
+  const updated = { ...request, prompt: entry.prompt, imageRefs: entry.imageRefs, audioRefs: entry.audioRefs };
+  await db.tx(async (t) => {
+    await t.query(`UPDATE segments SET final_prompt = $2 WHERE id = $1`,
+      [segment.id, JSON.stringify(finalPrompt)]);
+    await t.query(`UPDATE gen_tasks SET request = $2, updated_at = now() WHERE id = $1`,
+      [genTaskId, JSON.stringify(updated)]);
+  });
+  logger.info('segment_rebound', { takeId: request.takeId, projectId: project.id, degraded: entry.degraded });
+  return updated;
+}
+
+/** 片段失败（上游业务失败/inspect 不通过）：首次生成的该段预占**保持冻结**，重试成功后照常结算、
  * 取消时按未结算部分退回（§5① A 口径——「失败即退回+重试免费」会让重试段无钱可结算）。
- * 项目进入 failed，用户可 retry（免费重建 take，复用冻结金额）或 cancel 拿回退款。 */
+ * 交付后 re-take（keepDelivered）当场退回该笔预占（复审必改 1：delivered 没有 retry/cancel
+ * 入口，不退就永久冻结；幂等键按 takeId 区分，重复执行只退一次）。 */
 export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskId, keepDelivered,
-  error, logger }) {
+  amountFen, error, logger }) {
   await db.tx(async (t) => {
     const claimed = await t.query(
       `UPDATE segment_takes SET status = 'failed', error = $2 WHERE id = $1 AND status IN ('running', 'pending') RETURNING id`,
@@ -205,6 +303,14 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
     if (claimed.rows.length) {
       await t.query(`UPDATE gen_tasks SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
         [genTaskId, JSON.stringify(error)]);
+      if (keepDelivered) {
+        // 复审必改 4：退回金额同样取下单时写入的 amountFen；缺失属内部不变量被破坏，记错误日志
+        if (Number.isSafeInteger(amountFen) && amountFen > 0) {
+          await refundRetake(t, { userId, projectId, takeId, amountFen });
+        } else {
+          logger.error('redelivery_refund_missing_amount', { takeId, projectId, amountFen });
+        }
+      }
     }
     if (!keepDelivered) {
       await transition(t, { projectId, userId, from: ['rendering'], to: 'failed',
@@ -220,7 +326,8 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
 }
 
 /** 轮询上游（gen.poll）：running → 退避重排；成功 → 下载 → inspect → 转存 → 尾帧 → 结算 → 下一段；
- * 失败 → 退回该段预占并置项目 failed；unknown → 冻结待对账（§5②）。网络类异常直接抛出交队列退避。 */
+ * 失败 → 首次生成保持冻结待重试（§5①）、交付后 re-take 当场退回该笔预占；unknown → 冻结待对账（§5②）。
+ * 网络类异常直接抛出交队列退避。 */
 export function createGenPollHandler({ db, logger, config, videoProvider, storage, render, downloadToTempFile }) {
   return async function genPoll(payload, ctx) {
     const { takeId } = payload;
@@ -273,11 +380,17 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       return;
     }
 
-    const unit = await videoUnitFen(db, project.tier_mapping_id);
-    const amountFen = unit * request.durationSeconds;
+    // 复审必改 4：结算/退回一律用任务创建时写入的下单金额（segment.generate / createSegmentTake
+    // 都写进 gen_tasks.request.amountFen），不在结算时重新查价——生成中途调价（SKU 新版本生效）
+    // 不再造成结算额与冻结额不一致（调高结算失败、调低冻结残留）。
+    const amountFen = request.amountFen;
+    if (!Number.isSafeInteger(amountFen) || amountFen <= 0) {
+      throw new PermanentJobError(`片段任务缺少下单金额 amountFen：take=${takeId}`);
+    }
 
     if (result.status === 'failed') {
       await failSegment(db, ctx, { takeId, projectId, userId: take.user_id, genTaskId: take.gen_task_id,
+        keepDelivered: request.redelivery === true, amountFen,
         error: { message: '视频生成失败，请稍后重试' }, logger });
       return;
     }

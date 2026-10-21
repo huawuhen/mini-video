@@ -63,6 +63,7 @@ export function createBindPromptsHandler({ db, logger, storyAgent }) {
             usePrevTail: entry.usePrevTail, droppedRefs: entry.droppedRefs ?? 0,
             startState: entry.startState, endState: entry.endState, shots: entry.shots,
             skillId: entry.skillId, skillVersion: entry.skillVersion, degraded: entry.degraded,
+            plot: segment.plot ?? '', // 绑定时的剧情快照：交付后 PATCH plot 与此比对决定是否重绑定
           })],
         );
       }
