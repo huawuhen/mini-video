@@ -9,11 +9,12 @@
 // 产物（图片/视频字节）落 server/.data/m0/（.gitignore 已忽略）；账本与目录快照落 docs/m0/
 // （只记渠道、模型、参数、估算费用，不含密钥与上游临时链接）。
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import dns from 'node:dns';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { createModelhubTransport, createModelhubImageAdapter, createSeedance25Adapter } from '../src/engine/providers/index.js';
-import { safeFetch } from '../src/engine/net/index.js';
+import { createSafeFetch } from '../src/engine/net/index.js';
 
 const STOP_LIMIT_FEN = 27_000; // 270 元 = 授权上限 300 元的 90%
 // 2026-10-21 实测目录单价（分）：图片按张（随分辨率与档位），视频按秒。目录若调价，先更新此处再冒烟。
@@ -42,6 +43,33 @@ for (let i = 1; i < argv.length; i += 1) {
 
 const EXTENSIONS = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'video/mp4': 'mp4', 'video/quicktime': 'mov' };
 const CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp' };
+const FAKE_IP_PREFIXES = ['198.18.', '198.19.']; // 本机代理 TUN fake-IP 模式的保留网段（仅开发环境）
+
+// 开发机代理常用 fake-IP DNS（一切域名解析成 198.18.x.x），会被 safeFetch 的 SSRF 防护正确拒绝。
+// 脚本内改用阿里 DoH 解析真实地址直连；产品代码不改（生产 Linux 无此环境，防护保持默认）。
+async function resolveWithDoh(hostname, { signal }) {
+  const response = await fetch(`https://223.5.5.5/resolve?name=${encodeURIComponent(hostname)}&type=A`, { signal });
+  const data = await response.json();
+  return (data.Answer ?? []).filter((item) => item.type === 1).map((item) => ({ address: item.data, family: 4 }));
+}
+
+function createDevResolver() {
+  return async (hostname, { signal } = {}) => {
+    const records = await dns.promises.lookup(hostname, { all: true, verbatim: true });
+    if (records.some((record) => FAKE_IP_PREFIXES.some((prefix) => record.address.startsWith(prefix)))) {
+      try {
+        const real = await resolveWithDoh(hostname, { signal });
+        if (real.length) {
+          console.log(`检测到本机代理 fake-IP（${records[0].address}），改用 DoH 解析 ${hostname} → ${real.map((r) => r.address).join(', ')}`);
+          return real;
+        }
+      } catch { /* DoH 不可用时退回系统解析，由 safeFetch 按防护规则拒绝 */ }
+    }
+    return records;
+  };
+}
+
+const devSafeFetch = createSafeFetch({ resolver: createDevResolver() });
 
 async function readLedger() {
   try { return JSON.parse(await readFile(ledgerPath, 'utf8')); }
@@ -74,7 +102,9 @@ async function finish(ledger, entry, patch) {
 }
 
 async function download(url, maxBytes) {
-  const response = await safeFetch(url, { maxBytes, timeoutMs: 120_000 });
+  // 只打印主机名（不含带签名的路径与查询串）；真实地址解析见 createDevResolver 的日志
+  console.log(`下载结果主机：${new URL(url).hostname}`);
+  const response = await devSafeFetch(url, { maxBytes, timeoutMs: 120_000 });
   const chunks = [];
   for await (const chunk of response.stream) chunks.push(chunk);
   return { buffer: Buffer.concat(chunks), contentType: response.contentType };
