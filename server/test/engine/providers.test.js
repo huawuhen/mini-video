@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { after, before, describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { createRegistry, createWan30Adapter, createSeedance25Adapter,
+import { createRegistry, createWan30Adapter, createSeedance25Adapter, createFlare25ImageAdapter,
   createModelhubImageAdapter, createImageProvider, createModelhubTransport } from '../../src/engine/providers/index.js';
 import { normalizeVideo } from '../../src/engine/providers/modelhub-video.js';
 import { TINY_PNG } from '../helpers/providers.js';
@@ -150,6 +150,51 @@ describe('engine/providers（M1-ENG-02）', () => {
     assert.equal((body.match(/name="images"/g) ?? []).length, 1);
     assert.throws(() => adapter.prepare({ description: '女孩', referenceKeys: [] }, { resolution: '2k' }),
       (error) => error.code === 'PROVIDER_INPUT_INVALID');
+  });
+
+  test('gpt-image-2.5-flare：分辨率走 resolution 字段、档位走 quality/detail_level，缺省 1k/medium', async () => {
+    upstream.setMode('success');
+    const flare = createFlare25ImageAdapter(transport);
+    assert.equal(flare.id, 'modelhub-gpt-image-2.5-flare');
+    const prepared = flare.prepare({ promptHint: '绘本', description: '女孩', referenceKeys: [] });
+    assert.deepEqual(prepared, { model: 'gpt-image-2.5-flare', prompt: '绘本\n女孩', ratio: '1:1', resolution: '1k',
+      quality: 'medium', detail_level: 'medium', referenceKeys: [], droppedReferences: 0 });
+    await flare.submit(prepared);
+    const json = upstream.requests.at(-1);
+    assert.equal(json.path, '/v1/images/generations');
+    assert.deepEqual(JSON.parse(json.body), { model: 'gpt-image-2.5-flare', prompt: '绘本\n女孩', ratio: '1:1',
+      resolution: '1k', quality: 'medium', detail_level: 'medium' });
+
+    const withReference = createModelhubImageAdapter({ transport, model: 'gpt-image-2.5-flare',
+      loadReference: async () => ({ buffer: TINY_PNG, contentType: 'image/png', name: 'ref.png' }) })
+      .prepare({ promptHint: '绘本', description: '女孩', referenceKeys: ['users/u1/first.png', 'users/u1/second.png'] },
+        { resolution: '2k' });
+    assert.deepEqual(withReference.referenceKeys, ['users/u1/first.png']);
+    assert.equal(withReference.droppedReferences, 1);
+    const composed = await createModelhubImageAdapter({ transport, model: 'gpt-image-2.5-flare',
+      loadReference: async () => ({ buffer: TINY_PNG, contentType: 'image/png', name: 'ref.png' }) }).submit(withReference);
+    assert.equal(composed.status, 'succeeded');
+    const multipart = upstream.requests.at(-1);
+    assert.equal(multipart.path, '/v1/images/compositions');
+    const body = multipart.body.toString();
+    assert.match(body, /name="resolution"\r\n\r\n2k/);
+    assert.match(body, /name="quality"\r\n\r\nmedium/);
+    assert.match(body, /name="detail_level"\r\n\r\nmedium/);
+    assert.equal((body.match(/name="images"/g) ?? []).length, 1);
+
+    // 旧写法 1080p 与未登记档位不放行，避免把错误参数发给计费接口
+    assert.throws(() => flare.prepare({ promptHint: 'x', description: 'y', referenceKeys: [] }, { resolution: '1080p' }),
+      (error) => error.code === 'PROVIDER_INPUT_INVALID');
+    assert.throws(() => flare.prepare({ promptHint: 'x', description: 'y', referenceKeys: [], detailLevel: 'ultra' }),
+      (error) => error.code === 'PROVIDER_INPUT_INVALID');
+    assert.equal(flare.prepare({ promptHint: 'x', description: 'y', referenceKeys: [], ratio: '21:9', detailLevel: 'low' }).quality, 'low');
+
+    const facade = createImageProvider(createRegistry([flare]), { adapterId: 'modelhub-gpt-image-2.5-flare',
+      downloadImage: async () => ({ buffer: TINY_PNG, contentType: 'image/png' }) });
+    assert.deepEqual(await facade.generate({ characterId: 'chr_flare', styleId: 'realistic',
+      promptHint: 'photo', description: '短发', referenceKeys: [] }),
+    { status: 'succeeded', buffer: TINY_PNG, contentType: 'image/png' });
+    assert.equal(JSON.parse(upstream.requests.at(-1).body).resolution, '1k');
   });
 
   test('图片无参考 JSON 生成，有参考时 multipart compositions；facade 兼容 BE-04', async () => {
