@@ -23,5 +23,5 @@ export function createRegistry(adapters) {
 
 export { createModelhubTransport, ProviderError } from './transport.js';
 export { createModelhubVideoAdapter, createWan30Adapter, createSeedance25Adapter } from './modelhub-video.js';
-export { createModelhubImageAdapter } from './modelhub-image.js';
+export { createModelhubImageAdapter, createFlare25ImageAdapter } from './modelhub-image.js';
 export { createImageProvider } from './image.js';

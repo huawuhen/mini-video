@@ -1,0 +1,2134 @@
+{
+  "data": [
+    {
+      "id": "seedance-2.0",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "Seedance 2.0 自动路由",
+      "media_type": "video",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道",
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。"
+      ],
+      "pricing": {
+        "kind": "per_second_range",
+        "unit": "second",
+        "resolutions": {
+          "720p": {
+            "min": 60,
+            "max": 60
+          },
+          "1080p": {
+            "min": 150,
+            "max": 150
+          },
+          "4k": {
+            "min": 450,
+            "max": 450
+          },
+          "480p": {
+            "min": 25,
+            "max": 25
+          },
+          "2160p": {
+            "min": 450,
+            "max": 450
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "seedance-2.0",
+          "accepted_values": [
+            "seedance-2.0"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "9:16",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16",
+            "auto"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "720p",
+          "accepted_values": [
+            "720p",
+            "1080p",
+            "4k",
+            "480p",
+            "2160p"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": "omni_reference",
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "omni_reference 用于文生、单图和多素材参考；first_last_frames 支持 0-2 张图片；具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "image_file_1 ... image_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材；本地文件仅在所选渠道支持时可用。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "video_file_1 ... video_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考视频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考音频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "是否生成音频。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "seedance-2.0-fast",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "Seedance 2.0 Fast 自动路由",
+      "media_type": "video",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道",
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。"
+      ],
+      "pricing": {
+        "kind": "per_second_range",
+        "unit": "second",
+        "resolutions": {
+          "720p": {
+            "min": 29,
+            "max": 29
+          },
+          "1080p": {
+            "min": 85,
+            "max": 85
+          },
+          "2k": {
+            "min": 120,
+            "max": 120
+          },
+          "4k": {
+            "min": 130,
+            "max": 130
+          },
+          "480p": {
+            "min": 21,
+            "max": 21
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "seedance-2.0-fast",
+          "accepted_values": [
+            "seedance-2.0-fast"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "9:16",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16",
+            "auto"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "720p",
+          "accepted_values": [
+            "720p",
+            "1080p",
+            "2k",
+            "4k",
+            "480p"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": "omni_reference",
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "omni_reference 用于文生、单图和多素材参考；first_last_frames 支持 0-2 张图片；具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "image_file_1 ... image_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材；本地文件仅在所选渠道支持时可用。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "video_file_1 ... video_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考视频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考音频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "是否生成音频。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "seedance-2.0-mini",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "Seedance 2.0 Mini 自动路由",
+      "media_type": "video",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道",
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。"
+      ],
+      "pricing": {
+        "kind": "per_second_range",
+        "unit": "second",
+        "resolutions": {
+          "720p": {
+            "min": 23,
+            "max": 23
+          },
+          "1080p": {
+            "min": 60,
+            "max": 60
+          },
+          "2k": {
+            "min": 75,
+            "max": 75
+          },
+          "4k": {
+            "min": 100,
+            "max": 100
+          },
+          "480p": {
+            "min": 18,
+            "max": 18
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "seedance-2.0-mini",
+          "accepted_values": [
+            "seedance-2.0-mini"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "9:16",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "720p",
+          "accepted_values": [
+            "720p",
+            "1080p",
+            "2k",
+            "4k",
+            "480p"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": "omni_reference",
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "omni_reference 用于文生、单图和多素材参考；first_last_frames 支持 0-2 张图片；具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "image_file_1 ... image_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材；本地文件仅在所选渠道支持时可用。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "video_file_1 ... video_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考视频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考音频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "是否生成音频。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "seedance-2.5",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "Seedance 2.5 自动路由",
+      "media_type": "video",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道",
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。"
+      ],
+      "pricing": {
+        "kind": "per_second_range",
+        "unit": "second",
+        "resolutions": {
+          "480p": {
+            "min": 39,
+            "max": 39
+          },
+          "720p": {
+            "min": 47,
+            "max": 47
+          },
+          "1080p": {
+            "min": 280,
+            "max": 280
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "seedance-2.5",
+          "accepted_values": [
+            "seedance-2.5"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "9:16",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16",
+            "auto"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "720p",
+          "accepted_values": [
+            "480p",
+            "720p",
+            "1080p"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": "omni_reference",
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "omni_reference 用于文生、单图和多素材参考；first_last_frames 支持 0-2 张图片；具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "image_file_1 ... image_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材；本地文件仅在所选渠道支持时可用。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "video_file_1 ... video_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考视频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_N",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考音频素材。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "是否生成音频。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "gpt-image-2",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "GPT Image 2 自动路由",
+      "media_type": "image",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1k": {
+            "low": 9,
+            "medium": 21,
+            "high": 30
+          },
+          "2k": {
+            "low": 15,
+            "medium": 28,
+            "high": 40
+          },
+          "4k": {
+            "low": 20,
+            "medium": 35,
+            "high": 55
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "gpt-image-2",
+          "accepted_values": [
+            "gpt-image-2"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "accepted_values": [
+            "auto",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "image_count",
+          "type": "number",
+          "required": false,
+          "default": "1",
+          "accepted_values": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ],
+          "description": "一次生成 1-4 张图片。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "1k",
+          "accepted_values": [
+            "1k",
+            "2k",
+            "4k"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。兼容 1080p/1440p/2160p 写法（分别等同 1k/2k/4k）。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材（compositions 接口）。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "nano-banana-2",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "Nano Banana 2 自动路由",
+      "media_type": "image",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "512p": {
+            "standard": 1,
+            "default": 10
+          },
+          "1k": {
+            "default": 20,
+            "standard": 1
+          },
+          "2k": {
+            "default": 30,
+            "standard": 2
+          },
+          "4k": {
+            "default": 40,
+            "standard": 2
+          },
+          "default": {
+            "default": 50
+          },
+          "text-to-image": {
+            "default": 24
+          },
+          "image-to-image": {
+            "default": 24
+          },
+          "0.5K": {
+            "standard": 48
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "nano-banana-2",
+          "accepted_values": [
+            "nano-banana-2"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "accepted_values": [
+            "auto",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "5:4",
+            "4:5",
+            "3:2",
+            "2:3",
+            "21:9"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "1k",
+          "accepted_values": [
+            "512p",
+            "1k",
+            "2k",
+            "4k"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。兼容 1080p/1440p/2160p 写法（分别等同 1k/2k/4k）。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材（compositions 接口）。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "自动路由到满足当前请求的可用渠道，按固定平台积分计费。"
+    },
+    {
+      "id": "gpt-image-2.5-flare",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "catalog.smartImageModels.gpt-image-2.5-flare.label",
+      "media_type": "image",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1k": {
+            "low": 10,
+            "max": 80,
+            "high": 33,
+            "xhigh": 45,
+            "medium": 23,
+            "default": 33
+          },
+          "2k": {
+            "low": 17,
+            "max": 120,
+            "high": 44,
+            "xhigh": 60,
+            "medium": 30,
+            "default": 44
+          },
+          "4k": {
+            "low": 22,
+            "max": 150,
+            "high": 60,
+            "xhigh": 85,
+            "medium": 37,
+            "default": 44
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "gpt-image-2.5-flare",
+          "accepted_values": [
+            "gpt-image-2.5-flare"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "1:1",
+          "accepted_values": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "2:1",
+            "1:2",
+            "21:9",
+            "auto",
+            "27:16",
+            "16:27",
+            "9:8",
+            "8:9"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "high",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "variant",
+          "type": "string",
+          "required": false,
+          "default": "flare",
+          "accepted_values": [
+            "flare"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "high",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "1k",
+          "accepted_values": [
+            "1k",
+            "2k",
+            "4k"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。兼容 1080p/1440p/2160p 写法（分别等同 1k/2k/4k）。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材（compositions 接口）。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "catalog.smartImageModels.gpt-image-2.5-flare.description"
+    },
+    {
+      "id": "gpt-image-2.5-sunburst",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "catalog.smartImageModels.gpt-image-2.5-sunburst.label",
+      "media_type": "image",
+      "provider": "router",
+      "highlights": [
+        "自动路由到满足当前请求的可用渠道（按固定平台积分计费）",
+        "能力依赖当时可用渠道"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1k": {
+            "low": 10,
+            "max": 80,
+            "high": 33,
+            "xhigh": 45,
+            "medium": 23,
+            "default": 33
+          },
+          "2k": {
+            "low": 17,
+            "max": 120,
+            "high": 44,
+            "xhigh": 60,
+            "medium": 30,
+            "default": 44
+          },
+          "4k": {
+            "low": 22,
+            "max": 150,
+            "high": 60,
+            "xhigh": 85,
+            "medium": 37,
+            "default": 44
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "gpt-image-2.5-sunburst",
+          "accepted_values": [
+            "gpt-image-2.5-sunburst"
+          ],
+          "description": "固定使用当前自动路由模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "1:1",
+          "accepted_values": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "2:1",
+            "1:2",
+            "21:9",
+            "auto",
+            "27:16",
+            "16:27",
+            "9:8",
+            "8:9"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "high",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "variant",
+          "type": "string",
+          "required": false,
+          "default": "sunburst",
+          "accepted_values": [
+            "sunburst"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "high",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "1k",
+          "accepted_values": [
+            "1k",
+            "2k",
+            "4k"
+          ],
+          "description": "具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。兼容 1080p/1440p/2160p 写法（分别等同 1k/2k/4k）。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图片素材（compositions 接口）。具体可用值由当时满足条件的渠道决定；没有渠道支持时会直接拒绝请求。"
+        }
+      ],
+      "description": "catalog.smartImageModels.gpt-image-2.5-sunburst.description"
+    },
+    {
+      "id": "vxp-gpt-image-2",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP GPT Image 2",
+      "media_type": "image",
+      "provider": "vxp",
+      "highlights": [
+        "支持参考图（最多 9 张）"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1080p": {
+            "low": 10,
+            "high": 33,
+            "medium": 22
+          },
+          "1440p": {
+            "low": 17,
+            "high": 44,
+            "medium": 31
+          },
+          "2160p": {
+            "low": 22,
+            "high": 60,
+            "medium": 39
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-gpt-image-2",
+          "accepted_values": [
+            "vxp-gpt-image-2"
+          ],
+          "description": "固定使用当前图片模型。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "1:1",
+          "accepted_values": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "2:1",
+            "1:2",
+            "21:9"
+          ],
+          "description": "仅支持 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 / 2:1 / 1:2 / 21:9；其他值会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "1080p",
+          "accepted_values": [
+            "1080p",
+            "1440p",
+            "2160p"
+          ],
+          "description": "支持 1080p / 1440p / 2160p。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "支持 low / medium / high。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图生成时必填，支持 1-9 张。JSON 传图片 URL 数组；multipart 使用同名 images 文件字段。"
+        },
+        {
+          "name": "seed",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "整数随机种子。"
+        }
+      ],
+      "description": "支持文生图与最多 9 张参考图编辑，可选择清晰度、细节档和随机种子；每次固定生成 1 张。"
+    },
+    {
+      "id": "vxp-gpt-image-2.5-flare",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP GPT Image 2.5 Flare",
+      "media_type": "image",
+      "provider": "vxp",
+      "highlights": [
+        "变体 flare",
+        "支持参考图（最多 9 张）",
+        "每张参考图另加 5 积分"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1080p": {
+            "low": 11,
+            "max": 85,
+            "high": 35,
+            "xhigh": 48,
+            "medium": 25
+          },
+          "1440p": {
+            "low": 18,
+            "max": 125,
+            "high": 46,
+            "xhigh": 63,
+            "medium": 33
+          },
+          "2160p": {
+            "low": 23,
+            "max": 158,
+            "high": 64,
+            "xhigh": 90,
+            "medium": 41
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-gpt-image-2.5-flare",
+          "accepted_values": [
+            "vxp-gpt-image-2.5-flare"
+          ],
+          "description": "固定使用当前图片模型。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "1:1",
+          "accepted_values": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "2:1",
+            "1:2",
+            "21:9"
+          ],
+          "description": "仅支持 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 / 2:1 / 1:2 / 21:9；其他值会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "1080p",
+          "accepted_values": [
+            "1080p",
+            "1440p",
+            "2160p"
+          ],
+          "description": "支持 1080p / 1440p / 2160p。"
+        },
+        {
+          "name": "variant",
+          "type": "string",
+          "required": false,
+          "default": "flare",
+          "accepted_values": [
+            "flare"
+          ],
+          "description": "支持 flare。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "支持 low / medium / high / xhigh / max。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图生成时必填，支持 1-9 张。JSON 传图片 URL 数组；multipart 使用同名 images 文件字段。"
+        },
+        {
+          "name": "seed",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "整数随机种子。"
+        }
+      ],
+      "description": "VXP GPT Image 2.5 Flare，支持文生图和参考图编辑，细节档 low 至 max。"
+    },
+    {
+      "id": "vxp-gpt-image-2.5-sunburst",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP GPT Image 2.5 Sunburst",
+      "media_type": "image",
+      "provider": "vxp",
+      "highlights": [
+        "变体 sunburst",
+        "支持参考图（最多 9 张）",
+        "每张参考图另加 5 积分"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1080p": {
+            "low": 11,
+            "max": 85,
+            "high": 35,
+            "xhigh": 48,
+            "medium": 25
+          },
+          "1440p": {
+            "low": 18,
+            "max": 125,
+            "high": 46,
+            "xhigh": 63,
+            "medium": 33
+          },
+          "2160p": {
+            "low": 23,
+            "max": 158,
+            "high": 64,
+            "xhigh": 90,
+            "medium": 41
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-gpt-image-2.5-sunburst",
+          "accepted_values": [
+            "vxp-gpt-image-2.5-sunburst"
+          ],
+          "description": "固定使用当前图片模型。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "1:1",
+          "accepted_values": [
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "3:2",
+            "2:3",
+            "2:1",
+            "1:2",
+            "21:9"
+          ],
+          "description": "仅支持 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 3:2 / 2:3 / 2:1 / 1:2 / 21:9；其他值会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "1080p",
+          "accepted_values": [
+            "1080p",
+            "1440p",
+            "2160p"
+          ],
+          "description": "支持 1080p / 1440p / 2160p。"
+        },
+        {
+          "name": "variant",
+          "type": "string",
+          "required": false,
+          "default": "sunburst",
+          "accepted_values": [
+            "sunburst"
+          ],
+          "description": "支持 sunburst。"
+        },
+        {
+          "name": "detail_level",
+          "type": "string",
+          "required": false,
+          "default": "medium",
+          "accepted_values": [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max"
+          ],
+          "description": "支持 low / medium / high / xhigh / max。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图生成时必填，支持 1-9 张。JSON 传图片 URL 数组；multipart 使用同名 images 文件字段。"
+        },
+        {
+          "name": "seed",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "整数随机种子。"
+        }
+      ],
+      "description": "VXP GPT Image 2.5 Sunburst，支持文生图和参考图编辑，细节档 low 至 max。"
+    },
+    {
+      "id": "vxp-nano-banana-2",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP Nano Banana 2",
+      "media_type": "image",
+      "provider": "vxp",
+      "highlights": [
+        "支持参考图（最多 9 张）"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "512p": {
+            "default": 10
+          },
+          "1080p": {
+            "default": 20
+          },
+          "1440p": {
+            "default": 30
+          },
+          "2160p": {
+            "default": 40
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-nano-banana-2",
+          "accepted_values": [
+            "vxp-nano-banana-2"
+          ],
+          "description": "固定使用当前图片模型。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "accepted_values": [
+            "auto",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "5:4",
+            "4:5",
+            "3:2",
+            "2:3",
+            "21:9"
+          ],
+          "description": "仅支持 auto / 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 5:4 / 4:5 / 3:2 / 2:3 / 21:9；其他值会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "512p",
+          "accepted_values": [
+            "512p",
+            "1080p",
+            "1440p",
+            "2160p"
+          ],
+          "description": "支持 512p / 1080p / 1440p / 2160p。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图生成时必填，支持 1-9 张。JSON 传图片 URL 数组；multipart 使用同名 images 文件字段。"
+        },
+        {
+          "name": "seed",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "整数随机种子。"
+        }
+      ],
+      "description": "VXP Nano Banana 2，支持文生图和图生图。"
+    },
+    {
+      "id": "vxp-nano-banana-2-lite",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP Nano Banana 2 Lite",
+      "media_type": "image",
+      "provider": "vxp",
+      "highlights": [
+        "支持参考图（最多 14 张）"
+      ],
+      "pricing": {
+        "kind": "per_image",
+        "unit": "image",
+        "prices": {
+          "1080p": {
+            "default": 31
+          }
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-nano-banana-2-lite",
+          "accepted_values": [
+            "vxp-nano-banana-2-lite"
+          ],
+          "description": "固定使用当前图片模型。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片生成提示词。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "auto",
+          "accepted_values": [
+            "auto",
+            "1:1",
+            "16:9",
+            "9:16",
+            "4:3",
+            "3:4",
+            "5:4",
+            "4:5",
+            "3:2",
+            "2:3",
+            "21:9"
+          ],
+          "description": "仅支持 auto / 1:1 / 16:9 / 9:16 / 4:3 / 3:4 / 5:4 / 4:5 / 3:2 / 2:3 / 21:9；其他值会直接拒绝请求。"
+        },
+        {
+          "name": "quality",
+          "type": "string",
+          "required": false,
+          "default": "1080p",
+          "accepted_values": [
+            "1080p"
+          ],
+          "description": "支持 1080p。"
+        },
+        {
+          "name": "images",
+          "type": "string[] / file[]",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "参考图生成时必填，支持 1-14 张。JSON 传图片 URL 数组；multipart 使用同名 images 文件字段。"
+        },
+        {
+          "name": "seed",
+          "type": "number",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "整数随机种子。"
+        }
+      ],
+      "description": "VXP Nano Banana 2 Lite，支持文生图和图生图。"
+    },
+    {
+      "id": "vxp-seedance-2.0-fast",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP Seedance 2.0 Fast",
+      "media_type": "video",
+      "provider": "vxp",
+      "highlights": [
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。",
+        "支持参考视频（最多 3 个）",
+        "支持参考音频（最多 3 个）",
+        "默认生成音频，可关闭"
+      ],
+      "pricing": {
+        "kind": "per_second",
+        "unit": "second",
+        "resolutions": {
+          "480p": 33,
+          "720p": 66
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-seedance-2.0-fast",
+          "accepted_values": [
+            "vxp-seedance-2.0-fast"
+          ],
+          "description": "当前视频模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。全能参考模式下用 @image_file_1、@video_file_1、@audio_file_1 引用素材；multipart 提示词包含 @ 时，curl 必须使用 --form-string。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "16:9",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "description": "支持 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。具体可用值按生成方式区分，见本字段的分项列表。传入其他值会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "480p",
+          "accepted_values": [
+            "480p",
+            "720p"
+          ],
+          "description": "支持 480p / 720p。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "支持 4-15 秒。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "缺省与 omni_reference 同义：无素材时文生视频，有素材（含单图）时作多素材参考；first_last_frames 支持首帧（1 图）或首尾帧（2 图）。"
+        },
+        {
+          "name": "image_file_1 ... image_file_9",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片素材统一使用 image_file_N。JSON 传 http(s) URL 字符串；multipart 可传 URL 字符串或本地文件。"
+        },
+        {
+          "name": "video_file_1 ... video_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考视频素材。最多 3 个。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考音频素材。最多 3 个。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "默认生成音频；传 false 时关闭。"
+        }
+      ],
+      "description": "快速视频模型，支持文生视频、图生视频、首尾帧和多素材参考。"
+    },
+    {
+      "id": "vxp-seedance-2.0-mini",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP Seedance 2.0 Mini",
+      "media_type": "video",
+      "provider": "vxp",
+      "highlights": [
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。",
+        "支持参考视频（最多 3 个）",
+        "支持参考音频（最多 3 个）",
+        "默认生成音频，可关闭"
+      ],
+      "pricing": {
+        "kind": "per_second",
+        "unit": "second",
+        "resolutions": {
+          "480p": 20,
+          "720p": 40
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-seedance-2.0-mini",
+          "accepted_values": [
+            "vxp-seedance-2.0-mini"
+          ],
+          "description": "当前视频模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。全能参考模式下用 @image_file_1、@video_file_1、@audio_file_1 引用素材；multipart 提示词包含 @ 时，curl 必须使用 --form-string。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "16:9",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "description": "支持 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。具体可用值按生成方式区分，见本字段的分项列表。传入其他值会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "480p",
+          "accepted_values": [
+            "480p",
+            "720p"
+          ],
+          "description": "支持 480p / 720p。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "支持 4-15 秒。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "缺省与 omni_reference 同义：无素材时文生视频，有素材（含单图）时作多素材参考；first_last_frames 支持首帧（1 图）或首尾帧（2 图）。"
+        },
+        {
+          "name": "image_file_1 ... image_file_9",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片素材统一使用 image_file_N。JSON 传 http(s) URL 字符串；multipart 可传 URL 字符串或本地文件。"
+        },
+        {
+          "name": "video_file_1 ... video_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考视频素材。最多 3 个。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考音频素材。最多 3 个。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "默认生成音频；传 false 时关闭。"
+        }
+      ],
+      "description": "轻量视频模型，支持文生视频、图生视频、首尾帧和多素材参考。"
+    },
+    {
+      "id": "vxp-seedance-2.0-standard",
+      "object": "model",
+      "owned_by": "platform",
+      "display_name": "VXP Seedance 2.0 Standard",
+      "media_type": "video",
+      "provider": "vxp",
+      "highlights": [
+        "参考视频计费：参考视频实际总时长会与输出时长合并计费，参考视频总时长向上取整到整秒。",
+        "支持参考视频（最多 3 个）",
+        "支持参考音频（最多 3 个）",
+        "默认生成音频，可关闭"
+      ],
+      "pricing": {
+        "kind": "per_second",
+        "unit": "second",
+        "resolutions": {
+          "480p": 45,
+          "720p": 98,
+          "1080p": 180,
+          "2160p": 457
+        }
+      },
+      "parameters": [
+        {
+          "name": "model",
+          "type": "string",
+          "required": true,
+          "default": "vxp-seedance-2.0-standard",
+          "accepted_values": [
+            "vxp-seedance-2.0-standard"
+          ],
+          "description": "当前视频模型名。"
+        },
+        {
+          "name": "prompt",
+          "type": "string",
+          "required": true,
+          "default": null,
+          "accepted_values": [],
+          "description": "视频提示词。全能参考模式下用 @image_file_1、@video_file_1、@audio_file_1 引用素材；multipart 提示词包含 @ 时，curl 必须使用 --form-string。"
+        },
+        {
+          "name": "ratio",
+          "type": "string",
+          "required": false,
+          "default": "16:9",
+          "accepted_values": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "description": "支持 21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16。具体可用值按生成方式区分，见本字段的分项列表。传入其他值会直接拒绝请求。"
+        },
+        {
+          "name": "resolution",
+          "type": "string",
+          "required": false,
+          "default": "480p",
+          "accepted_values": [
+            "480p",
+            "720p",
+            "1080p",
+            "2160p"
+          ],
+          "description": "支持 480p / 720p / 1080p / 2160p。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "duration",
+          "type": "number",
+          "required": false,
+          "default": "5",
+          "accepted_values": [
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15"
+          ],
+          "description": "支持 4-15 秒。具体可用值按生成方式区分，见本字段的分项列表。"
+        },
+        {
+          "name": "functionMode",
+          "type": "string",
+          "required": false,
+          "default": null,
+          "accepted_values": [
+            "first_last_frames",
+            "omni_reference"
+          ],
+          "description": "缺省与 omni_reference 同义：无素材时文生视频，有素材（含单图）时作多素材参考；first_last_frames 支持首帧（1 图）或首尾帧（2 图）。"
+        },
+        {
+          "name": "image_file_1 ... image_file_9",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "图片素材统一使用 image_file_N。JSON 传 http(s) URL 字符串；multipart 可传 URL 字符串或本地文件。"
+        },
+        {
+          "name": "video_file_1 ... video_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考视频素材。最多 3 个。"
+        },
+        {
+          "name": "audio_file_1 ... audio_file_3",
+          "type": "string / file",
+          "required": false,
+          "default": null,
+          "accepted_values": [],
+          "description": "全能参考音频素材。最多 3 个。"
+        },
+        {
+          "name": "generate_audio",
+          "type": "boolean",
+          "required": false,
+          "default": "true",
+          "accepted_values": [
+            "true",
+            "false"
+          ],
+          "description": "默认生成音频；传 false 时关闭。"
+        }
+      ],
+      "description": "VXP Seedance 2.0 标准版，支持文生视频、图生视频、首尾帧和多素材参考。"
+    }
+  ]
+}

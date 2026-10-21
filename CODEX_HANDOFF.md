@@ -74,6 +74,7 @@
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
+| M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -165,6 +166,21 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-21 · Engine · M0-02 渠道接入（Modelhub seedance-2.5 + gpt-image-2.5-flare）
+
+- **背景**：用户提供渠道密钥（存本机 `server/.env`，gitignore）并指定视频模型 seedance-2.5、图片模型 gpt-image-2.5-flare。M1-ENG-02 已交付适配器骨架，本任务在其上补齐 flare 能力、config 接线与真实冒烟验证（授权见 §3 2026-10-20，上限 300 元）。分支 `agent/eng/M0-02-modelhub-channel`（基于 main `81d7c2b`）。worker 仍用模拟上游，真实渠道接线是 M2-BE-01。
+- **改动（文件/模块）**：`server/src/engine/providers/{modelhub-image,index}.js`、`server/test/engine/providers.test.js`（+1 用例）、`server/src/config.js`（新增 `providers` 组）、`server/.env.example`、`server/scripts/modelhub-smoke.js`（新增）、`docs/m0/{channel-modelhub.md,modelhub-catalog.json,cost-ledger.json}`（新增）。
+- **核心实现与实测发现**（详见 `docs/m0/channel-modelhub.md`）：
+  1. **flare 请求形态与 gpt-image-2 旧形态不同**：2026-10-21 实测目录（`GET /v1/models?include_capabilities=1`，免费）显示 flare 的分辨率走独立 `resolution` 字段（`1k/2k/4k`，兼容 `1080p` 等旧写法），`quality`/`detail_level` 是 `low→max` 档位；适配器按模型加 `resolutionField` 开关区分，旧模型行为不变。上游实际把 flare 路由到 PixVerse（结果域名 `media.pixverse.ai`）。
+  2. **seedance-2.5 实时单价 480p=39 / 720p=47 / 1080p=280 分/秒**——源项目 2026-10-08 快照（38/85/114）已过期，**SKU 报价必须以实时目录为准**（`models` 子命令可随时免费刷新快照）。视频上游实际路由到字节系 CDN（`v16-cc.capcut.com`）。
+  3. `config.providers`：MODELHUB_BASE_URL/API_KEY、请求超时默认 60s（图片同步接口实测 18~21s，30s 不够；源项目同为 60s）、默认模型与档位（视频 720p、图片 1k/medium，均为 env 可调占位，M2-BE-01 按 M0 结论定）。
+  4. 冒烟脚本：`models / image / video / video-query` 四子命令；每次调用前按已知单价估算写入 `docs/m0/cost-ledger.json`，累计达 **270 元硬停**；产物落 `server/.data/m0/`（gitignore），账本不含密钥与上游临时链接；检测到本机代理 fake-IP（198.18.x）时脚本内用阿里 DoH 解析真实地址下载——**产品代码与 SSRF 防护不改**（生产 Linux 无此环境）；提交结果未知按「冻结对账」口径记账。
+- **验证（命令与结果）**：
+  - `node --test test/engine/providers.test.js` 14/14；`npm run test:server` **243/243**；`npm run check`、`npm run build` 通过。
+  - 真实调用（账本累计估算 **206 分 = 2.06 元**，远低于停止线）：flare 1k/low 文生图 ✅（18s，1024×1024，内容与提示词一致）；flare compositions 参考图合成 ✅（21s，换视角后人物一致性良好，即 BE-04 形象生成生产路径）；seedance-2.5 4s/480p/9:16 文生视频 ✅（mp4 480×854 h264+aac 60fps 4.0s，画面与提示词一致）。三笔早期失败如实记录（1 次本机 fake-IP 触发 SSRF 防护、2 次代理节点 TLS 抖动，均未达上游、预计未计费）。
+  - **视频排队时延**：4 秒 480p 小样在渠道侧排队约 44 分钟才完成——`PROJECTS_GEN_POLL_TIMEOUT_SECONDS=7200` 可覆盖，但「制作中」的用户预期与串行片段总时长须按「分钟级～小时级排队」设计（详见笔记 §3）。
+- **未完成 / 风险**：M0-02 完整验证项（30 秒多镜头、图片/音频参考一致性、尾帧衔接、多片段声音一致、六风格形象、每秒成本曲线）待按授权继续，用同一脚本与账本；`Idempotency-Key` 头 modelhub 是否落地未见文档，重提去重不依赖它（沿用「提交结果未知不自动重提」原则）；视频参考素材（image_file_N 传 URL）尚未真实验证，BE-05 的七牛签名链接流程需在 M0-02 完整验证中覆盖。
 
 ### 2026-10-21 · BE-Core · M1-BE-06 复审修复（re-take 退款、剧情重绑定、SSE 两处、结算价）
 
