@@ -74,7 +74,7 @@
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
-| M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
+| M0-02（渠道接入 + 完整验证：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（完整验证完成，报告 `docs/m0/report.md`；估算累计 23.58 元 / 上限 300 元） | 2026-10-21 |
 | M1-WEB-01 | — | — | — | 待认领 | — |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -169,6 +169,21 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-21 · Engine · M0-02 完整验证（TASKS ①~⑦）
+
+- **背景**：在渠道接入（见下一条）基础上推进 M0-02 完整验证，用户 2026-10-21 再次确认「继续推进」。同日 M2-OPS-02 七牛联调完成，本次验证把两条线打通：**所有图片/音频/尾帧参考均经七牛 `miv-test/m0/` 上传 + 签名链接（TTL 6 小时）提交**，即 handoff §6 审查遗留项「七牛签名链接作视频参考」在真实渠道验证通过，且与产品（BE-05）提交链路同款。分支同 `agent/eng/M0-02-modelhub-channel`。
+- **改动**：`server/scripts/modelhub-smoke.js`（video 子命令新增 `--image/--audio/--tail` 本地文件自动上传七牛转签名链接、`--no-wait` 提交即返回 + `video-query` 收割，便于并行排队；账本只记数量不记链接）、`docs/m0/report.md`（新增完整验证报告）、`docs/m0/cost-ledger.json`（追加 12 条）、`CODEX_HANDOFF.md`（本记录与 §2 状态）。
+- **验证结果**（估算累计 2358 分 = 23.58 元，远低于 270 元停止线；5 条样片全成功，均 60fps 带音轨）：
+  1. 六风格形象全出（flare 1k/medium/3:4，同一人设）：风格差异鲜明、人设保持；flare 复杂提示词 adherence 有小偏差（写实版多出婴儿头部），生产提示词应只写主体。
+  2. **30 秒多镜头 ✅**：30.02s 整段被上游接受；5 镜头时间线（叠衣→T 恳特写→敲门喊娃→娃跑过→沙发）逐点抽帧全部对应，人物跨镜头一致，台词口型开合。**30s 段无需切分**。
+  3. **尾帧衔接 ✅**：V1 尾帧经七牛签名链接作 `图1`，V2 首帧与 V1 尾帧几乎逐像素一致、动作自然延续——产品「接上段尾帧」按普通参考图即可用。
+  4. **音色参考跨片段 ✅（听感待人耳复听）**：V1 台词音轨抽 mp3 → V4/V5 作 `audio_file_1`，口型同步正常；「是否同一声音」需用户复听样片（`server/.data/m0/`）。
+  5. 时长/分辨率：4/8/30s 精确（±0.02s）；480p=480×854、720p=720×1280 竖屏正确；seedance 时长 4~30s 整数、图上限 30、音频上限 10。
+  6. 成本：480p=0.39、720p=0.47 元/秒线性无溢价；形象 0.23 元/张。**PRD 占位售价（标准 0.20 元/s）低于成本，必须调价**——报告给出 SKU 建议（标准=480p 售 0.5 元/s、高清=720p 售 0.7~0.8 元/s），待 Lead/用户决策。
+  7. **排队时间波动大**：白天 44 分钟 vs 晚间 3~7 分钟——「制作中」文案按分钟~小时级；120 分钟轮询上限建议做成配置并在 80% 预警（M2-BE-01）。
+- **坑与流程教训**：① `cost-ledger.json` 是 read-modify-write，**两个冒烟进程并发会丢条目**（V6 的 376 分条目被 V1 覆盖，已手工重建并注明）——冒烟/收割必须单进程顺序执行；② 参考素材经七牛中转后，本机代理 fake-IP 问题不再影响提交侧（上游从公网拉取）。
+- **未完成/风险**：1080p 未实测（30s 需 84 元，留待有真实需求小样）；音色听感、LLM 单次成本（⑥，随 M2-BE-01）待补；渠道后台实际账单待对账（估算口径）。
 
 ### 2026-10-21 · Engine · M0-02 渠道接入（Modelhub seedance-2.5 + gpt-image-2.5-flare）
 
