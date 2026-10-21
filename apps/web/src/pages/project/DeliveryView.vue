@@ -11,6 +11,7 @@ import SegmentCard from '@/components/SegmentCard.vue';
 import { useCharge } from '@/composables/useCharge';
 import { useOnboarding } from '@/composables/useOnboarding';
 import { useCatalogStore } from '@/stores/catalog';
+import { ratioLabel } from '@/utils/status';
 
 const props = defineProps<{ project: ProjectDetail }>();
 const emit = defineEmits<{ updated: [ProjectDetail]; refresh: [] }>();
@@ -77,7 +78,7 @@ async function remake() {
     <div class="side">
       <div class="miv-card">
         <h2>{{ project.title }}</h2>
-        <p class="miv-hint">{{ render?.durationSeconds ?? project.durationSeconds }} 秒 · {{ catalogStore.styleName(project.styleId) }} · {{ project.ratio }}</p>
+        <p class="miv-hint">{{ render?.durationSeconds ?? project.durationSeconds }} 秒 · {{ catalogStore.styleName(project.styleId) }} · {{ ratioLabel[project.ratio] }}</p>
         <template v-if="!expired">
           <div class="save" data-tour="delivery-save">
             <van-button type="primary" class="miv-btn-accent" block icon="down" :disabled="rerendering" @click="download">保存到手机</van-button>

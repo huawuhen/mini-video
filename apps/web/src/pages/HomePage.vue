@@ -140,6 +140,7 @@ async function generate() {
         <div class="story-tools">
           <van-button size="mini" plain icon="description-o" :loading="uploading" @click="pickFile">上传 txt/docx</van-button>
           <span v-if="draft.sourceType === 'file' && draft.title" class="miv-hint">已导入《{{ draft.title }}》</span>
+          <span class="miv-hint expand-hint">一句话也没关系，AI 会帮你扩写成完整剧本</span>
         </div>
       </div>
 
@@ -186,7 +187,9 @@ h1 { font-size: 24px; line-height: 1.35; margin-bottom: var(--miv-space-2); }
 .create { display: flex; flex-direction: column; gap: var(--miv-space-4); }
 .story { border-radius: var(--miv-radius-md); background: var(--miv-bg); padding: var(--miv-space-3); }
 .story :deep(.van-field) { padding: 0; background: transparent; }
-.story-tools { display: flex; align-items: center; gap: var(--miv-space-2); margin-top: var(--miv-space-2); }
+.story-tools { display: flex; align-items: center; gap: var(--miv-space-2); margin-top: var(--miv-space-2); flex-wrap: wrap; }
+.expand-hint { margin-left: auto; }
+@media (max-width: 767px) { .expand-hint { flex-basis: 100%; margin-left: 0; } }
 .label { font-size: 15px; font-weight: 600; margin-bottom: var(--miv-space-2); }
 .estimate { font-size: 13px; color: var(--miv-text-2); margin-bottom: var(--miv-space-2); text-align: center; }
 .estimate b { color: var(--miv-accent); }

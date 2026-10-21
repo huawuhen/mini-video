@@ -85,3 +85,26 @@ bindPrompts({ style, ratio, segments, cast, bible, voicesEnabled, skillId, maxIm
 ### Skill 的 limits（全部可配置，M0 验证后调整）
 
 `minShotSeconds/maxShotSeconds=3/8`（对白镜头可到 `maxDialogueShotSeconds=10`）、镜头数按段长查表（30 秒 4~8、15 秒 2~4、≤10 秒 1~2；`single_take` 为 1 镜且不受逐镜头时长上限约束）、`preferredSegmentSeconds=30`、`dialogueCharsPerSecond=3.5`、`maxChars=2500`、`maxImageRefs=9`、`promptLanguage=en`（英文主体 + 中文对白原句）。
+
+## 七牛 Kodo 真实桶联调结论（M2-OPS-02，2026-10-21）
+
+环境：桶 `redith`（区域 `z0` 华东-浙江，官方 `GET api.qiniu.com/v4/query?ak=…&bucket=…` 免费查询），CDN 下载域名 `cdn.redith.cn`（HTTPS 证书有效），key 前缀 `miv-test/`，联调后已清理测试对象。脚本 `scripts/qiniu-smoke.js`（手动运行，账本 `server/.data/qiniu-cost-ledger.json`，估算累计 **8 分**，停止线 1600 分）。
+
+| 清单项 | 结果 | 结论 |
+|---|---|---|
+| 表单上传（小对象） | ✅ | ≤8MB 走表单上传，`Content-Type` 原样保存（`text/plain; charset=utf-8`），`stat.fsize` 一致 |
+| 分片上传 v2（10MiB） | ✅ | 引擎自动切 3×4MB 分片，范围读（`Range`）字节与总长一致 |
+| 分片失败 → abort | ✅ | 注入第 2 片 500：抛 `StorageError`、自动 `DELETE` abort、对象不落桶（`stat` 612） |
+| 签名下载（含中文与空格的 key） | ✅ | `encodeKey` 的逐段百分号编码 + 签名与七牛真实验签一致（此前 ENG-03 遗留疑问，确认无需修改 `signedUrl`） |
+| `attname` 文件名 | ✅ | 响应含 `Content-Disposition: attachment` 且文件名正确（key 含空格/中文均可） |
+| 删除（含对象不存在） | ✅ | 存在对象删除成功；612 视为已删不报错 |
+| 过期签名 401 / 无 token 拒绝 | ⛔ 未验证 | **桶 `redith` 是公开空间（`private: 0`）**：token 被完全忽略，过期/无 token 一律 200。该项只在私有桶上可验证 |
+| 上传凭证真实验签 | ✅ | 上传在任何桶上都强制 UpToken，S1~S5 即真实验签通过 |
+
+要点与遗留：
+
+1. **上传域名**：引擎拼 `up-z0.qiniup.com`，实测可用（官方查询返回的规范名是 `upload.qiniup.com`，两者等价）。区域务必配置正确：`QINIU_REGION=z0`（`config.js` 缺省 `''` 会导致拼出非法域名 `up-.qiniup.com`，生产部署必须显式设置）。
+2. **待用户决策（handoff §4）**：产品要求私有空间（签名下载才有意义），`redith` 需改为私有（会影响桶内既有对象的公开直链——桶里已有其他实验项目的 `generated/video/*` 对象），或为本项目新建独立私有桶。桶转私前后一天内，本脚本 S6/S7 两项应重跑补验证（下载 token 的真实验签目前未在真实桶上确认过；签名算法本身有已知答案向量单测覆盖）。
+3. **CDN 缓存提醒**（桶转私有后需在七牛控制台确认）：若 CDN 域名的缓存 key 配置为「忽略参数」，带过期 token 的请求可能命中此前缓存的有效响应；私有内容建议缓存 key 含完整参数或对私有路径配置不缓存。
+4. **生产桶建议与 `redith` 隔离**：该桶已被其他项目使用，产品对象（形象图、作品视频）应使用独立桶或至少独立前缀，避免清理/权限互相影响。
+5. 管理接口（`stat`/`list`，QBox 旧版签名）在真实桶可用（脚本对账与清理已使用）；产品代码仍只依赖 `put / signedUrl / remove`。
