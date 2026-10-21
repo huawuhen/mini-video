@@ -84,6 +84,19 @@ export function loadConfig(env = process.env) {
       },
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
+    // 生成渠道（Modelhub，M0-02 接入）：密钥只从环境变量读取；真实调用须用户授权（AGENTS.md §6）。
+    // worker 尚未接线（M2-BE-01 按 M0 结论接入），当前消费方为 scripts/modelhub-smoke.js。
+    providers: {
+      modelhubBaseUrl: env.MODELHUB_BASE_URL || 'https://api.modelhub.cc',
+      modelhubApiKey: env.MODELHUB_API_KEY || '',
+      requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 30_000),
+      // 用户 2026-10-21 指定：视频 seedance-2.5、图片 gpt-image-2.5-flare；档位为最小成本冒烟默认
+      videoModel: env.GENERATION_VIDEO_MODEL || 'seedance-2.5',
+      videoResolution: env.GENERATION_VIDEO_RESOLUTION || '720p',
+      imageModel: env.GENERATION_IMAGE_MODEL || 'gpt-image-2.5-flare',
+      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k',
+      imageDetailLevel: env.GENERATION_IMAGE_DETAIL_LEVEL || 'medium',
+    },
   };
   if (production) {
     if (!env.DATABASE_URL) throw new Error('生产环境必须设置 DATABASE_URL');
