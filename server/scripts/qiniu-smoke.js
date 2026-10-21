@@ -217,9 +217,10 @@ async function main() {
       const expired = storage.signedUrl(keys.small, { ttlSeconds: 1 });
       await new Promise((resolve) => setTimeout(resolve, 2500));
       const response = await fetchT(expired);
-      const ok = response.status === 401;
+      // 七牛文档口径：凭证非法/过期典型返回 401；开启 CDN 回源鉴权的域名边缘也可能以 403 拒绝，两者都算「过期被拒」
+      const ok = [401, 403].includes(response.status);
       await finish(ledger, entry, { status: ok ? 'succeeded' : statusText(response) });
-      record('S6 过期签名链接 401', ok, `status=${response.status}（期望 401）`);
+      record('S6 过期签名链接被拒', ok, `status=${response.status}（期望 401/403）`);
     }
 
     // S7 无 token 访问 → 拒绝（确认桶为私有）

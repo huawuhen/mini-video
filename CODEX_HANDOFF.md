@@ -75,7 +75,7 @@
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
 | M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
-| M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | 待审查（8/10 通过；过期 401 / 无 token 拒绝因桶为公开空间无法验证，待用户决策，见 §4 第 7 条） | 2026-10-21 |
+| M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | 待审查（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
 | M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views` | `apps/web/**` | 进行中（契约补齐已提交，视图打磨中；与联调分属不同分支） | 2026-10-21 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -127,7 +127,7 @@
 4. 定价与 SKU 档位映射（M0 后给建议；当前为占位 mock 价：标准 0.20 元/秒、高清 0.40 元/秒、形象 0.50 元/个）。
 5. 生成式 AI 备案主体（M3）。
 6. 充值相关（PRD 6.4、§12 第 4 条）：（预设金额已决：50/100/500/1000 元，上限 1000 元）充值退款政策、易支付商户资质 / 结算周期 / 费率、真实小额联调的授权与金额上限。
-7. **（M2-OPS-02 联调发现，2026-10-21）七牛桶 `redith` 是公开空间（`private: 0`），且桶内已有其他实验项目的对象**（`generated/video/aiide-*`、`aimasker-*`、`autodl-*` 等）。产品要求私有空间 + 签名下载（否则过期 401、防盗链都不成立）。请选择：① 把 `redith` 改为私有（桶内旧对象的公开直链会失效，旧实验视频将无法无签名访问）；② 为本项目新建独立私有桶并绑定新 CDN 域名（Lead 推荐，与既有数据天然隔离，生产也建议独立桶）。决定后 Engine 重跑 `scripts/qiniu-smoke.js` 补验证「过期 401 / 无 token 拒绝」两项（当前 8/10，其余项全部通过，联调费用累计约 0.08 元）。
+7. ~~（M2-OPS-02 联调发现）七牛桶选择~~ **已决（2026-10-21，用户）**：新建**私有桶 `redith-h5` + CDN `cdnh5.redith.cn`**（HTTPS 证书、CDN 回源鉴权均已配置——回源鉴权是官方对「私有空间 + 自定义域名」的强制要求，须保留）。旧桶 `redith` 保持公开不动，桶内既有实验数据不受影响。Engine 已在该配置上重跑联调 **10/10 通过**（过期/无 token 均被 403 拒绝；详见 `server/src/engine/README.md` 联调结论）。生产环境变量：`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`（region 必须显式配置）。
 
 ## 5. 接口/跨域变更申请
 
@@ -171,6 +171,14 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-21 · Engine · M2-OPS-02 补充：切换私有桶 `redith-h5` 并全量通过（10/10）
+
+- **背景**：用户决策采用方案 ②——新建私有桶 `redith-h5` + CDN `cdnh5.redith.cn`（旧桶 `redith` 保持公开不动，桶内既有实验数据不受影响）。用户先后配好 HTTPS 证书并按官方要求开启 **CDN 回源鉴权**（私有空间 + 自定义域名必须开启，见七牛《私有空间的注意事项》）。
+- **改动**：`server/scripts/qiniu-smoke.js`（S6 断言放宽为 401/403 都算「过期被拒」——回源鉴权模式下拒绝码为 403）、`server/src/engine/README.md`（联调结论更新为最终版：生产桶配置 + 10/10 结果 + 三条运维要点）、`CODEX_HANDOFF.md`（§2/§4/§7）。本机 `server/.env` 已切换为 `QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`（不入库）。
+- **验证结果**：私有桶 + HTTPS + 回源鉴权上 **10/10 全部通过**，过期/无 token 均被 403 正确拒绝；测试对象清理后剩余 0。账本估算累计 36 分（≈0.36 元），远低于 16 元停止线。产品代码（`storage/qiniu.js`）零改动。
+- **排障记录（运维要点）**：绑定证书、开启回源鉴权后曾出现几分钟**全量 403**（含带有效签名的请求）——是控制台配置分钟级部署延迟，等待后自愈；已写入 README 要点，避免未来误判为代码问题。另：下载凭证签名覆盖完整 URL（含 scheme+host），**换域名必须重新生成签名链接**。
+- **遗留**：无。生产部署清单须含 `QINIU_REGION=z0`（config 缺省空值会拼出非法上传域名，README 要点 1）。
 
 ### 2026-10-21 · Engine · M2-OPS-02 七牛真实桶联调
 
