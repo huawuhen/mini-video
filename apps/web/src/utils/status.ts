@@ -1,4 +1,4 @@
-import type { AgeGroup, Gender, ProjectGroup, ProjectStatus, Ratio, TakeStatus, GenStatus } from '@/api/types';
+import type { AgeGroup, Gender, ProjectGroup, ProjectStatus, TakeStatus, GenStatus } from '@/api/types';
 
 type Tone = 'primary' | 'success' | 'warning' | 'danger' | 'default';
 export const projectStatusMeta: Record<ProjectStatus, { label: string; tone: Tone }> = {
@@ -60,6 +60,3 @@ export const isWorkingStatus = (s: ProjectStatus) => ['understanding', 'casting'
 
 export const genderLabel: Record<Gender, string> = { female: '女', male: '男', unknown: '' };
 export const ageLabel: Record<AgeGroup, string> = { child: '儿童', teen: '少年', young: '青年', middle: '中年', elder: '老人' };
-
-/** 画幅的中文名（UI.md §1 零参数：界面不出现分辨率式参数，只显示业务名）。 */
-export const ratioLabel: Record<Ratio, string> = { '9:16': '竖屏', '16:9': '横屏', '1:1': '方形' };

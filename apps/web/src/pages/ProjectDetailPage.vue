@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // 作品详情（docs/UI.md §5）：顶部五步进度，按状态切换视图；暂停/失败/取消显示状态卡片。
-import { computed, ref } from 'vue';
+import { computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showToast } from 'vant';
 import { api, type ProjectDetail } from '@/api';
@@ -9,7 +9,6 @@ import StatusTag from '@/components/StatusTag.vue';
 import { useBreakpoint } from '@/composables/useBreakpoint';
 import { useProjectLive } from '@/composables/useProjectLive';
 import { useCatalogStore } from '@/stores/catalog';
-import { ratioLabel } from '@/utils/status';
 import CastReviewView from './project/CastReviewView.vue';
 import DeliveryView from './project/DeliveryView.vue';
 import ProducingView from './project/ProducingView.vue';
@@ -23,7 +22,6 @@ const catalogStore = useCatalogStore();
 catalogStore.load();
 const projectId = computed(() => String(route.params.id));
 const { project, error, refresh } = useProjectLive(projectId);
-const techOpen = ref<string[]>([]); // 「技术详情」折叠区：内部 ID 与错误码只放这里（UI.md §1）
 
 /** 暂停时按暂停前的状态展示内容 */
 const viewStatus = computed(() => (project.value?.status === 'paused' ? project.value.pausedFrom : project.value?.status));
@@ -60,7 +58,7 @@ function onUpdated(p: ProjectDetail) { project.value = p; }
           <h1>{{ project.title || '新作品' }}</h1>
           <StatusTag :status="project.status" />
         </div>
-        <p class="miv-hint">{{ catalogStore.styleName(project.styleId) }} · {{ catalogStore.tierName(project.qualityTierId) }} · {{ ratioLabel[project.ratio] }}</p>
+        <p class="miv-hint">{{ catalogStore.styleName(project.styleId) }} · {{ catalogStore.tierName(project.qualityTierId) }} · {{ project.ratio }}</p>
       </header>
 
       <div class="body">
@@ -84,7 +82,7 @@ function onUpdated(p: ProjectDetail) { project.value = p; }
             <div>
               <strong>{{ project.error?.message || '制作遇到问题' }}</strong>
               <p class="miv-hint">已完成的部分会保留，重试不会重复扣费。</p>
-              <van-collapse v-model="techOpen" :border="false" class="tech">
+              <van-collapse :model-value="[]" :border="false" class="tech">
                 <van-collapse-item title="技术详情" name="tech" :border="false">{{ project.error?.code }} · {{ project.id }}</van-collapse-item>
               </van-collapse>
             </div>

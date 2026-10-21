@@ -74,15 +74,7 @@ export interface ProjectSummary {
   coverUrl?: string; durationSeconds?: number; progress: Progress; expiresAt?: string;
   createdAt: string; updatedAt: string;
 }
-export interface StoryResult {
-  inputKind: 'script' | 'idea';    // 用户输入被判定为剧本还是一句话想法
-  expanded: boolean;               // 一句话想法是否已被 AI 编剧扩写成剧本
-  script: string;                  // 确认点 A 展示并可编辑的剧本全文（扩写结果或用户原文的整理版）
-  synopsis: string;                // AI 整理后的故事梗概
-  totalSeconds: number; segmentCount: number;
-  compressed: boolean;             // 超过最长时长被精简
-  notice?: string;                 // 如「故事较长，已为您精简为 90 秒」
-}
+export interface StoryResult { synopsis: string; totalSeconds: number; segmentCount: number; compressed: boolean; notice?: string }
 export type Gender = 'female' | 'male' | 'unknown';
 export type AgeGroup = 'child' | 'teen' | 'young' | 'middle' | 'elder';
 export interface CastMember {
