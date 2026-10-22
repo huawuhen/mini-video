@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-10-21T08:45:49.156Z",
-  "totalEstimatedFen": 206,
+  "updatedAt": "2026-10-21T09:58:40.275Z",
+  "totalEstimatedFen": 2358,
   "entries": [
     {
       "at": "2026-10-21T07:48:26.022Z",
@@ -103,6 +103,216 @@
       "elapsedMs": 1466637,
       "artifact": "server/.data/m0/video-1792572349152.mp4",
       "bytes": 5488035
+    },
+    {
+      "at": "2026-10-21T09:44:01.885Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575863345.png",
+      "bytes": 1257419,
+      "elapsedMs": 21459
+    },
+    {
+      "at": "2026-10-21T09:44:23.454Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575881810.png",
+      "bytes": 1094557,
+      "elapsedMs": 18358
+    },
+    {
+      "at": "2026-10-21T09:44:41.919Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575901978.png",
+      "bytes": 1191778,
+      "elapsedMs": 20064
+    },
+    {
+      "at": "2026-10-21T09:45:02.089Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575921254.png",
+      "bytes": 873626,
+      "elapsedMs": 19166
+    },
+    {
+      "at": "2026-10-21T09:45:21.359Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575946802.png",
+      "bytes": 1382714,
+      "elapsedMs": 25445
+    },
+    {
+      "at": "2026-10-21T09:45:46.904Z",
+      "channel": "modelhub",
+      "kind": "image",
+      "model": "gpt-image-2.5-flare",
+      "params": {
+        "resolution": "1k",
+        "detail": "medium",
+        "ratio": "3:4",
+        "reference": null
+      },
+      "estimatedFen": 23,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792575965892.png",
+      "bytes": 1175864,
+      "elapsedMs": 18991
+    },
+    {
+      "at": "2026-10-21T09:47:24.131Z",
+      "channel": "modelhub",
+      "kind": "video",
+      "model": "seedance-2.5",
+      "params": {
+        "resolution": "480p",
+        "ratio": "9:16",
+        "seconds": 4,
+        "imageRefs": 1,
+        "audioRefs": 0,
+        "tailRef": 0
+      },
+      "estimatedFen": 156,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "04096b31-0eb3-43da-89ce-f69076a795b5",
+      "artifact": "server/.data/m0/video-1792576268555.mp4",
+      "bytes": 4485506,
+      "elapsedMs": 224428
+    },
+    {
+      "at": "2026-10-21T09:47:30.000Z",
+      "channel": "modelhub",
+      "kind": "video",
+      "model": "seedance-2.5",
+      "params": {
+        "resolution": "720p",
+        "ratio": "9:16",
+        "seconds": 8,
+        "imageRefs": 0,
+        "audioRefs": 0,
+        "tailRef": 0
+      },
+      "estimatedFen": 376,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "bfa52af0-ecc2-435e-9eb6-dc93d2748111",
+      "note": "条目重建：与 V1 进程并发写账本被覆盖丢失；提交本身成功",
+      "artifact": "server/.data/m0/video-1792576545429.mp4",
+      "bytes": 16599403
+    },
+    {
+      "at": "2026-10-21T09:54:09.369Z",
+      "channel": "modelhub",
+      "kind": "video",
+      "model": "seedance-2.5",
+      "params": {
+        "resolution": "480p",
+        "ratio": "9:16",
+        "seconds": 30,
+        "imageRefs": 1,
+        "audioRefs": 1,
+        "tailRef": 0
+      },
+      "estimatedFen": 1170,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "c68a1e20-6ac4-42ad-9b45-0d0986adcccf",
+      "artifact": "server/.data/m0/video-1792576720264.mp4",
+      "bytes": 22295440
+    },
+    {
+      "at": "2026-10-21T09:54:51.268Z",
+      "channel": "modelhub",
+      "kind": "video",
+      "model": "seedance-2.5",
+      "params": {
+        "resolution": "480p",
+        "ratio": "9:16",
+        "seconds": 4,
+        "imageRefs": 1,
+        "audioRefs": 0,
+        "tailRef": 1
+      },
+      "estimatedFen": 156,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "f1ac4256-cde9-4220-8c35-5c467aebae5d",
+      "artifact": "server/.data/m0/video-1792576711945.mp4",
+      "bytes": 4551165
+    },
+    {
+      "at": "2026-10-21T09:54:53.356Z",
+      "channel": "modelhub",
+      "kind": "video",
+      "model": "seedance-2.5",
+      "params": {
+        "resolution": "480p",
+        "ratio": "9:16",
+        "seconds": 4,
+        "imageRefs": 1,
+        "audioRefs": 1,
+        "tailRef": 0
+      },
+      "estimatedFen": 156,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "27095eee-306a-4103-98ce-077ff8f38c9a",
+      "artifact": "server/.data/m0/video-1792576715297.mp4",
+      "bytes": 2770367
     }
   ]
 }

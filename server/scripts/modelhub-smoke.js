@@ -5,7 +5,10 @@
 //   node --env-file=.env scripts/modelhub-smoke.js image [--resolution 1k] [--detail low] [--ratio 1:1]
 //        [--reference <图片文件>] [--prompt <文本>]
 //   node --env-file=.env scripts/modelhub-smoke.js video [--seconds 4] [--resolution 480p] [--ratio 9:16]
-//        [--prompt <文本>] [--timeout <秒>]
+//        [--prompt <文本>] [--timeout <秒>] [--image <本地文件|URL>]… [--audio <本地文件|URL>]…
+//        [--tail <本地文件|URL>] [--no-wait]
+//   本地参考素材会先上传七牛（miv-test/m0/ 前缀，签名链接 TTL 6 小时，用后随 miv-test/ 清理）；
+//   --no-wait 提交即退出（打印 taskId），之后用 video-query 收割，便于并行排队多个任务。
 // 产物（图片/视频字节）落 server/.data/m0/（.gitignore 已忽略）；账本与目录快照落 docs/m0/
 // （只记渠道、模型、参数、估算费用，不含密钥与上游临时链接）。
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -14,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
 import { createModelhubTransport, createModelhubImageAdapter, createSeedance25Adapter } from '../src/engine/providers/index.js';
+import { createQiniuStorage } from '../src/engine/storage/qiniu.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 
 const STOP_LIMIT_FEN = 27_000; // 270 元 = 授权上限 300 元的 90%
@@ -33,10 +37,12 @@ const ledgerPath = path.join(m0Dir, 'cost-ledger.json');
 const argv = process.argv.slice(2);
 const command = argv[0];
 const options = {};
+const REPEATABLE_KEYS = ['image', 'audio']; // 参考素材可传多次：--image a.png --image b.png
 for (let i = 1; i < argv.length; i += 1) {
   if (!argv[i].startsWith('--')) continue;
   const [key, value = 'true'] = argv[i].slice(2).split('=');
   if (value !== 'true') options[key] = value;
+  else if (REPEATABLE_KEYS.includes(key)) (options[key] ??= []).push(argv[++i]);
   else if (argv[i + 1] && !argv[i + 1].startsWith('--')) options[key] = argv[++i];
   else options[key] = true;
 }
@@ -108,6 +114,26 @@ async function download(url, maxBytes) {
   const chunks = [];
   for await (const chunk of response.stream) chunks.push(chunk);
   return { buffer: Buffer.concat(chunks), contentType: response.contentType };
+}
+
+// 参考素材：本地文件先上传七牛再以签名链接提交（与产品提交链路同款，M2-OPS-02 已验证）；
+// http(s) 地址直接透传。key 前缀 miv-test/m0/（用户 2026-10-21：七牛联调对象一律 miv-test/，用后清理）。
+// 账本只记数量，不记链接（含 token）。签名 TTL 6 小时，覆盖轮询上限（与 BE-05 的提交口径一致）。
+const REFERENCE_CONTENT_TYPES = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp', mp3: 'audio/mpeg', m4a: 'audio/mp4', wav: 'audio/wav' };
+let referenceStorage;
+async function toReferenceUrl(value) {
+  if (/^https?:\/\//i.test(value)) return value;
+  const q = loadConfig().storage.qiniu;
+  if (!q.accessKey || !q.secretKey || !q.bucket || !q.domain) {
+    throw new Error('本地参考素材需上传七牛：缺少 QINIU_ACCESS_KEY / SECRET_KEY / BUCKET / DOMAIN。');
+  }
+  referenceStorage ??= createQiniuStorage({ ...q, region: q.region || 'z0' });
+  const file = path.resolve(value);
+  const buffer = await readFile(file);
+  const key = `miv-test/m0/${Date.now()}-${path.basename(file)}`;
+  await referenceStorage.put(key, buffer, { contentType: REFERENCE_CONTENT_TYPES[path.extname(file).slice(1).toLowerCase()] ?? 'application/octet-stream' });
+  console.log(`参考素材已上传七牛：${key}（${buffer.length} 字节）`);
+  return referenceStorage.signedUrl(key, { ttlSeconds: 6 * 3600 });
 }
 
 async function saveArtifact(ledger, entry, { buffer, contentType }) {
@@ -185,8 +211,16 @@ async function main() {
       throw new Error(`未知单价（${resolution}）：目录可能已调价，请先跑 models 更新单价表。`);
     }
     const adapter = createSeedance25Adapter(transport);
-    const prepared = adapter.prepare({ prompt, durationSeconds: seconds, ratio }, { resolution });
-    const { ledger, entry } = await reserve('video', 'seedance-2.5', { resolution, ratio, seconds }, unit * seconds);
+    const imageRefs = [];
+    for (const item of options.image ?? []) imageRefs.push(await toReferenceUrl(item));
+    const audioRefs = [];
+    for (const item of options.audio ?? []) audioRefs.push(await toReferenceUrl(item));
+    const tailRef = options.tail ? await toReferenceUrl(options.tail) : undefined;
+    const prepared = adapter.prepare({ prompt, durationSeconds: seconds, ratio,
+      imageRefs, audioRefs, tailRef }, { resolution });
+    const { ledger, entry } = await reserve('video', 'seedance-2.5',
+      { resolution, ratio, seconds, imageRefs: imageRefs.length, audioRefs: audioRefs.length, tailRef: tailRef ? 1 : 0 },
+      unit * seconds);
     const startedAt = Date.now();
     try {
       const submitted = await adapter.submit(prepared, { idempotencyKey: `m0-smoke-${startedAt}` });
@@ -199,6 +233,10 @@ async function main() {
       entry.taskId = submitted.upstreamId;
       await writeLedger(ledger);
       console.log(`已提交任务 ${submitted.upstreamId}，每 ${config.projects.genPollIntervalSeconds} 秒轮询，上限 ${timeoutSeconds} 秒…`);
+      if (options['no-wait']) {
+        console.log(`--no-wait：提交完成即退出，稍后用 video-query --task ${submitted.upstreamId} 收割。`);
+        return;
+      }
       const deadline = Date.now() + timeoutSeconds * 1000;
       for (;;) {
         await new Promise((resolve) => setTimeout(resolve, config.projects.genPollIntervalSeconds * 1000));

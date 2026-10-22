@@ -74,8 +74,8 @@
 | M1-ENG-03 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-03-infra` | `server/src/engine/{net,storage,transfer,extract}/**` `server/src/{app.js,worker.js,queue/cron.js,db/ids.js}` `server/test/engine/**` | ✅ 完成（Lead 第四轮复审通过并合并） | 2026-10-17 |
 | M1-ENG-04 | Engine（本机开发 Agent） | `agent/eng/M1-ENG-04-skills` | `server/src/engine/skills/**` `server/src/engine/story/**` `server/src/engine/README.md` `server/test/engine/**` | ✅ 完成（Lead 复审通过并合并 `6daa673`） | 2026-10-19 |
 | M1-RND-01 | Render（本机开发 Agent） | `agent/render/M1-RND-01-compose` | `server/src/render/**` `server/test/render/**` | ✅ 完成（Lead 复审通过并合并 `fddb5df`） | 2026-10-20 |
-| M0-02（渠道接入部分：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | 待审查（真实冒烟通过；M0-02 完整验证项另行推进） | 2026-10-21 |
-| M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | 待审查（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
+| M0-02（渠道接入 + 完整验证：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | ✅ 完成（Lead 审查通过并合并）（完整验证完成，报告 `docs/m0/report.md`；估算累计 23.58 元 / 上限 300 元） | 2026-10-21 |
+| M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | ✅ 完成（Lead 审查通过并合并）（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
 | M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views` | `apps/web/**` | 进行中（契约补齐已提交，视图打磨中；与联调分属不同分支） | 2026-10-21 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
@@ -186,6 +186,21 @@
 - **改动**：`server/scripts/qiniu-smoke.js`（新增，8 步清单 + 费用账本 + 自动清理）、`server/src/engine/README.md`（联调结论）、`CODEX_HANDOFF.md`（认领/待确认/本记录）。**产品代码零改动**——`signedUrl` 的逐段百分号编码与签名在真实桶验签通过，ENG-03 遗留疑问解除，无需调整。
 - **验证结果**（真实桶，费用估算累计 8 分 ≈ 0.08 元，远低于停止线）：表单上传、分片上传 v2（10MiB 范围读校验）、分片失败 abort（DELETE 已调用、对象不落桶）、中文/空格 key 上传下载、`attname` 生效、删除含 612 不报错、上传凭证真实验签——全部通过；测试对象已清理（含对方既有对象未触碰）。**未验证 2 项**：过期签名 401、无 token 拒绝——桶是**公开空间**，token 被忽略；且桶内已有其他项目对象，转私有影响旧直链，已列入 §4 第 7 条待用户决策。另发现 `config.js` 的 `QINIU_REGION` 缺省 `''` 会拼出非法上传域名，生产部署必须显式配置（已写进 README 要点）。
 - **风险/后续**：桶转私有后重跑脚本补 S6/S7；CDN 缓存 key 若「忽略参数」需在控制台调整（README 要点 3）；M0-02 的「七牛签名链接作视频参考」不受公开桶影响（上传/读取链路已验证），照常推进。
+
+### 2026-10-21 · Engine · M0-02 完整验证（TASKS ①~⑦）
+
+- **背景**：在渠道接入（见下一条）基础上推进 M0-02 完整验证，用户 2026-10-21 再次确认「继续推进」。同日 M2-OPS-02 七牛联调完成，本次验证把两条线打通：**所有图片/音频/尾帧参考均经七牛 `miv-test/m0/` 上传 + 签名链接（TTL 6 小时）提交**，即 handoff §6 审查遗留项「七牛签名链接作视频参考」在真实渠道验证通过，且与产品（BE-05）提交链路同款。分支同 `agent/eng/M0-02-modelhub-channel`。
+- **改动**：`server/scripts/modelhub-smoke.js`（video 子命令新增 `--image/--audio/--tail` 本地文件自动上传七牛转签名链接、`--no-wait` 提交即返回 + `video-query` 收割，便于并行排队；账本只记数量不记链接）、`docs/m0/report.md`（新增完整验证报告）、`docs/m0/cost-ledger.json`（追加 12 条）、`CODEX_HANDOFF.md`（本记录与 §2 状态）。
+- **验证结果**（估算累计 2358 分 = 23.58 元，远低于 270 元停止线；5 条样片全成功，均 60fps 带音轨）：
+  1. 六风格形象全出（flare 1k/medium/3:4，同一人设）：风格差异鲜明、人设保持；flare 复杂提示词 adherence 有小偏差（写实版多出婴儿头部），生产提示词应只写主体。
+  2. **30 秒多镜头 ✅**：30.02s 整段被上游接受；5 镜头时间线（叠衣→T 恳特写→敲门喊娃→娃跑过→沙发）逐点抽帧全部对应，人物跨镜头一致，台词口型开合。**30s 段无需切分**。
+  3. **尾帧衔接 ✅**：V1 尾帧经七牛签名链接作 `图1`，V2 首帧与 V1 尾帧几乎逐像素一致、动作自然延续——产品「接上段尾帧」按普通参考图即可用。
+  4. **音色参考跨片段 ✅（听感待人耳复听）**：V1 台词音轨抽 mp3 → V4/V5 作 `audio_file_1`，口型同步正常；「是否同一声音」需用户复听样片（`server/.data/m0/`）。
+  5. 时长/分辨率：4/8/30s 精确（±0.02s）；480p=480×854、720p=720×1280 竖屏正确；seedance 时长 4~30s 整数、图上限 30、音频上限 10。
+  6. 成本：480p=0.39、720p=0.47 元/秒线性无溢价；形象 0.23 元/张。**PRD 占位售价（标准 0.20 元/s）低于成本，必须调价**——报告给出 SKU 建议（标准=480p 售 0.5 元/s、高清=720p 售 0.7~0.8 元/s），待 Lead/用户决策。
+  7. **排队时间波动大**：白天 44 分钟 vs 晚间 3~7 分钟——「制作中」文案按分钟~小时级；120 分钟轮询上限建议做成配置并在 80% 预警（M2-BE-01）。
+- **坑与流程教训**：① `cost-ledger.json` 是 read-modify-write，**两个冒烟进程并发会丢条目**（V6 的 376 分条目被 V1 覆盖，已手工重建并注明）——冒烟/收割必须单进程顺序执行；② 参考素材经七牛中转后，本机代理 fake-IP 问题不再影响提交侧（上游从公网拉取）。
+- **未完成/风险**：1080p 未实测（30s 需 84 元，留待有真实需求小样）；音色听感、LLM 单次成本（⑥，随 M2-BE-01）待补；渠道后台实际账单待对账（估算口径）。
 
 ### 2026-10-21 · Engine · M0-02 渠道接入（Modelhub seedance-2.5 + gpt-image-2.5-flare）
 
