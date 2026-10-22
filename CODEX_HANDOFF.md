@@ -77,7 +77,7 @@
 | M0-02（渠道接入 + 完整验证：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | ✅ 完成（Lead 审查通过并合并）（完整验证完成，报告 `docs/m0/report.md`；估算累计 23.58 元 / 上限 300 元） | 2026-10-21 |
 | M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | ✅ 完成（Lead 审查通过并合并）（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
 | M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views`（worktree `~/Documents/mini-video-web01`） | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | ✅ 完成（Lead 审查通过并合并）（视图打磨完成，check/build 过，375/1280 走查过） | 2026-10-21 |
-| M2-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-01-real-upstreams` | `server/src/worker.js` `server/src/config.js` `server/src/engine/{llm,providers}/**` `server/src/queue/{cron.js,price-audit.js}` `server/src/projects/{segment.js,service.js}` `server/src/characters/service.js` `server/migrations/004-real-skus.sql` `server/scripts/e2e-real.js` `server/.env.example` `server/test/**`（金额口径与新增用例） | 待审查（真实接入全部完成；真实端到端脚本已就绪，图片提交被开发机代理环境阻断待重跑，见 §7） | 2026-10-22 |
+| M2-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-01-real-upstreams` | `server/src/worker.js` `server/src/config.js` `server/src/engine/{llm,providers}/**` `server/src/queue/{cron.js,price-audit.js}` `server/src/projects/{segment.js,service.js}` `server/src/characters/service.js` `server/migrations/00{4,5}*.sql` `server/scripts/{e2e-real.js,modelhub-smoke.js}` `server/.env.example` `server/test/**`（金额口径与新增用例） | 待审查（真实接入全部完成；图片模型已按用户指示换 gpt-image-2 并真实冒烟通过；端到端等商家侧恢复后重跑，见 §7） | 2026-10-22 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -88,6 +88,7 @@
 
 | 日期 | 决策 | 来源 |
 |---|---|---|
+| 2026-10-22 | **图片模型由 gpt-image-2.5-flare 更换为 gpt-image-2**（同渠道 Modelhub）：适配器按官网参数页与实时目录改为同形态（独立 resolution 字段 + low/medium/high 档位，另有 image_count 1-4 产品固定 1 张）；SKU `image.flare.1k` → `image.gpt2.1k`（迁移 005，成本 23→21 分/张，**售价维持 50 分**），flare 下线但适配器保留可随时切回。真实冒烟通过（文生图 + 参考图合成各 1 张，1k/low 9 分/张）。 | 用户 |
 | 2026-10-22 | ① **SKU 定价**：标准档=seedance-2.5 **480p，售价 0.8 元/秒**（80 分）；高清档=**720p，售价 1.5 元/秒**（150 分）；渠道成本 39/47 分/秒（以实时目录为准，调价须报警）；90 秒成片标准 72 元、高清 135 元；1080p 首批不开放；形象图售价维持 0.5 元/个（成本 0.23）。需新迁移写入真实 SKU 与档位映射替换 mock 占位（含 `cost_fen`），属 M2-BE-01。② **音色一致性复听通过**（用户听感：像同一个人），同一音色参考跨片段方案成立，TTS 备选方案不启动 | 用户 |
 | 2026-10-21 | ① 智谱 Coding Plan 用于产品后端的合规问题，用户决定不予考虑；② **七牛联调（M2-OPS-02）授权**：桶 `redith`，累计费用上限 **20 元**（采纳 Lead 建议），key 前缀 `miv-test/`，联调后清理测试对象；密钥只放开发设备 env，不入库不进日志；达 16 元停止并汇报 | 用户 |
 | 2026-10-21 | **生成渠道与存储选型**：视频 Modelhub `seedance-2.5`、图片 `gpt-image-2.5-flare`（M0-02 已接入并真实冒烟）；**文本 LLM 用智谱中国区 Coding Plan API**（信息已由用户交给开发 Agent，仅记录、暂不写代码，接入属 M2-BE-01）；**七牛桶 `redith`，已绑定 CDN 域名 `cdn.redith.cn`**（联调用该桶，key 前缀须隔离如 `miv-test/`；AK/SK 只放开发设备 env）。七牛联调费用上限待用户给出（Lead 建议 20 元）。Lead 提醒：智谱 Coding Plan 通常限定用于编码工具，用于产品后端是否合规请用户向智谱确认，必要时改用按量 API | 用户 |
@@ -176,6 +177,14 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-22 · BE-Core · M2-BE-01 补充：图片模型更换为 gpt-image-2（用户指示）
+
+- **背景**：用户要求图片模型由 gpt-image-2.5-flare 更换为 gpt-image-2，并用 ego-browser 核对 modelhub 官网模型页参数。同分支追加提交，SKU 决策见 §3 2026-10-22。
+- **改动**：`server/src/engine/providers/modelhub-image.js`（gpt-image-2 条目按 2026-10-22 实时目录改为与 flare 同形态：`resolutionField` 开关，resolution 1k/2k/4k、quality/detail_level low/medium/high、ratio 含 auto；旧「quality=分辨率」形态只剩 nano-banana-2 使用）、`server/src/config.js`（`imageModel` 缺省 gpt-image-2，顺带去重注释行）、`server/.env.example`、`server/migrations/005-image-sku-gpt2.sql`（新增 `image.gpt2.1k` 成本 21、下线 `image.flare.1k`、`look_image_sku_code` 切换；004 已应用不可回改）、`server/scripts/modelhub-smoke.js`（价格表按模型区分，`--model` 可覆盖、缺省取 config）、`docs/m0/channel-modelhub.md`（§7 补充）。
+- **测试口径**：`providers.test.js`（gpt-image-2 断言改新形态；原「非法分辨率」用例 `2k` 在新条目下已合法，改用 `512p`）、`wallet.test.js`（模拟调价 SKU 指向 `image.gpt2.1k`）、`assets.test.js`（skuCode 断言）、`cron.test.js`（调价对账假目录 gpt-image-2 1k/medium=21）。
+- **验证**：`node --test test/engine/providers.test.js` 14/14；`npm run test:server` **247/247**（迁移 005 已应用到测试库）。真实冒烟（账本 2×9 分）：gpt-image-2 1k/low 文生图 ✅ 与 compositions 参考图合成 ✅（各约 20 秒，1024×1024，换姿势后人物一致性良好；上游仍路由 PixVerse）。渠道当日堆积已恢复、本机代理已退出，下载未再触发 fake-IP 绕行。
+- **未完成 / 风险**：端到端仍等商家侧恢复后重跑 `e2e-real.js`（--resume 续跑）；flare 相关历史记录与 004 迁移保持原文（历史事实）；`look_versions` 表中既有 flare 任务（若有 unknown 冻结）对账口径不变。
 
 ### 2026-10-22 · BE-Core · M2-BE-01 真实上游接入（Modelhub / 智谱 / 七牛、真实 SKU、对账与 failed 清理）
 
