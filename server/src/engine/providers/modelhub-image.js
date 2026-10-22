@@ -3,9 +3,13 @@
 import { ProviderError, submitSafely } from './transport.js';
 
 const MODELS = Object.freeze({
-  'gpt-image-2': { ratios: ['1:1', '16:9', '9:16', '4:3', '3:4'],
-    resolutions: ['1080p', '1440p', '2160p'], detailLevels: ['low', 'medium', 'high'],
-    defaultRatio: '1:1', defaultResolution: '1080p', defaultDetailLevel: 'medium', maxImages: 1 },
+  // 2026-10-21 实测目录与官网参数页：gpt-image-2 与 flare 同形态——分辨率走独立 resolution
+  // 字段（1k/2k/4k，兼容 1080p/1440p/2160p 写法），quality/detail_level 为档位（本模型上限 high）。
+  // ratio 目录默认 auto，产品形象照固定 1:1；image_count（1-4）产品固定 1 张，不发送。
+  'gpt-image-2': { ratios: ['auto', '1:1', '16:9', '9:16', '4:3', '3:4'],
+    resolutions: ['1k', '2k', '4k'], detailLevels: ['low', 'medium', 'high'],
+    defaultRatio: '1:1', defaultResolution: '1k', defaultDetailLevel: 'medium', maxImages: 1,
+    resolutionField: true },
   'nano-banana-2': { ratios: ['auto', '1:1', '16:9', '9:16', '4:3', '3:4', '5:4', '4:5', '3:2', '2:3', '21:9'],
     resolutions: ['512p', '1080p', '1440p', '2160p'], detailLevels: ['default'],
     defaultRatio: 'auto', defaultResolution: '512p', defaultDetailLevel: 'default', maxImages: 1 },
