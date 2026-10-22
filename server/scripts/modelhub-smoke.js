@@ -21,11 +21,20 @@ import { createQiniuStorage } from '../src/engine/storage/qiniu.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 
 const STOP_LIMIT_FEN = 27_000; // 270 元 = 授权上限 300 元的 90%
-// 2026-10-21 实测目录单价（分）：图片按张（随分辨率与档位），视频按秒。目录若调价，先更新此处再冒烟。
-const FLARE_PRICE = {
-  '1k': { low: 10, medium: 23, high: 33, xhigh: 45, max: 80 },
-  '2k': { low: 17, medium: 30, high: 44, xhigh: 60, max: 120 },
-  '4k': { low: 22, medium: 37, high: 60, xhigh: 85, max: 150 },
+// 实测目录单价（分）：图片按张（随模型、分辨率与档位），视频按秒。目录若调价，先更新此处再冒烟。
+const IMAGE_PRICES = {
+  // gpt-image-2（2026-10-22 实时目录；档位上限 high）
+  'gpt-image-2': {
+    '1k': { low: 9, medium: 21, high: 30 },
+    '2k': { low: 15, medium: 28, high: 40 },
+    '4k': { low: 20, medium: 35, high: 55 },
+  },
+  // gpt-image-2.5-flare（2026-10-21 实时目录；档位到 max，官网另有会员折扣）
+  'gpt-image-2.5-flare': {
+    '1k': { low: 10, medium: 23, high: 33, xhigh: 45, max: 80 },
+    '2k': { low: 17, medium: 30, high: 44, xhigh: 60, max: 120 },
+    '4k': { low: 22, medium: 37, high: 60, xhigh: 85, max: 150 },
+  },
 };
 const SEEDANCE_PRICE_PER_SECOND = { '480p': 39, '720p': 47, '1080p': 280 };
 
@@ -164,14 +173,15 @@ async function main() {
   }
 
   if (command === 'image') {
+    const model = options.model ?? config.providers.imageModel;
     const resolution = options.resolution ?? config.providers.imageResolution;
     const detail = options.detail ?? config.providers.imageDetailLevel;
     const ratio = options.ratio ?? '1:1';
     const prompt = options.prompt
       ?? '数字人形象照：年轻女性正面半身像，浅色清新背景，柔和自然光，写实风格';
-    const estimatedFen = FLARE_PRICE[resolution]?.[detail];
+    const estimatedFen = IMAGE_PRICES[model]?.[resolution]?.[detail];
     if (!Number.isInteger(estimatedFen)) {
-      throw new Error(`未知价格（${resolution}/${detail}）：目录可能已调价，请先跑 models 更新单价表。`);
+      throw new Error(`未知价格（${model} ${resolution}/${detail}）：目录可能已调价，请先跑 models 更新单价表。`);
     }
     const referencePath = options.reference ? path.resolve(options.reference) : null;
     const loadReference = referencePath ? async () => ({
@@ -179,10 +189,10 @@ async function main() {
       contentType: CONTENT_TYPES[path.extname(referencePath).slice(1).toLowerCase()] ?? 'image/png',
       name: path.basename(referencePath),
     }) : undefined;
-    const adapter = createModelhubImageAdapter({ transport, model: 'gpt-image-2.5-flare', loadReference, logger: console });
+    const adapter = createModelhubImageAdapter({ transport, model, loadReference, logger: console });
     const prepared = adapter.prepare({ promptHint: prompt, description: '', ratio, detailLevel: detail,
       referenceKeys: referencePath ? ['reference'] : [] }, { resolution });
-    const { ledger, entry } = await reserve('image', 'gpt-image-2.5-flare',
+    const { ledger, entry } = await reserve('image', model,
       { resolution, detail, ratio, reference: referencePath ? path.basename(referencePath) : null }, estimatedFen);
     const startedAt = Date.now();
     try {
