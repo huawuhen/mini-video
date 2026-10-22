@@ -334,6 +334,7 @@ export async function confirmStory(db, { userId, projectId, quoteId, idempotency
             storageKey: `users/${userId}/looks/${versionId}`,
             amountFen: imageSku[0].price_fen, promptHint: styleRows[0]?.prompt_hint ?? '',
             description: member.description ?? '', referenceKeys: photos.map((row) => row.storage_key),
+            skuCode: imageSku[0].sku_code, // M2-BE-01：look.generate 按此解析真实分辨率（ENG-02 遗留项）
           }), replayKey],
         );
         await t.query(
@@ -621,6 +622,7 @@ export async function retryProject(db, { userId, projectId }) {
             promptHint: original.promptHint ?? styleRows[0]?.prompt_hint ?? '',
             description: original.description ?? '',
             referenceKeys: original.referenceKeys ?? [],
+            skuCode: original.skuCode ?? imageSku[0].sku_code, // 与失败版本同 SKU，保持生成一致
           }), `project:${projectId}:look:${member.cast_id}:${member.failed_version_id}`],
         );
         await t.query(

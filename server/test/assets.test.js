@@ -531,6 +531,22 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(task.provider, 'mock-image', 'provider 记录真实注入实现的 id');
   });
 
+  test('M2-BE-01：gen_tasks.request 带 skuCode，look.generate 按它解析分辨率传给 provider', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 200, frozen_fen = 0 WHERE user_id = $1`, [A.userId]);
+    const chr = await (await post(base, '/characters', { name: 'SKU 解析', description: '6 岁女孩，短发' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: chr.id, styleId: 'picture_book' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    await post(base, `/characters/${chr.id}/looks/picture_book/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-sku-001' }, { cookie: A.cookie, csrf: A.csrf });
+    const request = (await ctx.db.query(
+      `SELECT request FROM gen_tasks WHERE idempotency_key LIKE '%look-sku-001'`)).rows[0].request;
+    assert.equal(request.skuCode, 'image.flare.1k', '下单时把 sku_code 写进 request（M2-BE-01）');
+    const local = mockImageProvider();
+    const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: local });
+    await createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-sku', concurrency: 1 }).runOne();
+    assert.equal(local.calls.length, 1);
+    assert.deepEqual(local.calls[0].sku, { resolution: '1k', detailLevel: 'medium' },
+      'look.generate 按 request.skuCode 解析分辨率传给 provider');
+  });
+
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {
     const prodConfig = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'real' });
     assert.throws(() => buildHandlers({ config: prodConfig, db: ctx.db, logger: silentLogger }), /对象存储|存储配置不完整/);

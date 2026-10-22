@@ -61,6 +61,8 @@ export function loadConfig(env = process.env) {
       // 与每用户并发连接上限（M2 改 LISTEN/NOTIFY 前先挡住每连接每秒轮询的线性压力）
       sseMaxAgeMs: int(env.PROJECTS_SSE_MAX_AGE_MS, 1_800_000),
       sseMaxConnectionsPerUser: int(env.PROJECTS_SSE_MAX_CONNECTIONS, 5),
+      // failed 作品超过 N 天自动取消并退回未结算冻结（M2-BE-01，TASKS M2-BE-02 并入项）
+      failedCancelDays: int(env.PROJECTS_FAILED_CANCEL_DAYS, 7),
     },
     // 定时任务（M1-BE-03）：调度循环每 tickSeconds 秒用「cron:<任务>:<窗口起点>」去重键入队，
     // 多个 Worker 同时调度也只入队一次；清理任务分批（每批 sweepBatchSize 行、每批一个短事务）
@@ -71,6 +73,8 @@ export function loadConfig(env = process.env) {
       jobsCleanupEverySeconds: int(env.CRON_JOBS_CLEANUP_EVERY_SECONDS, 86_400),
       jobsDoneRetentionDays: int(env.JOBS_DONE_RETENTION_DAYS, 30),
       sweepBatchSize: int(env.CRON_SWEEP_BATCH_SIZE, 500),
+      // 渠道调价对账：拉实时目录与 skus.cost_fen 比对，漂移记 error 日志（real 模式才执行）
+      priceAuditEverySeconds: int(env.CRON_PRICE_AUDIT_EVERY_SECONDS, 21_600),
     },
     // 对象存储（七牛 Kodo），由 Engine 角色在 engine/storage 中使用
     storage: {
@@ -85,8 +89,11 @@ export function loadConfig(env = process.env) {
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
     // 生成渠道（Modelhub，M0-02 接入）：密钥只从环境变量读取；真实调用须用户授权（AGENTS.md §6）。
-    // worker 尚未接线（M2-BE-01 按 M0 结论接入），当前消费方为 scripts/modelhub-smoke.js。
+    // 生成渠道（Modelhub，M0-02 接入）：密钥只从环境变量读取；真实调用须用户授权（AGENTS.md §6）。
+    // GEN_UPSTREAMS=real 时 Worker 接入真实上游（视频/图片 Modelhub、LLM 智谱、存储必须 qiniu），
+    // 缺省 mock 走确定性桩——测试与开发不产生任何真实费用（M2-BE-01）。
     providers: {
+      real: env.GEN_UPSTREAMS === 'real',
       modelhubBaseUrl: env.MODELHUB_BASE_URL || 'https://api.modelhub.cc',
       modelhubApiKey: env.MODELHUB_API_KEY || '',
       requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 60_000), // 图片同步生成需 1 分钟级（源项目同款）
@@ -96,6 +103,11 @@ export function loadConfig(env = process.env) {
       imageModel: env.GENERATION_IMAGE_MODEL || 'gpt-image-2.5-flare',
       imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k',
       imageDetailLevel: env.GENERATION_IMAGE_DETAIL_LEVEL || 'medium',
+      // 文本 LLM（用户 2026-10-21 选型：智谱中国区 Coding Plan，OpenAI Compatible）。
+      // real 模式下三项都必填；密钥只在服务端 env，禁止写入仓库。
+      llmBaseUrl: env.STORY_LLM_BASE_URL || '',
+      llmApiKey: env.STORY_LLM_API_KEY || '',
+      llmModel: env.STORY_LLM_MODEL || '',
     },
   };
   if (production) {

@@ -328,6 +328,7 @@ export async function createLookVersion(db, { userId, characterId, styleId, quot
           versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}`, amountFen,
           promptHint: styleRows[0]?.prompt_hint ?? '', description: character.description ?? '',
           referenceKeys: photoRows.map((r) => r.storage_key),
+          skuCode: quote.price_snapshot.image.skuCode, // M2-BE-01：look.generate 按此解析真实分辨率
         }), replayKey],
     );
     await t.query(
@@ -378,7 +379,7 @@ export async function deleteCharacter(db, { userId, id }) {
  */
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
-export function createLookGenerateHandler({ db, logger, storage, imageProvider }) {
+export function createLookGenerateHandler({ db, logger, storage, imageProvider, imageDetailLevel }) {
   return async function lookGenerate(payload, ctx) {
     const versionId = payload.versionId;
     const { rows } = await db.query(
@@ -422,6 +423,20 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
     }
 
     await ctx.extendLease?.(); // 长耗时调用前续租，避免被误判租约过期后重复领取
+    // M2-BE-01：按下单时写入的 sku_code 解析真实分辨率（ENG-02 审查遗留项「不要写死 SKU」）；
+    // 旧任务没有 skuCode 时用 provider 构造默认。detailLevel 由 config 全局提供。
+    let skuOverride;
+    if (request.skuCode) {
+      const { rows: skuRows } = await db.query(
+        `SELECT resolution FROM skus WHERE sku_code = $1 AND kind = 'image' AND status = 'active'
+          ORDER BY version DESC LIMIT 1`,
+        [request.skuCode],
+      );
+      if (skuRows[0]?.resolution) {
+        skuOverride = { resolution: skuRows[0].resolution };
+        if (imageDetailLevel) skuOverride.detailLevel = imageDetailLevel;
+      }
+    }
     let result;
     try {
       result = await imageProvider.generate({
@@ -430,6 +445,7 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider }
         promptHint: request.promptHint,
         description: request.description,
         referenceKeys: request.referenceKeys ?? [], // 该数字人的参考照片 key（§6 审查 4）
+        ...(skuOverride ? { sku: skuOverride } : {}),
       });
     } catch (err) {
       if (err.retryable === true) {

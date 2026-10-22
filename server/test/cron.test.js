@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
-import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep, windowStart } from '../src/queue/cron.js';
+import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runProjectsFailedSweep,
+  runUploadsSweep, windowStart } from '../src/queue/cron.js';
+import { createPriceAuditHandler, expectedCostFen } from '../src/queue/price-audit.js';
 import { enqueue } from '../src/queue/index.js';
 import { buildHandlers, createWorker } from '../src/worker.js';
 import { createTestDb } from './helpers/db.js';
@@ -61,12 +63,14 @@ describe('cron（M1-BE-03）', () => {
       ['auth.sweep', 1],
       ['jobs.cleanup', 1],
       ['projects.expire_sweep', 1],
+      ['projects.failed_sweep', 1],   // M2-BE-01
+      ['providers.price_audit', 1],   // M2-BE-01
       ['uploads.sweep', 1],
     ]);
     // 同窗口内再次调度（含另一个调度器）不再新增
     await s2.tick();
     const again = await ctx.db.query(`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key LIKE 'cron:%'`);
-    assert.equal(again.rows[0].n, 4);
+    assert.equal(again.rows[0].n, 6);
   });
 
   test('auth.sweep：清理过期限流窗口、作废/过期超 1 天的验证码、过期会话；可重复执行（要点 c）', async () => {
@@ -245,7 +249,88 @@ describe('cron（M1-BE-03）', () => {
     // 非生产环境缺省内存实现可用；M1-BE-05 起注册 project.understand（开发用确定性 story 桩）
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
     assert.deepEqual(Object.keys(dev).sort(),
-      ['auth.sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'segment.generate', 'uploads.sweep']);
+      ['auth.sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'projects.failed_sweep', 'providers.price_audit', 'segment.generate', 'uploads.sweep']);
+  });
+
+  test('projects.failed_sweep：failed 超 7 天自动取消并退款（M2-BE-01），未到期不动、重复执行幂等', async () => {
+    const db = ctx.db;
+    await db.query(
+      `INSERT INTO wallets (user_id, available_fen, frozen_fen) VALUES ('usr_cron00000001', 10000, 4800)
+        ON CONFLICT (user_id) DO UPDATE SET available_fen = 10000, frozen_fen = 4800`);
+    // f1：失败已 8 天 → 自动取消并退回冻结；f2：刚失败 → 不动
+    await insertProject(db, 'prj_f1', 'failed', null);
+    await db.query(`UPDATE projects SET updated_at = now() - interval '8 days' WHERE id = 'prj_f1'`);
+    await insertProject(db, 'prj_f2', 'failed', null);
+    const insertReserve = (ledgerId, projectId) => db.query(
+      `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key)
+       VALUES ($1, 'usr_cron00000001', 'reserve', -2400, 2400, '视频生成预占', 'project', $2, $3)`,
+      [ledgerId, projectId, `test:${ledgerId}`],
+    );
+    await insertReserve('led_f1', 'prj_f1');
+    await insertReserve('led_f2', 'prj_f2');
+
+    const result = await runProjectsFailedSweep(db, { cancelDays: 7, batchSize: 10, logger: silentLogger });
+    assert.deepEqual(result, { canceled: 1 });
+    assert.equal((await db.query(`SELECT status FROM projects WHERE id = 'prj_f1'`)).rows[0].status, 'canceled');
+    assert.ok((await db.query(
+      `SELECT 1 FROM project_events WHERE project_id = 'prj_f1' AND status = 'canceled'`)).rowCount,
+      '写了 canceled 事件');
+    const wallet = (await db.query(
+      `SELECT available_fen, frozen_fen FROM wallets WHERE user_id = 'usr_cron00000001'`)).rows[0];
+    assert.equal(Number(wallet.available_fen), 12400, '冻结退回可用');
+    assert.equal(Number(wallet.frozen_fen), 2400, '未到期作品的冻结保留');
+    assert.equal((await db.query(`SELECT status FROM projects WHERE id = 'prj_f2'`)).rows[0].status, 'failed');
+
+    const again = await runProjectsFailedSweep(db, { cancelDays: 7, batchSize: 10, logger: silentLogger });
+    assert.deepEqual(again, { canceled: 0 }, '已取消的作品不再重复处理（幂等）');
+    // 删除留下的大额钱包状态，避免影响其他用例
+    await db.query(`DELETE FROM ledger WHERE id IN ('led_f1', 'led_f2', (
+      SELECT id FROM ledger WHERE ref_id = 'prj_f1' AND kind = 'refund' LIMIT 1))`);
+    await db.query(`DELETE FROM project_events WHERE project_id IN ('prj_f1', 'prj_f2')`);
+    await db.query(`DELETE FROM wallets WHERE user_id = 'usr_cron00000001'`);
+    await db.query(`DELETE FROM projects WHERE id IN ('prj_f1', 'prj_f2')`);
+  });
+
+  test('providers.price_audit：mock 跳过；real 模式目录一致不报、漂移报警（M2-BE-01）', async () => {
+    const events = [];
+    const logger = { info: (msg, meta) => events.push(['info', msg, meta]),
+      warn: (msg, meta) => events.push(['warn', msg, meta]), error: (msg, meta) => events.push(['error', msg, meta]),
+      child: () => logger };
+    let fetches = 0;
+    const mockConfig = loadConfig({ NODE_ENV: 'test' });
+    const mockHandler = createPriceAuditHandler({ db: ctx.db, logger, config: mockConfig,
+      fetchCatalog: async () => { fetches += 1; return { data: [] }; } });
+    await mockHandler();
+    assert.equal(fetches, 0, 'mock 模式不拉目录');
+    assert.ok(events.some(([, msg]) => msg === 'price_audit_skip_mock'));
+
+    // 真实 SKU（迁移 004）与目录一致 → price_audit_ok
+    const catalog = { data: [
+      { id: 'seedance-2.5', pricing: { kind: 'per_second_range', resolutions: {
+        '480p': { min: 39, max: 39 }, '720p': { min: 47, max: 47 } } } },
+      { id: 'gpt-image-2.5-flare', pricing: { kind: 'per_image', prices: { '1k': { medium: 23 } } } },
+    ] };
+    const realConfig = loadConfig({ NODE_ENV: 'test', GEN_UPSTREAMS: 'real' });
+    const realHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
+      fetchCatalog: async () => { fetches += 1; return catalog; } });
+    await realHandler();
+    assert.equal(fetches, 1);
+    assert.ok(events.some(([, msg]) => msg === 'price_audit_ok'), '成本与目录一致时不报警');
+
+    // 渠道调价：480p 39 → 45
+    const drifted = { data: [
+      { id: 'seedance-2.5', pricing: { resolutions: { '480p': { min: 45, max: 45 } } } },
+      { id: 'gpt-image-2.5-flare', pricing: { prices: { '1k': { medium: 23 } } } },
+    ] };
+    await createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
+      fetchCatalog: async () => drifted })();
+    const drift = events.find(([, msg]) => msg === 'provider_price_drift');
+    assert.ok(drift, '成本漂移记 error 日志');
+    assert.ok(JSON.stringify(drift[2]).includes('video.seedance.480p'), '报警指明 SKU');
+
+    // 纯函数：模型缺失 / 分辨率缺失
+    assert.equal(expectedCostFen({ kind: 'video', model: 'ghost', resolution: '480p', cost_fen: 39 },
+      new Map(), {}).ok, false);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {

@@ -34,7 +34,8 @@ describe('http', () => {
     const body = await res.json();
     assert.equal(body.styles.length, 6);
     assert.deepEqual(body.styles[0], { id: 'realistic', name: '真人写实', description: '接近真实拍摄的家庭影像' });
-    assert.deepEqual(body.qualityTiers.map((t) => [t.id, t.pricePer30sFen]), [['standard', 600], ['hd', 1200]]);
+    // M2-BE-01 真实 SKU：标准 80 分/秒、高清 150 分/秒（迁移 004）
+    assert.deepEqual(body.qualityTiers.map((t) => [t.id, t.pricePer30sFen]), [['standard', 2400], ['hd', 4500]]);
     assert.deepEqual(body.ratios, ['9:16', '16:9', '1:1']);
     assert.equal(body.limits.maxDurationSeconds, 90);
     assert.equal(body.limits.retentionDays, 90);
@@ -43,12 +44,12 @@ describe('http', () => {
   });
 
   test('档位映射的 SKU 下架后，该档位不再展示', async () => {
-    await ctx.db.query(`UPDATE skus SET status = 'inactive' WHERE sku_code = 'video.mock.1080p'`);
+    await ctx.db.query(`UPDATE skus SET status = 'inactive' WHERE sku_code = 'video.seedance.480p'`);
     try {
       const body = await (await fetch(`${base}/catalog`)).json();
-      assert.deepEqual(body.qualityTiers.map((t) => t.id), ['standard']);
+      assert.deepEqual(body.qualityTiers.map((t) => t.id), ['hd']);
     } finally {
-      await ctx.db.query(`UPDATE skus SET status = 'active' WHERE sku_code = 'video.mock.1080p'`);
+      await ctx.db.query(`UPDATE skus SET status = 'active' WHERE sku_code = 'video.seedance.480p'`);
     }
   });
 

@@ -180,15 +180,16 @@ describe('wallet（M1-BE-02）', () => {
     const estimate = (body) => post(base, '/quotes/estimate', body, { cookie, csrf });
     let res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { minFen: 600, maxFen: 1800 });
+    // M2-BE-01 真实 SKU：标准 80 分/秒
+    assert.deepEqual(await res.json(), { minFen: 2400, maxFen: 7200 });
 
     res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: ['chr_a1', 'chr_a2', 'chr_a3'] });
     assert.equal(res.status, 200);
-    // 3 个勾选中 2 个缺形象：min = 20×30 + 2×50，max = 20×90 + 2×50
-    assert.deepEqual(await res.json(), { minFen: 700, maxFen: 1900 });
+    // 3 个勾选中 2 个缺形象：min = 80×30 + 2×50，max = 80×90 + 2×50
+    assert.deepEqual(await res.json(), { minFen: 2500, maxFen: 7300 });
 
     res = await estimate({ qualityTierId: 'hd', styleId: 'realistic', characterIds: [] });
-    assert.deepEqual(await res.json(), { minFen: 1200, maxFen: 3600 });
+    assert.deepEqual(await res.json(), { minFen: 4500, maxFen: 13500 });
 
     res = await estimate({ qualityTierId: 'nope', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 400);
@@ -234,17 +235,17 @@ describe('wallet（M1-BE-02）', () => {
     let res = await post(base, '/quotes', { kind: 'project_render', projectId: 'prj_a1' }, { cookie, csrf });
     assert.equal(res.status, 200);
     let quote = await res.json();
-    assert.equal(quote.amountFen, 800); // (10 + 30) 秒 × 0.20 元/秒
+    assert.equal(quote.amountFen, 3200); // M2-BE-01：(10 + 30) 秒 × 80 分/秒
     assert.deepEqual(quote.breakdown, [
-      { label: '片段 1 · 10 秒 · 标准', amountFen: 200 },
-      { label: '片段 2 · 30 秒 · 标准', amountFen: 600 },
+      { label: '片段 1 · 10 秒 · 标准', amountFen: 800 },
+      { label: '片段 2 · 30 秒 · 标准', amountFen: 2400 },
     ]);
 
     res = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_a1', segmentId: 'seg_a2' }, { cookie, csrf });
     quote = await res.json();
     assert.equal(res.status, 200);
-    assert.equal(quote.amountFen, 600);
-    assert.deepEqual(quote.breakdown, [{ label: '片段 2 · 30 秒 · 标准', amountFen: 600 }]);
+    assert.equal(quote.amountFen, 2400);
+    assert.deepEqual(quote.breakdown, [{ label: '片段 2 · 30 秒 · 标准', amountFen: 2400 }]);
 
     res = await post(base, '/quotes', { kind: 'cast_looks', projectId: 'prj_a1' }, { cookie, csrf });
     quote = await res.json();
@@ -300,7 +301,7 @@ describe('wallet（M1-BE-02）', () => {
     assert.equal(bad.status, 404);
     const ok = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_b1', segmentId: 'seg_b1' }, { cookie, csrf });
     assert.equal(ok.status, 200);
-    assert.equal((await ok.json()).amountFen, 400);
+    assert.equal((await ok.json()).amountFen, 1600); // M2-BE-01：20 秒 × 80 分/秒
   });
 
   test('过期报价使用返回 QUOTE_EXPIRED', async () => {
@@ -314,10 +315,10 @@ describe('wallet（M1-BE-02）', () => {
 
   test('调价后旧报价 QUOTE_MISMATCH，且占用已回滚可重新报价', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
-    // 模拟调价：新增 version 2，单价 50 → 60
+    // 模拟调价：新增 version 2，单价 50 → 60（settings.look_image_sku_code 现指向 image.flare.1k）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_mockimage2k0002', 'image.mock.2k', 2, 'image', 'mock-image', 'mock', '2k', 'image', 60, 0, '{}')`,
+       VALUES ('sku_flare1k0000000002', 'image.flare.1k', 2, 'image', 'gpt-image-2.5-flare', 'modelhub', '1k', 'image', 60, 23, '{}')`,
     );
     try {
       await assert.rejects(
@@ -327,7 +328,7 @@ describe('wallet（M1-BE-02）', () => {
       const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
       assert.equal(rows[0].consumed_at, null, '比对失败的占用应随事务回滚');
     } finally {
-      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_mockimage2k0002'`);
+      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_flare1k0000000002'`);
     }
   });
 
