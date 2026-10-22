@@ -112,28 +112,51 @@ async function main() {
   const modelhubIps = await resolveWithDoh(modelhubHost).catch(() => []);
   if (modelhubIps.length) logger.info(`modelhub DoH 直连：${modelhubHost} → ${modelhubIps.map((r) => r.address).join(', ')}`);
   const directFetch = (url, init = {}, attempt = 0) => new Promise((resolve, reject) => {
+    try {
     const u = new URL(url);
-    const ip = modelhubIps[attempt % Math.max(1, modelhubIps.length)]?.address;
+    const headers = { ...init.headers };
+    if (init.body && headers['Content-Length'] === undefined) {
+      headers['Content-Length'] = Buffer.byteLength(init.body); // 网关拒绝 chunked，必须带长度
+    }
+    // 代理退出后系统 DNS 已正常：按域名直连（IP 直连会被网关 3xx 重定向，POST 被吞成 unknown）
     const req = https.request({
-      hostname: ip ?? u.hostname, path: `${u.pathname}${u.search}`, port: 443, method: init.method ?? 'GET',
-      headers: { ...init.headers, ...(ip ? { host: u.hostname } : {}) }, servername: u.hostname,
-      agent: false,
+      hostname: u.hostname, path: `${u.pathname}${u.search}`, port: 443, method: init.method ?? 'GET',
+      headers, agent: false,
     }, (res) => {
       const chunks = [];
       res.on('data', (c) => chunks.push(c));
-      res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: res.headers })));
+      res.on('end', () => {
+        const buffer = Buffer.concat(chunks);
+        logger.warn(`directFetch ${init.method ?? 'GET'} ${u.pathname} → ${res.statusCode}，${buffer.length} 字节`);
+        resolve(new Response(buffer, { status: res.statusCode, headers: res.headers }));
+      });
     });
-    req.on('error', reject);
+    req.on('error', (e) => { logger.warn(`directFetch ${u.pathname} 连接错误：${e.message}`); reject(e); });
     req.setTimeout(120_000, () => req.destroy(new Error('直连请求超时')));
     if (init.body) req.write(init.body);
     req.end();
+    } catch (syncError) {
+      logger.warn(`directFetch ${url} 同步异常：${syncError.message}`);
+      reject(syncError);
+    }
   });
-  const transport = createModelhubTransport({ baseUrl: config.providers.modelhubBaseUrl,
+  const realTransport = createModelhubTransport({ baseUrl: config.providers.modelhubBaseUrl,
     apiKey: config.providers.modelhubApiKey, timeoutMs: config.providers.requestTimeoutMs, logger,
     fetchImpl: async (url, init = {}) => {
-      if (!url.startsWith('http')) throw new Error('仅支持 http(s)');
+      logger.warn(`directFetch 进入：${init.method ?? 'GET'} ${String(url).slice(0, 80)}`);
       return directFetch(url, init);
     } });
+  const transport = { request: async (path, opts = {}) => {
+    try {
+      const raw = await realTransport.request(path, opts);
+      logger.warn(`transport ${path} → ${raw?.status ?? JSON.stringify(raw).slice(0, 60)}`);
+      return raw;
+    } catch (error) {
+      logger.warn(`transport ${path} 抛错：${error.message} | submitted=${error.submitted} code=${error.code}` +
+        ` cause=${error.cause?.code ?? error.cause?.message ?? '-'}`);
+      throw error;
+    }
+  } };
   const readAll = async (url) => {
     const response = await devSafeFetch(url, { maxBytes: 20 * 1024 * 1024 });
     const chunks = [];
@@ -287,6 +310,9 @@ async function main() {
       const ran = await pumpJobs(['look.generate'], lookHandlers);
       const state = await project(projectId);
       if (state.status === 'cast_review') break;
+      if (state.status === 'failed' || state.status === 'canceled') {
+        throw new Error(`项目已进入 ${state.status}：${state.progress?.message ?? ''}（本次会话终止，冻结金额按协议待对账/退回）`);
+      }
       if (!ran && state.status === 'casting') {
         const { rows: queued } = await db.query(
           `SELECT count(*)::int AS n FROM jobs WHERE status = 'queued' AND type = 'look.generate'`);

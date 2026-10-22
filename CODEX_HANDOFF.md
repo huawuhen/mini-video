@@ -192,7 +192,7 @@
 - **成本（估算口径，以渠道对账为准）**：LLM 0（套餐内，9 次 understand + 1 次探针）；图片渠道消耗估算 **≤150 分**（独立探针成功 5 张 ×10~23 分 + e2e 中 10 个 unknown（受理后断连，可能已生成未取）+ 2 个 submitting；26 个 created 从未提交）；未动视频生成。远低于 M0 剩余额度（300-24≈276 元）。
 - **验证**：`npm run test:server` 247/247（新增 6 用例：failed_sweep 退款幂等、price_audit 漂移报警、80% 预警、image sku 覆盖、look skuCode 传递、真实 SKU 金额口径）；`npm run check`、`npm run build` 通过。
 - **跨所有权小改（请 Lead/Engine 复核）**：`engine/providers/image.js` 的 `generate` 入参新增 `sku` 覆盖（ENG-02 审查遗留项「按 gen_tasks 的 sku_code 取分辨率，不写死」，同时把 detailLevel 合并进 prepare 入参）；`engine/llm/openai.js` 为新增文件。`characters/service.js` 的 look.generate 按 `request.skuCode` 查 skus 解析分辨率传入 provider（confirmStory/retryProject/createLookVersion 三处把 skuCode 写进 gen_tasks.request）。
-- **遗留 / 风险**：① e2e 待用户配合跑通（上述）；② 10 个 unknown 形象任务冻结约 100 分，待 M2 对账工具处理（冻结在 e2e 测试用户钱包，不影响真实用户）；③ 渠道对真实图片任务无 query 接口（同步生成），unknown 无法续查，只能冻结待人工——已按 §5 口径处理。
+- **遗留 / 风险**：① e2e 待跑通（上述）；② unknown 形象任务冻结（e2e 测试用户钱包，不影响真实用户），待 M2 对账工具；③ flare 为同步生成、无 query 接口，unknown 无法续查，只能冻结待人工——已按 §5 口径处理；④ **追加（2026-10-22 上午）**：用户退出代理后继续排障，定位到两层——脚本 node:https 直连缺 Content-Length（chunked 被网关秒拒，已修）与 IP 直连触发网关 3xx（已改域名直连）；修正后请求正常发出，但上游对生成 POST **120 秒不回响应头**（directFetch 超时销毁）。结合当日已提交数十个 flare 任务，判断为**账号级任务堆积导致上游对新提交挂起**（早期轻载时独立探针成功、堆积后同进程/独立进程均挂起）。e2e 脚本已具备完整诊断与断点续跑，**建议数小时后（上游消化）直接重跑同一条命令**；modelhub 视频成片 URL 走其自建代理域 media.modelhub.cc（用户提示，视频下载不受影响）。
 
 
 ### 2026-10-21 · Web · M1-WEB-01 视图打磨（确认点 A 剧本、状态全覆盖、排队文案、契约补齐）
