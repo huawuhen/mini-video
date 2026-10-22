@@ -304,11 +304,11 @@ describe('cron（M1-BE-03）', () => {
     assert.equal(fetches, 0, 'mock 模式不拉目录');
     assert.ok(events.some(([, msg]) => msg === 'price_audit_skip_mock'));
 
-    // 真实 SKU（迁移 004）与目录一致 → price_audit_ok
+    // 真实 SKU（迁移 004+005：图片 = gpt-image-2 1k/medium 成本 21）与目录一致 → price_audit_ok
     const catalog = { data: [
       { id: 'seedance-2.5', pricing: { kind: 'per_second_range', resolutions: {
         '480p': { min: 39, max: 39 }, '720p': { min: 47, max: 47 } } } },
-      { id: 'gpt-image-2.5-flare', pricing: { kind: 'per_image', prices: { '1k': { medium: 23 } } } },
+      { id: 'gpt-image-2', pricing: { kind: 'per_image', prices: { '1k': { medium: 21 } } } },
     ] };
     const realConfig = loadConfig({ NODE_ENV: 'test', GEN_UPSTREAMS: 'real' });
     const realHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
@@ -320,7 +320,7 @@ describe('cron（M1-BE-03）', () => {
     // 渠道调价：480p 39 → 45
     const drifted = { data: [
       { id: 'seedance-2.5', pricing: { resolutions: { '480p': { min: 45, max: 45 } } } },
-      { id: 'gpt-image-2.5-flare', pricing: { prices: { '1k': { medium: 23 } } } },
+      { id: 'gpt-image-2', pricing: { prices: { '1k': { medium: 21 } } } },
     ] };
     await createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
       fetchCatalog: async () => drifted })();
