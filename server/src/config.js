@@ -96,7 +96,8 @@ export function loadConfig(env = process.env) {
       real: env.GEN_UPSTREAMS === 'real',
       modelhubBaseUrl: env.MODELHUB_BASE_URL || 'https://api.modelhub.cc',
       modelhubApiKey: env.MODELHUB_API_KEY || '',
-      requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 60_000), // 图片同步生成需 1 分钟级（源项目同款）
+      // 图片同步生成实测 20~110 秒（M0-02 与 M2-BE-01 端到端实测，负载波动大），默认 3 分钟留足余量
+      requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 180_000),
       // 用户 2026-10-21 指定：视频 seedance-2.5、图片 gpt-image-2.5-flare；档位为最小成本冒烟默认
       videoModel: env.GENERATION_VIDEO_MODEL || 'seedance-2.5',
       videoResolution: env.GENERATION_VIDEO_RESOLUTION || '720p',
