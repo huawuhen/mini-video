@@ -365,7 +365,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
        WHERE pc.project_id = $1`, [projectId]);
     assert.equal(lookTasks.length, 1, '只为缺口（妈妈）建形象任务，宝宝已有形象不重建');
     const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
-    assert.equal(wallet[0].frozen_fen, 50, '一个缺口 × 50 分预占');
+    assert.equal(wallet[0].frozen_fen, 60, '一个缺口 × 60 分预占（迁移 008）');
     // 同幂等键重放：replayed，不再新增 gen_tasks
     const replay = await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0001', config });
     assert.equal(replay.replayed, true);
@@ -399,7 +399,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: ledger } = await ctx.db.query(
       `SELECT kind, frozen_delta_fen FROM ledger WHERE user_id = $1
         AND idempotency_key = $2`, [userId, `look:${versionIds[0]}:settle`]);
-    assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -50),
+    assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -60),
       '形象费已结算（BE-04 结算流水的 ref 是 look/versionId）');
 
     // 余额不足：另一个项目清零钱包后确认 → 402，项目停在 story_review
@@ -477,7 +477,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: project } = await ctx.db.query(`SELECT progress FROM projects WHERE id = $1`, [projectId]);
     assert.ok(project[0].progress.percent >= 45);
     const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
-    assert.equal(wallet[0].frozen_fen, 4800, '视频费预占 = 2 段 × 30 秒 × 80 分（M2-BE-01 真实 SKU）');
+    assert.equal(wallet[0].frozen_fen, 6000, '视频费预占 = 2 段 × 30 秒 × 100 分（迁移 008）');
     const { rows: locked } = await ctx.db.query(
       `SELECT count(*)::int AS n FROM project_cast WHERE project_id = $1 AND locked_at IS NOT NULL`, [projectId]);
     assert.equal(locked[0].n, 2, '确认后锁定角色');
@@ -702,9 +702,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.equal(detail.status, 'failed');
     assert.equal(detail.error.code, 'SEGMENT_FAILED');
     assert.match(detail.error.message, /技术检查/);
-    // §5① A 口径：失败保持冻结。已结算 = 形象费 50；冻结 = 视频预占 4800（含失败段与未跑段，真实 SKU 80 分/秒）
-    assert.equal(detail.pricing.settledFen, 50);
-    assert.equal(detail.pricing.frozenFen, 4800);
+    // §5① A 口径：失败保持冻结。已结算 = 形象费 60；冻结 = 视频预占 6000（含失败段与未跑段，100 分/秒）
+    assert.equal(detail.pricing.settledFen, 60);
+    assert.equal(detail.pricing.frozenFen, 6000);
     // retry：免费重建失败片段（第 0 段）并走完全链
     await retryProject(ctx.db, { userId, projectId });
     detail = await getProjectDetail(ctx.db, { userId, projectId });
@@ -754,10 +754,10 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     await assert.rejects(() => retryProject(ctx.db, { userId, projectId }),
       (err) => err.code === 'PROJECT_STATE_INVALID');
     assert.equal(videoProvider.submissions.length, submissionsBefore, 'unknown 后不重提');
-    // 取消：unknown 段保持冻结，未提交的第 2 段退回（30 秒 × 80 分 = 2400 分）
+    // 取消：unknown 段保持冻结，未提交的第 2 段退回（30 秒 × 100 分 = 3000 分）
     const before = (await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId])).rows[0].frozen_fen;
     const cancelled = await cancelProject(ctx.db, { userId, projectId });
-    assert.equal(cancelled.refundedFen, 2400);
+    assert.equal(cancelled.refundedFen, 3000);
     assert.equal(cancelled.frozenFen, before - cancelled.refundedFen);
   });
 
@@ -785,7 +785,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const takeError = takeRows[0].error; // jsonb 列，pg 已解析为对象
     assert.equal(takeRows[0].status, 'failed');
     assert.equal(takeError.providerMessage, '人脸未过审', '上游原始信息只进技术详情');
-    assert.equal(detail.pricing.frozenFen, 4800, 'A 口径：明确失败保持冻结，由取消/重试消化');
+    assert.equal(detail.pricing.frozenFen, 6000, 'A 口径：明确失败保持冻结，由取消/重试消化');
     // retry：免费重建该段，渠道不再拒绝 → 提交成功回到 rendering
     await retryProject(ctx.db, { userId, projectId });
     await generate({ projectId, idx: 0 }, ctxOf());
