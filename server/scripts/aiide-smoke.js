@@ -117,9 +117,9 @@ async function finish(ledger, entry, patch) {
   await writeLedger(ledger);
 }
 
-async function download(url, maxBytes) {
+async function download(url, maxBytes, timeoutMs = 120_000) {
   console.log(`下载结果主机：${new URL(url).hostname}`);
-  const response = await devSafeFetch(url, { maxBytes, timeoutMs: 120_000 });
+  const response = await devSafeFetch(url, { maxBytes, timeoutMs });
   const chunks = [];
   for await (const chunk of response.stream) chunks.push(chunk);
   return { buffer: Buffer.concat(chunks), contentType: response.contentType };
@@ -283,7 +283,8 @@ async function main() {
         // 按 token 折算的费用只是口径估算（$9.63/M × 汇率），真实扣费以渠道后台为准
         const tokenFen = Number.isFinite(tokens) ? Math.ceil((tokens * USD_PER_MTOKEN / 1_000_000) * FX_CNY_PER_USD * 100) : null;
         console.log(`usage.total_tokens=${Number.isFinite(tokens) ? tokens : '未返回'}（按 token 折算 ≈ ${tokenFen ?? '-'} 分，用它校准 cost_fen）`);
-        await saveArtifact(ledger, entry, await download(state.outputs[0].url, 512 * 1024 * 1024));
+        // 30 秒成片约 15MB 且在火山海外 TOS：跨境下行慢，下载超时放宽到 10 分钟
+        await saveArtifact(ledger, entry, await download(state.outputs[0].url, 512 * 1024 * 1024, 600_000));
         await finish(ledger, entry, { elapsedMs: Date.now() - startedAt,
           ...(Number.isFinite(tokens) ? { usageTokens: tokens, tokenFen } : {}) });
       } else if (state.status === 'failed') {

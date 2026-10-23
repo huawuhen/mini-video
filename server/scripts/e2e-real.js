@@ -4,7 +4,7 @@
 //                                                                  # 视频任务在上游继续，续跑只接结果，不重复提交）
 // 用最小成本走完 想法→剧本(LLM)→形象(图模型)→确认点B→提示词绑定(LLM)→2×5 秒 480p 视频(aiide)→拼接→交付。
 // 连接 config.databaseUrl（本地隔离测试库 compose miv-test），不触碰生产；费用记入成本账本。
-// 预估成本：形象 1×21 分 + 视频 2×5s×68 分 = 701 分 ≈ 7 元（LLM 为 Coding Plan 套餐内；渠道按 token 计费，实际以 usage 为准）。
+// 预估成本：形象 1×36 分 + 视频 2×5s×68 分 = 716 分 ≈ 7.2 元（LLM 为 Coding Plan 套餐内；渠道按 token 计费，实际以 usage 为准）。
 // 开发机代理为 fake-IP DNS：渠道 API 直连可用；七牛 CDN 下载走 DoH 绕行（仅本脚本，产品代码不改）。
 import { appendFile, mkdir } from 'node:fs/promises';
 import dns from 'node:dns/promises';
@@ -37,8 +37,8 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const ledgerPath = path.join(repoRoot, 'server/.data/e2e-cost-ledger.json');
 const POLL_SECONDS = 20;
 const POLL_MAX_MINUTES = 100;
-// aiide 成本估算（迁移 007 注释口径，待真实 usage 校准）：图片 gpt-image-2 1k ≈ 21 分/张；视频 480p ≈ 68 分/秒
-const IMAGE_COST_FEN = 21;
+// aiide 成本（迁移 008 口径，后台实扣校准）：图片 gpt-image-2 1k = 36 分/张（实扣 $0.05/张）；视频 480p ≈ 68 分/秒（实测 67.2）
+const IMAGE_COST_FEN = 36;
 const COST = {
   imageFen: () => IMAGE_COST_FEN,
   videoPerSecond: 68, // 与 skus.cost_fen 同步（price_audit 调价对账会校验）
