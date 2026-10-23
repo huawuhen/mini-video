@@ -88,21 +88,22 @@ export function loadConfig(env = process.env) {
       },
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
-    // 生成渠道（Modelhub，M0-02 接入）：密钥只从环境变量读取；真实调用须用户授权（AGENTS.md §6）。
-    // GEN_UPSTREAMS=real 时 Worker 接入真实上游（视频/图片 Modelhub、LLM 智谱、存储必须 qiniu），
-    // 缺省 mock 走确定性桩——测试与开发不产生任何真实费用（M2-BE-01）。
+    // 生成渠道（喵呜 miaowuai，2026-10-22 替代 modelhub）：OpenAI 风格异步任务
+    // （POST /v1/videos、POST /v1/images + GET /v1/{videos,images}/{id} 轮询，未知字段一律 400）。
+    // GEN_UPSTREAMS=real 时 Worker 接入真实上游，缺省 mock 走确定性桩——测试与开发零真实费用。
     providers: {
       real: env.GEN_UPSTREAMS === 'real',
-      modelhubBaseUrl: env.MODELHUB_BASE_URL || 'https://api.modelhub.cc',
-      modelhubApiKey: env.MODELHUB_API_KEY || '',
-      // 图片同步生成实测 20~110 秒（M0-02 与 M2-BE-01 端到端实测，负载波动大），默认 3 分钟留足余量
+      miaowuaiBaseUrl: (env.MIAOWU_BASE_URL || 'https://api.miaowuai.store').replace(/\/+$/, ''),
+      miaowuaiApiKey: env.MIAOWU_API_KEY || '',
+      // 图片/视频任务响应波动大（实测 20~110 秒），默认 3 分钟留足余量
       requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 180_000),
-      // 视频 seedance-2.5（用户 2026-10-21 指定）；图片 2026-10-22 由 flare 更换为 gpt-image-2（用户指示）
-      videoModel: env.GENERATION_VIDEO_MODEL || 'seedance-2.5',
-      videoResolution: env.GENERATION_VIDEO_RESOLUTION || '720p',
-      imageModel: env.GENERATION_IMAGE_MODEL || 'gpt-image-2',
-      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k',
-      imageDetailLevel: env.GENERATION_IMAGE_DETAIL_LEVEL || 'medium',
+      // 视频 seedance-2.5-deal、图片 GPT-image-2（用户 2026-10-22 指定）
+      videoModel: env.GENERATION_VIDEO_MODEL || 'seedance-2.5-deal',
+      videoResolution: env.GENERATION_VIDEO_RESOLUTION || '480p',
+      imageModel: env.GENERATION_IMAGE_MODEL || 'GPT-image-2',
+      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1080p',
+      imagePollIntervalMs: int(env.PROVIDERS_IMAGE_POLL_INTERVAL_MS, 5_000), // 图片异步任务轮询间隔
+      imagePollTimeoutMs: int(env.PROVIDERS_IMAGE_POLL_TIMEOUT_MS, 600_000), // 图片任务轮询上限 10 分钟
       // 文本 LLM（用户 2026-10-21 选型：智谱中国区 Coding Plan，OpenAI Compatible）。
       // real 模式下三项都必填；密钥只在服务端 env，禁止写入仓库。
       llmBaseUrl: env.STORY_LLM_BASE_URL || '',

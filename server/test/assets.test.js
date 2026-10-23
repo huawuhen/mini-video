@@ -538,12 +538,12 @@ describe('assets（M1-BE-04）', () => {
     await post(base, `/characters/${chr.id}/looks/picture_book/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-sku-001' }, { cookie: A.cookie, csrf: A.csrf });
     const request = (await ctx.db.query(
       `SELECT request FROM gen_tasks WHERE idempotency_key LIKE '%look-sku-001'`)).rows[0].request;
-    assert.equal(request.skuCode, 'image.gpt2.1k', '下单时把 sku_code 写进 request（M2-BE-01，迁移 005）');
+    assert.equal(request.skuCode, 'image.gptimage2.1080p', '下单时把 sku_code 写进 request（M2-BE-01，迁移 006）');
     const local = mockImageProvider();
     const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: local });
     await createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-sku', concurrency: 1 }).runOne();
     assert.equal(local.calls.length, 1);
-    assert.deepEqual(local.calls[0].sku, { resolution: '1k', detailLevel: 'medium' },
+    assert.deepEqual(local.calls[0].sku, { resolution: '1080p' },
       'look.generate 按 request.skuCode 解析分辨率传给 provider');
   });
 

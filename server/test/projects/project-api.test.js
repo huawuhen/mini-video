@@ -408,7 +408,7 @@ describe('projects API（M1-BE-06）', () => {
     // 提交后、结算前：SKU 调价（新版本 150 分/秒生效，若按结算时查价应付 4500）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_seedance480p0002', 'video.seedance.480p', 2, 'video', 'seedance-2.5', 'modelhub', '480p', 'second', 150, 39, '{5,10,15,30}')`);
+       VALUES ('sku_miaowu480p000002', 'video.seedance25deal.480p', 2, 'video', 'seedance-2.5-deal', 'miaowuai', '480p', 'second', 150, 38, '{5,10,15,30}')`);
     const unitNow = (await ctx.db.query(
       `SELECT s.price_fen FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'

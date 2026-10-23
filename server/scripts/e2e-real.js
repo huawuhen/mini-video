@@ -15,8 +15,7 @@ import { loadConfig } from '../src/config.js';
 import { createDb } from '../src/db/pool.js';
 import { createStoryAgent } from '../src/engine/story/index.js';
 import { createOpenAiCompatLlm } from '../src/engine/llm/openai.js';
-import { createRegistry, createImageProvider, createModelhubTransport, createSeedance25Adapter,
-  createModelhubImageAdapter } from '../src/engine/providers/index.js';
+import { createMiaowuaiVideoAdapter, createMiaowuaiImageProvider } from '../src/engine/providers/index.js';
 import { createStorageFromConfig } from '../src/engine/storage/index.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 import { createLogger } from '../src/logger.js';
@@ -59,12 +58,43 @@ async function resolveWithDoh(hostname, { signal } = {}) {
   }
   return [];
 }
+const dohFallbackFetch = async (url, init = {}) => {
+  try {
+    return await fetch(url, init);
+  } catch (error) {
+    const text = String(error.message) + (error.cause?.code ?? '');
+    if (!/ENOTFOUND|fetch failed/i.test(text)) throw error;
+    const u = new URL(url);
+    const ips = await resolveWithDoh(u.hostname).catch(() => []);
+    if (!ips.length) throw error;
+    console.warn(`fetch 失败，DoH 直连重试：${u.hostname} → ${ips.map((r) => r.address).join(',')}`);
+    const https = await import('node:https');
+    return new Promise((resolve, reject) => {
+      const req = https.request({ hostname: ips[0].address, path: `${u.pathname}${u.search}`, port: 443,
+        method: init.method ?? 'GET', headers: { ...init.headers, host: u.hostname },
+        servername: u.hostname, agent: false }, (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => resolve(new Response(Buffer.concat(chunks), { status: res.statusCode, headers: res.headers })));
+      });
+      req.on('error', reject);
+      init.signal?.addEventListener('abort', () => req.destroy(new Error('已取消')), { once: true });
+      if (init.body) req.write(init.body);
+      req.end();
+    });
+  }
+};
 const devSafeFetch = createSafeFetch({ resolver: async (hostname, options) => {
-  const records = await dns.lookup(hostname, { all: true, verbatim: true });
-  if (records.some((record) => FAKE_IP_PREFIXES.some((prefix) => record.address.startsWith(prefix)))) {
+  // 系统 DNS 解析失败（如国外域名）或解析到 fake-IP 时，都改走 DoH
+  let records = [];
+  try { records = await dns.lookup(hostname, { all: true, verbatim: true }); } catch { /* 走 DoH */ }
+  const suspicious = !records.length
+    || records.some((record) => FAKE_IP_PREFIXES.some((prefix) => record.address.startsWith(prefix)));
+  if (suspicious) {
     const real = await resolveWithDoh(hostname, options).catch(() => []);
     if (real.length) return real;
   }
+  if (!records.length) throw new Error(`无法解析 ${hostname}（系统 DNS 与 DoH 均失败）`);
   return records;
 } });
 
@@ -77,6 +107,9 @@ const isTransient = (error) => error?.retryable === true
   || /fetch failed|network|timeout|ECONN|ETIMEDOUT|socket/i.test(String(error?.message));
 
 async function main() {
+  // 本机 DNS 对部分域名返回 ::ffff: 映射地址，undici（fetch）拿它连接会 ENOTFOUND
+  // （node:https/curl 走 IPv4 正常）：进程内强制 IPv4 优先，仅本脚本生效
+  dns.setDefaultResultOrder('ipv4first');
   const config = loadConfig({ ...process.env, GEN_UPSTREAMS: 'real' });
   const logger = createLogger({ level: 'info', base: { proc: 'e2e-real' } });
   if (!config.providers.real) throw new Error('本脚本只应以 GEN_UPSTREAMS=real 运行');
@@ -103,77 +136,37 @@ async function main() {
           AND type IN ('look.generate', 'project.bind_prompts', 'segment.generate') RETURNING id`);
     if (back.rowCount) logger.warn(`收回上次会话遗留的 running job ${back.rowCount} 个`);
   }
-  const storage = createStorageFromConfig(config);
-  // 开发机代理为 fake-IP DNS 且对长 POST 响应极不稳定（裸 GET 通而生成 POST 被反复 RST/超时，
-  // 独立探针进程则成功——见 §7）。这里 transport 一律走 node:https 全新连接 + DoH 真实 IP 直连
-  // （servername 保住证书校验），完全绕开 fake-IP 与按域名分流；只在本脚本生效，产品代码不改。
-  const https = await import('node:https');
-  const modelhubHost = new URL(config.providers.modelhubBaseUrl).hostname;
-  const modelhubIps = await resolveWithDoh(modelhubHost).catch(() => []);
-  if (modelhubIps.length) logger.info(`modelhub DoH 直连：${modelhubHost} → ${modelhubIps.map((r) => r.address).join(', ')}`);
-  const directFetch = (url, init = {}, attempt = 0) => new Promise((resolve, reject) => {
+  // 本机 DNS（114.114.114.114）对部分域名间歇失败：上传通道失败自动重试（下载已有 DoH 兜底）
+  const retryFetch = async (url, init = {}, attempt = 0) => {
     try {
-    const u = new URL(url);
-    const headers = { ...init.headers };
-    if (init.body && headers['Content-Length'] === undefined) {
-      headers['Content-Length'] = Buffer.byteLength(init.body); // 网关拒绝 chunked，必须带长度
-    }
-    // 代理退出后系统 DNS 已正常：按域名直连（IP 直连会被网关 3xx 重定向，POST 被吞成 unknown）
-    const req = https.request({
-      hostname: u.hostname, path: `${u.pathname}${u.search}`, port: 443, method: init.method ?? 'GET',
-      headers, agent: false,
-    }, (res) => {
-      const chunks = [];
-      res.on('data', (c) => chunks.push(c));
-      res.on('end', () => {
-        const buffer = Buffer.concat(chunks);
-        logger.warn(`directFetch ${init.method ?? 'GET'} ${u.pathname} → ${res.statusCode}，${buffer.length} 字节`);
-        resolve(new Response(buffer, { status: res.statusCode, headers: res.headers }));
-      });
-    });
-    req.on('error', (e) => { logger.warn(`directFetch ${u.pathname} 连接错误：${e.message}`); reject(e); });
-    req.setTimeout(120_000, () => req.destroy(new Error('直连请求超时')));
-    if (init.body) req.write(init.body);
-    req.end();
-    } catch (syncError) {
-      logger.warn(`directFetch ${url} 同步异常：${syncError.message}`);
-      reject(syncError);
-    }
-  });
-  const realTransport = createModelhubTransport({ baseUrl: config.providers.modelhubBaseUrl,
-    apiKey: config.providers.modelhubApiKey, timeoutMs: config.providers.requestTimeoutMs, logger,
-    fetchImpl: async (url, init = {}) => {
-      logger.warn(`directFetch 进入：${init.method ?? 'GET'} ${String(url).slice(0, 80)}`);
-      return directFetch(url, init);
-    } });
-  const transport = { request: async (path, opts = {}) => {
-    try {
-      const raw = await realTransport.request(path, opts);
-      logger.warn(`transport ${path} → ${raw?.status ?? JSON.stringify(raw).slice(0, 60)}`);
-      return raw;
+      return await fetch(url, init);
     } catch (error) {
-      logger.warn(`transport ${path} 抛错：${error.message} | submitted=${error.submitted} code=${error.code}` +
-        ` cause=${error.cause?.code ?? error.cause?.message ?? '-'}`);
-      throw error;
+      const text = String(error.message) + (error.cause?.code ?? '');
+      if (attempt >= 3 || !/fetch failed|ENOTFOUND|ECONNRESET|terminated|timeout/i.test(text)) throw error;
+      logger.warn(`上传请求失败（${text.slice(0, 60)}），1.5 秒后重试 ${attempt + 1}/3`);
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return retryFetch(url, init, attempt + 1);
     }
-  } };
-  const readAll = async (url) => {
-    const response = await devSafeFetch(url, { maxBytes: 20 * 1024 * 1024 });
-    const chunks = [];
-    for await (const chunk of response.stream) chunks.push(chunk);
-    return { buffer: Buffer.concat(chunks), contentType: response.contentType };
   };
-  const loadReference = async (key) => ({
-    ...(await readAll(await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds }))),
-    name: key.split('/').pop(),
-  });
-  const registry = createRegistry([createModelhubImageAdapter({ model: config.providers.imageModel,
-    transport, loadReference, logger })]);
-  const imageProvider = createImageProvider(registry, {
-    adapterId: `modelhub-${config.providers.imageModel}`,
-    sku: { resolution: config.providers.imageResolution, detailLevel: config.providers.imageDetailLevel },
-    downloadImage: readAll, logger });
-  const videoProvider = createSeedance25Adapter(transport);
+  const { createQiniuStorage } = await import('../src/engine/storage/qiniu.js');
+  const storage = createQiniuStorage(config.storage.qiniu,
+    { defaultTtlSeconds: config.storage.signedUrlTtlSeconds, fetchImpl: retryFetch });
+  const videoProvider = createMiaowuaiVideoAdapter({ baseUrl: config.providers.miaowuaiBaseUrl,
+    apiKey: config.providers.miaowuaiApiKey, model: config.providers.videoModel,
+    fetchImpl: dohFallbackFetch, timeoutMs: config.providers.requestTimeoutMs, logger });
+  const imageProvider = createMiaowuaiImageProvider({ baseUrl: config.providers.miaowuaiBaseUrl,
+    apiKey: config.providers.miaowuaiApiKey, model: config.providers.imageModel,
+    resolution: config.providers.imageResolution,
+    fetchImpl: dohFallbackFetch,
+    pollIntervalMs: config.providers.imagePollIntervalMs, pollTimeoutMs: config.providers.imagePollTimeoutMs,
+    requestTimeoutMs: config.providers.requestTimeoutMs,
+    downloadImage: async (url, headers) => {
+      const response = await devSafeFetch(url, { maxBytes: 20 * 1024 * 1024, headers });
+      const chunks = [];
+      for await (const chunk of response.stream) chunks.push(chunk);
+      return { buffer: Buffer.concat(chunks), contentType: response.contentType };
+    },
+    logger });
   const llm = createOpenAiCompatLlm({ baseUrl: config.providers.llmBaseUrl, apiKey: config.providers.llmApiKey,
     model: config.providers.llmModel, logger });
   const storyAgent = createStoryAgent({ llm, logger });

@@ -9,8 +9,7 @@ import { createDb } from './db/pool.js';
 import { createOpenAiCompatLlm } from './engine/llm/openai.js';
 import { createStoryAgent } from './engine/story/index.js';
 import { safeFetch } from './engine/net/index.js';
-import { createRegistry, createImageProvider, createModelhubTransport, createSeedance25Adapter,
-  createModelhubImageAdapter } from './engine/providers/index.js';
+import { createRegistry, createMiaowuaiVideoAdapter, createMiaowuaiImageProvider } from './engine/providers/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { createLogger } from './logger.js';
 import { createDownloader, createLocalFetcher } from './projects/download.js';
@@ -33,22 +32,22 @@ function createDevImageProvider() {
 }
 
 /** 经 net.safeFetch 的受控下载（SSRF/大小/超时防护），给图片 provider 的参考图与结果下载用。 */
-async function downloadViaNet(url, { maxBytes, timeoutMs = 120_000 } = {}) {
-  const response = await safeFetch(url, { maxBytes, timeoutMs });
+async function downloadViaNet(url, { maxBytes, timeoutMs = 120_000, headers } = {}) {
+  const response = await safeFetch(url, { maxBytes, timeoutMs, headers });
   const chunks = [];
   for await (const chunk of response.stream) chunks.push(chunk);
   return { buffer: Buffer.concat(chunks), contentType: response.contentType };
 }
 
 /**
- * M2-BE-01：真实上游装配（GEN_UPSTREAMS=real）——视频/图片 Modelhub（seedance-2.5 / flare）、
- * 文本 LLM 智谱（OpenAI Compatible）、存储必须七牛（参考素材要上游可访问）。
+ * M2-BE-01：真实上游装配（GEN_UPSTREAMS=real）——视频/图片喵呜渠道（seedance-2.5-deal / GPT-image-2，
+ * OpenAI 风格异步任务）、文本 LLM 智谱（OpenAI Compatible）、存储必须七牛（参考素材要上游可访问）。
  * 缺省（GEN_UPSTREAMS 缺省/mock）走确定性桩：测试与开发不产生任何真实费用（AGENTS.md §6）。
  */
 function createRealUpstreams({ config, logger, storage }) {
   const { providers } = config;
   const missing = [
-    ['MODELHUB_API_KEY', providers.modelhubApiKey],
+    ['MIAOWU_API_KEY', providers.miaowuaiApiKey],
     ['STORY_LLM_BASE_URL', providers.llmBaseUrl],
     ['STORY_LLM_API_KEY', providers.llmApiKey],
     ['STORY_LLM_MODEL', providers.llmModel],
@@ -57,24 +56,23 @@ function createRealUpstreams({ config, logger, storage }) {
   if (config.storage.driver !== 'qiniu') {
     throw new Error('GEN_UPSTREAMS=real 要求 STORAGE_DRIVER=qiniu（参考素材必须能生成上游可访问的签名链接）');
   }
-  const transport = createModelhubTransport({ baseUrl: providers.modelhubBaseUrl, apiKey: providers.modelhubApiKey,
-    timeoutMs: providers.requestTimeoutMs, logger });
   // 参考图：存储 key → 签名链接 → 受控下载（gen_tasks 里仍存 key，链接只在上游提交时用）
   const loadReference = async (key) => {
     const url = await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds });
     const { buffer, contentType } = await downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 });
     return { buffer, contentType, name: key.split('/').pop() };
   };
-  const registry = createRegistry([createModelhubImageAdapter({
-    model: providers.imageModel, transport, loadReference, logger,
-  })]);
-  const imageProvider = createImageProvider(registry, {
-    adapterId: `modelhub-${providers.imageModel}`,
-    sku: { resolution: providers.imageResolution, detailLevel: providers.imageDetailLevel },
-    downloadImage: (url) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 }),
-    logger,
-  });
-  const videoProvider = createSeedance25Adapter(transport);
+  const videoProvider = createMiaowuaiVideoAdapter({ baseUrl: providers.miaowuaiBaseUrl,
+    apiKey: providers.miaowuaiApiKey, model: providers.videoModel,
+    fetchImpl: (url, init) => fetch(url, init), timeoutMs: providers.requestTimeoutMs, logger });
+  const imageProvider = createMiaowuaiImageProvider({ baseUrl: providers.miaowuaiBaseUrl,
+    apiKey: providers.miaowuaiApiKey, model: providers.imageModel,
+    resolution: providers.imageResolution,
+    pollIntervalMs: providers.imagePollIntervalMs, pollTimeoutMs: providers.imagePollTimeoutMs,
+    requestTimeoutMs: providers.requestTimeoutMs,
+    // 结果下载：第三方签名直链公开；站内 /content 入口附 Bearer（safeFetch 支持 headers）
+    downloadImage: (url, headers) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024, headers }),
+    logger });
   const llm = createOpenAiCompatLlm({ baseUrl: providers.llmBaseUrl, apiKey: providers.llmApiKey,
     model: providers.llmModel, logger });
   const storyAgent = createStoryAgent({ llm, logger });
@@ -144,12 +142,14 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
       { ...cronOpts, cancelDays: config.projects.failedCancelDays, logger: ctx.logger })),
     'jobs.cleanup': withLog('cron_jobs_cleaned', (sdb) => runJobsCleanup(sdb, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
     'providers.price_audit': createPriceAuditHandler({ db, logger, config,
-      fetchCatalog: async () => (config.providers.real
-        ? createModelhubTransport({ baseUrl: config.providers.modelhubBaseUrl, apiKey: config.providers.modelhubApiKey,
-          timeoutMs: config.providers.requestTimeoutMs, logger }).request('/v1/models?include_capabilities=1')
-        : { data: [] }) }),
-    'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel,
-      imageDetailLevel: config.providers.imageDetailLevel }), // M1-BE-04
+      fetchCatalog: async () => {
+        if (!config.providers.real) return { data: [] };
+        const response = await fetch(`${config.providers.miaowuaiBaseUrl}/v1/models`,
+          { headers: { Authorization: `Bearer ${config.providers.miaowuaiApiKey}` } });
+        if (!response.ok) throw new Error(`喵呜模型目录返回 ${response.status}`);
+        return response.json();
+      } }),
+    'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel }), // M1-BE-04
     ...createProjectHandlers({ db, logger, config, storyAgent: story, videoProvider: video, storage: objectStorage, render, downloadToTempFile, fetchLocal }), // M1-BE-05
   };
 }

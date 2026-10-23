@@ -4,7 +4,7 @@ import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
 import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runProjectsFailedSweep,
   runUploadsSweep, windowStart } from '../src/queue/cron.js';
-import { createPriceAuditHandler, expectedCostFen } from '../src/queue/price-audit.js';
+import { createPriceAuditHandler, expectedModelPresence } from '../src/queue/price-audit.js';
 import { enqueue } from '../src/queue/index.js';
 import { buildHandlers, createWorker } from '../src/worker.js';
 import { createTestDb } from './helpers/db.js';
@@ -304,12 +304,8 @@ describe('cron（M1-BE-03）', () => {
     assert.equal(fetches, 0, 'mock 模式不拉目录');
     assert.ok(events.some(([, msg]) => msg === 'price_audit_skip_mock'));
 
-    // 真实 SKU（迁移 004+005：图片 = gpt-image-2 1k/medium 成本 21）与目录一致 → price_audit_ok
-    const catalog = { data: [
-      { id: 'seedance-2.5', pricing: { kind: 'per_second_range', resolutions: {
-        '480p': { min: 39, max: 39 }, '720p': { min: 47, max: 47 } } } },
-      { id: 'gpt-image-2', pricing: { kind: 'per_image', prices: { '1k': { medium: 21 } } } },
-    ] };
+    // 真实 SKU（迁移 005）的模型都在渠道目录 → price_audit_ok（喵呜目录无价格字段，只校验存在性）
+    const catalog = { data: [{ id: 'seedance-2.5-deal' }, { id: 'GPT-image-2' }] };
     const realConfig = loadConfig({ NODE_ENV: 'test', GEN_UPSTREAMS: 'real' });
     const realHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
       fetchCatalog: async () => { fetches += 1; return catalog; } });
@@ -317,20 +313,16 @@ describe('cron（M1-BE-03）', () => {
     assert.equal(fetches, 1);
     assert.ok(events.some(([, msg]) => msg === 'price_audit_ok'), '成本与目录一致时不报警');
 
-    // 渠道调价：480p 39 → 45
-    const drifted = { data: [
-      { id: 'seedance-2.5', pricing: { resolutions: { '480p': { min: 45, max: 45 } } } },
-      { id: 'gpt-image-2', pricing: { prices: { '1k': { medium: 21 } } } },
-    ] };
+    // 渠道下架：seedance-2.5-deal 从目录消失 → provider_model_missing
+    const missingCatalog = { data: [{ id: 'GPT-image-2' }] };
     await createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
-      fetchCatalog: async () => drifted })();
-    const drift = events.find(([, msg]) => msg === 'provider_price_drift');
-    assert.ok(drift, '成本漂移记 error 日志');
-    assert.ok(JSON.stringify(drift[2]).includes('video.seedance.480p'), '报警指明 SKU');
+      fetchCatalog: async () => missingCatalog })();
+    const missing = events.find(([, msg]) => msg === 'provider_model_missing');
+    assert.ok(missing, '模型缺失记 error 日志');
+    assert.ok(JSON.stringify(missing[2]).includes('video.seedance25deal.480p'), '报警指明 SKU');
 
-    // 纯函数：模型缺失 / 分辨率缺失
-    assert.equal(expectedCostFen({ kind: 'video', model: 'ghost', resolution: '480p', cost_fen: 39 },
-      new Map(), {}).ok, false);
+    // 纯函数：模型缺失
+    assert.equal(expectedModelPresence({ model: 'ghost' }, new Map()).ok, false);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {

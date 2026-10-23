@@ -25,3 +25,5 @@ export { createModelhubTransport, ProviderError } from './transport.js';
 export { createModelhubVideoAdapter, createWan30Adapter, createSeedance25Adapter } from './modelhub-video.js';
 export { createModelhubImageAdapter, createFlare25ImageAdapter } from './modelhub-image.js';
 export { createImageProvider } from './image.js';
+export { createMiaowuaiVideoAdapter } from './miaowuai-video.js';
+export { createMiaowuaiImageProvider } from './miaowuai-image.js';
