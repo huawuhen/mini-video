@@ -122,7 +122,7 @@ export function createAiideImageProvider({ baseUrl, apiKey, model = 'gpt-image-2
         files = await loadReferences(refs);
       } catch (error) {
         if (error.retryable === true) throw error;
-        logger?.error?.('image_provider_local_invalid', { code: error.code, message: error.message, detail: error.providerMessage });
+        logger?.error?.('image_provider_local_invalid', { errorCode: error.code, message: error.message, detail: error.providerMessage });
         return { status: 'failed', error: '图片生成参数不符合要求。', providerMessage: error.providerMessage };
       }
 
@@ -146,7 +146,7 @@ export function createAiideImageProvider({ baseUrl, apiKey, model = 'gpt-image-2
         }
       } catch (error) {
         if (error instanceof ProviderError && error.retryable === true) throw error; // 连接失败：明确未提交
-        logger?.warn?.('aiide_image_submission_unknown', { characterId, styleId, code: error?.code, detail: error?.providerMessage });
+        logger?.warn?.('aiide_image_submission_unknown', { characterId, styleId, errorCode: error?.code, detail: error?.providerMessage });
         return { status: 'unknown' }; // 超时/断连：同步生成可能已计费，冻结待对账
       }
 

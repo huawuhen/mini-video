@@ -137,12 +137,18 @@ export function createAiideVideoAdapter({ baseUrl, apiKey, model = 'dreamina-see
         if (!(error instanceof Error)) throw error;
         if (error.retryable === true) throw error;
         if (!error.code) throw error; // 无分类信息的异常照抛（编程错误）
+        // 文案按原因区分（日志字段不用 code 命名，logger 会把它当密钥脱敏）
+        let message = '参考素材未通过渠道审核，请更换形象或照片后重试。';
         if (['PROVIDER_CONFIG_INVALID', 'PROVIDER_INPUT_INVALID'].includes(error.code)) {
-          logger?.error?.('aiide_video_material_invalid', { code: error.code, message: error.message, detail: error.providerMessage });
+          logger?.error?.('aiide_video_material_invalid', { errorCode: error.code, message: error.message, detail: error.providerMessage });
+          message = '参考素材格式不符合渠道要求，请联系客服。';
+        } else if (error.code === 'PROVIDER_REJECTED') {
+          logger?.warn?.('aiide_video_material_rejected', { errorCode: error.code, detail: error.providerMessage });
+          message = '参考素材暂时无法被渠道读取，请稍后重试。';
         } else {
-          logger?.warn?.('aiide_video_material_rejected', { code: error.code, detail: error.providerMessage });
+          logger?.warn?.('aiide_video_material_rejected', { errorCode: error.code, detail: error.providerMessage });
         }
-        return { status: 'failed', error: '参考素材未通过渠道审核，请更换形象或照片后重试。',
+        return { status: 'failed', error: message,
           providerMessage: error.providerMessage ?? error.message, providerCode: error.code };
       }
 
