@@ -304,8 +304,8 @@ describe('cron（M1-BE-03）', () => {
     assert.equal(fetches, 0, 'mock 模式不拉目录');
     assert.ok(events.some(([, msg]) => msg === 'price_audit_skip_mock'));
 
-    // 真实 SKU（迁移 005）的模型都在渠道目录 → price_audit_ok（喵呜目录无价格字段，只校验存在性）
-    const catalog = { data: [{ id: 'seedance-2.5-deal' }, { id: 'GPT-image-2' }] };
+    // 真实 SKU（迁移 007）的模型都在渠道目录 → price_audit_ok（aiide 目录无价格字段，只校验存在性）
+    const catalog = { data: [{ id: 'dreamina-seedance-2-5-hc' }, { id: 'gpt-image-2' }] };
     const realConfig = loadConfig({ NODE_ENV: 'test', GEN_UPSTREAMS: 'real' });
     const realHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
       fetchCatalog: async () => { fetches += 1; return catalog; } });
@@ -313,13 +313,13 @@ describe('cron（M1-BE-03）', () => {
     assert.equal(fetches, 1);
     assert.ok(events.some(([, msg]) => msg === 'price_audit_ok'), '成本与目录一致时不报警');
 
-    // 渠道下架：seedance-2.5-deal 从目录消失 → provider_model_missing
-    const missingCatalog = { data: [{ id: 'GPT-image-2' }] };
+    // 渠道下架：dreamina-seedance-2-5-hc 从目录消失 → provider_model_missing
+    const missingCatalog = { data: [{ id: 'gpt-image-2' }] };
     await createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
       fetchCatalog: async () => missingCatalog })();
     const missing = events.find(([, msg]) => msg === 'provider_model_missing');
     assert.ok(missing, '模型缺失记 error 日志');
-    assert.ok(JSON.stringify(missing[2]).includes('video.seedance25deal.480p'), '报警指明 SKU');
+    assert.ok(JSON.stringify(missing[2]).includes('video.seedance25hc.480p'), '报警指明 SKU');
 
     // 纯函数：模型缺失
     assert.equal(expectedModelPresence({ model: 'ghost' }, new Map()).ok, false);

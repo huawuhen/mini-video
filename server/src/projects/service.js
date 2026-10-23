@@ -331,7 +331,7 @@ export async function confirmStory(db, { userId, projectId, quoteId, idempotency
            VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
           [genTaskId, userId, imageSku[0].sku_code, imageSku[0].version, JSON.stringify({
             versionId, characterId: member.character_id, styleId: project.style_id,
-            storageKey: `users/${userId}/looks/${versionId}`,
+            storageKey: `users/${userId}/looks/${versionId}.png`,
             amountFen: imageSku[0].price_fen, promptHint: styleRows[0]?.prompt_hint ?? '',
             description: member.description ?? '', referenceKeys: photos.map((row) => row.storage_key),
             skuCode: imageSku[0].sku_code, // M2-BE-01：look.generate 按此解析真实分辨率（ENG-02 遗留项）
@@ -618,7 +618,7 @@ export async function retryProject(db, { userId, projectId }) {
            VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
           [genTaskId, userId, imageSku[0].sku_code, imageSku[0].version, JSON.stringify({
             versionId, characterId: member.character_id, styleId: project.style_id,
-            storageKey: `users/${userId}/looks/${versionId}`, amountFen: 0,
+            storageKey: `users/${userId}/looks/${versionId}.png`, amountFen: 0,
             promptHint: original.promptHint ?? styleRows[0]?.prompt_hint ?? '',
             description: original.description ?? '',
             referenceKeys: original.referenceKeys ?? [],

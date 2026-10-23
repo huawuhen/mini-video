@@ -315,10 +315,10 @@ describe('wallet（M1-BE-02）', () => {
 
   test('调价后旧报价 QUOTE_MISMATCH，且占用已回滚可重新报价', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
-    // 模拟调价：新增 version 2，单价 50 → 60（settings.look_image_sku_code 现指向 image.gptimage2.1080p，迁移 006）
+    // 模拟调价：新增 version 2，单价 50 → 60（settings.look_image_sku_code 现指向 image.gptimage2.1k，迁移 007）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_gptimage2p000002', 'image.gptimage2.1080p', 2, 'image', 'GPT-image-2', 'miaowuai', '1080p', 'image', 60, 5, '{}')`,
+       VALUES ('sku_gptimage2p000002', 'image.gptimage2.1k', 2, 'image', 'gpt-image-2', 'aiide', '1k', 'image', 60, 21, '{}')`,
     );
     try {
       await assert.rejects(

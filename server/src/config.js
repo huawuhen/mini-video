@@ -88,22 +88,35 @@ export function loadConfig(env = process.env) {
       },
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
-    // 生成渠道（喵呜 miaowuai，2026-10-22 替代 modelhub）：OpenAI 风格异步任务
-    // （POST /v1/videos、POST /v1/images + GET /v1/{videos,images}/{id} 轮询，未知字段一律 400）。
+    // 生成渠道（aiide，用户 2026-10-23 指定，替代喵呜；文档 https://aiide.apifox.cn/chinese）：
+    //   视频走火山方舟协议 POST /v1/video/generations + GET /v1/video/generations/{task_id}（参考图先经素材库过审）；
+    //   图片走 OpenAI Images POST /v1/images/generations | /v1/images/edits（同步，b64_json）。
     // GEN_UPSTREAMS=real 时 Worker 接入真实上游，缺省 mock 走确定性桩——测试与开发零真实费用。
     providers: {
       real: env.GEN_UPSTREAMS === 'real',
+      channel: 'aiide', // skus.channel 过滤与装配口径；换渠道时随适配器一起改
+      aiideBaseUrl: (env.AIIDE_BASE_URL || 'https://www.aiide.com').replace(/\/+$/, ''),
+      aiideApiKey: env.AIIDE_API_KEY || '',
+      // 素材库过审轮询（视频参考图：人脸/虚拟人必须过审）；超时按「未提交、可重试」交队列退避
+      aiideMaterialsPollIntervalMs: int(env.AIIDE_ASSET_POLL_INTERVAL_MS, 2_000),
+      aiideMaterialsPollTimeoutMs: int(env.AIIDE_ASSET_POLL_TIMEOUT_MS, 180_000),
+      aiideMaterialsPurpose: env.AIIDE_ASSET_PURPOSE || 'Mini AI Video 参考素材',
+      // 喵呜（2026-10-22 临时渠道）配置保留给仍在仓库里的适配器/脚本，不再装配、不再必填
       miaowuaiBaseUrl: (env.MIAOWU_BASE_URL || 'https://api.miaowuai.store').replace(/\/+$/, ''),
       miaowuaiApiKey: env.MIAOWU_API_KEY || '',
-      // 图片/视频任务响应波动大（实测 20~110 秒），默认 3 分钟留足余量
+      // 图片同步生成实测 20~110 秒，默认 3 分钟留足余量
       requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 180_000),
-      // 视频 seedance-2.5-deal、图片 GPT-image-2（用户 2026-10-22 指定）
-      videoModel: env.GENERATION_VIDEO_MODEL || 'seedance-2.5-deal',
+      // 视频 dreamina-seedance-2-5-hc、图片 gpt-image-2（用户 2026-10-23 指定）
+      videoModel: env.GENERATION_VIDEO_MODEL || 'dreamina-seedance-2-5-hc',
       videoResolution: env.GENERATION_VIDEO_RESOLUTION || '480p',
-      imageModel: env.GENERATION_IMAGE_MODEL || 'GPT-image-2',
-      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1080p',
-      imagePollIntervalMs: int(env.PROVIDERS_IMAGE_POLL_INTERVAL_MS, 5_000), // 图片异步任务轮询间隔
-      imagePollTimeoutMs: int(env.PROVIDERS_IMAGE_POLL_TIMEOUT_MS, 600_000), // 图片任务轮询上限 10 分钟
+      videoGenerateAudio: bool(env.GENERATION_VIDEO_GENERATE_AUDIO, true), // 原生音频（对白口型同步依赖）
+      imageModel: env.GENERATION_IMAGE_MODEL || 'gpt-image-2',
+      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k', // 1k/2k/4k → OpenAI size（见 aiide-image.js）
+      imageRatio: env.GENERATION_IMAGE_RATIO || '1:1',
+      imageQuality: env.GENERATION_IMAGE_QUALITY || '', // 缺省不传，由渠道按模型默认
+      imageMaxReferences: int(env.GENERATION_IMAGE_MAX_REFERENCES, 1), // 用户 2026-10-17：先只用第一张；edits 支持 1~4
+      imagePollIntervalMs: int(env.PROVIDERS_IMAGE_POLL_INTERVAL_MS, 5_000), // （喵呜异步任务遗留）
+      imagePollTimeoutMs: int(env.PROVIDERS_IMAGE_POLL_TIMEOUT_MS, 600_000),
       // 文本 LLM（用户 2026-10-21 选型：智谱中国区 Coding Plan，OpenAI Compatible）。
       // real 模式下三项都必填；密钥只在服务端 env，禁止写入仓库。
       llmBaseUrl: env.STORY_LLM_BASE_URL || '',

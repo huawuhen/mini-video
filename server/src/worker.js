@@ -9,7 +9,7 @@ import { createDb } from './db/pool.js';
 import { createOpenAiCompatLlm } from './engine/llm/openai.js';
 import { createStoryAgent } from './engine/story/index.js';
 import { safeFetch } from './engine/net/index.js';
-import { createRegistry, createMiaowuaiVideoAdapter, createMiaowuaiImageProvider } from './engine/providers/index.js';
+import { createRegistry, createAiideMaterials, createAiideVideoAdapter, createAiideImageProvider } from './engine/providers/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { createLogger } from './logger.js';
 import { createDownloader, createLocalFetcher } from './projects/download.js';
@@ -40,14 +40,14 @@ async function downloadViaNet(url, { maxBytes, timeoutMs = 120_000, headers } = 
 }
 
 /**
- * M2-BE-01：真实上游装配（GEN_UPSTREAMS=real）——视频/图片喵呜渠道（seedance-2.5-deal / GPT-image-2，
- * OpenAI 风格异步任务）、文本 LLM 智谱（OpenAI Compatible）、存储必须七牛（参考素材要上游可访问）。
+ * M2-BE-01：真实上游装配（GEN_UPSTREAMS=real）——视频/图片 aiide 渠道（dreamina-seedance-2-5-hc 火山方舟协议 +
+ * 素材库过审 / gpt-image-2 OpenAI Images）、文本 LLM 智谱（OpenAI Compatible）、存储必须七牛（参考素材要上游可访问）。
  * 缺省（GEN_UPSTREAMS 缺省/mock）走确定性桩：测试与开发不产生任何真实费用（AGENTS.md §6）。
  */
 function createRealUpstreams({ config, logger, storage }) {
   const { providers } = config;
   const missing = [
-    ['MIAOWU_API_KEY', providers.miaowuaiApiKey],
+    ['AIIDE_API_KEY', providers.aiideApiKey],
     ['STORY_LLM_BASE_URL', providers.llmBaseUrl],
     ['STORY_LLM_API_KEY', providers.llmApiKey],
     ['STORY_LLM_MODEL', providers.llmModel],
@@ -56,23 +56,24 @@ function createRealUpstreams({ config, logger, storage }) {
   if (config.storage.driver !== 'qiniu') {
     throw new Error('GEN_UPSTREAMS=real 要求 STORAGE_DRIVER=qiniu（参考素材必须能生成上游可访问的签名链接）');
   }
-  // 参考图：存储 key → 签名链接 → 受控下载（gen_tasks 里仍存 key，链接只在上游提交时用）
+  // 参考照片：存储 key → 签名链接 → 受控下载（gen_tasks 里仍存 key；图片 edits 以文件字节上传）
   const loadReference = async (key) => {
     const url = await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds });
     const { buffer, contentType } = await downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 });
     return { buffer, contentType, name: key.split('/').pop() };
   };
-  const videoProvider = createMiaowuaiVideoAdapter({ baseUrl: providers.miaowuaiBaseUrl,
-    apiKey: providers.miaowuaiApiKey, model: providers.videoModel,
-    fetchImpl: (url, init) => fetch(url, init), timeoutMs: providers.requestTimeoutMs, logger });
-  const imageProvider = createMiaowuaiImageProvider({ baseUrl: providers.miaowuaiBaseUrl,
-    apiKey: providers.miaowuaiApiKey, model: providers.imageModel,
-    resolution: providers.imageResolution,
-    pollIntervalMs: providers.imagePollIntervalMs, pollTimeoutMs: providers.imagePollTimeoutMs,
-    requestTimeoutMs: providers.requestTimeoutMs,
-    // 结果下载：第三方签名直链公开；站内 /content 入口附 Bearer（safeFetch 支持 headers）
-    downloadImage: (url, headers) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024, headers }),
-    logger });
+  const fetchImpl = (url, init) => fetch(url, init);
+  const aiide = { baseUrl: providers.aiideBaseUrl, apiKey: providers.aiideApiKey, fetchImpl, logger };
+  const materials = createAiideMaterials({ ...aiide, requestTimeoutMs: providers.requestTimeoutMs,
+    pollIntervalMs: providers.aiideMaterialsPollIntervalMs, pollTimeoutMs: providers.aiideMaterialsPollTimeoutMs,
+    purpose: providers.aiideMaterialsPurpose });
+  const videoProvider = createAiideVideoAdapter({ ...aiide, model: providers.videoModel, materials,
+    timeoutMs: providers.requestTimeoutMs, generateAudio: providers.videoGenerateAudio });
+  const imageProvider = createAiideImageProvider({ ...aiide, model: providers.imageModel,
+    resolution: providers.imageResolution, ratio: providers.imageRatio, quality: providers.imageQuality,
+    maxReferences: providers.imageMaxReferences, requestTimeoutMs: providers.requestTimeoutMs, loadReference,
+    // 结果缺省 b64_json 内联；渠道改返回 url 时经 safeFetch 受控下载
+    downloadImage: (url) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 }) });
   const llm = createOpenAiCompatLlm({ baseUrl: providers.llmBaseUrl, apiKey: providers.llmApiKey,
     model: providers.llmModel, logger });
   const storyAgent = createStoryAgent({ llm, logger });
@@ -144,9 +145,9 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
     'providers.price_audit': createPriceAuditHandler({ db, logger, config,
       fetchCatalog: async () => {
         if (!config.providers.real) return { data: [] };
-        const response = await fetch(`${config.providers.miaowuaiBaseUrl}/v1/models`,
-          { headers: { Authorization: `Bearer ${config.providers.miaowuaiApiKey}` } });
-        if (!response.ok) throw new Error(`喵呜模型目录返回 ${response.status}`);
+        const response = await fetch(`${config.providers.aiideBaseUrl}/v1/models`,
+          { headers: { Authorization: `Bearer ${config.providers.aiideApiKey}` } });
+        if (!response.ok) throw new Error(`aiide 模型目录返回 ${response.status}`);
         return response.json();
       } }),
     'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel }), // M1-BE-04

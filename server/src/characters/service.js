@@ -2,6 +2,7 @@
 // 所有查询带 user_id，他人资源一律 404；替换类操作只增不改（形象版本只新增、切换用 selection）。
 // 引用上传遵循 BE-03 约定：同事务条件 UPDATE，返回行数不足即 400；旧照片只解除引用，对象由 uploads.sweep 回收。
 import { newId } from '../db/ids.js';
+import { imageExtensionFor, sniffImage, withImageExtension } from '../engine/providers/image-bytes.js';
 import { appError } from '../http/errors.js';
 import { enqueue, PermanentJobError } from '../queue/index.js';
 import { appendEvent, transition } from '../projects/state.js';
@@ -325,7 +326,8 @@ export async function createLookVersion(db, { userId, characterId, styleId, quot
        VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
       [genTaskId, userId, quote.price_snapshot.image.skuCode, quote.price_snapshot.image.version,
         JSON.stringify({
-          versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}`, amountFen,
+          // key 带扩展名：aiide 素材库按 URL 扩展名校验（落盘时按实际字节再校正，见 look.generate）
+          versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}.png`, amountFen,
           promptHint: styleRows[0]?.prompt_hint ?? '', description: character.description ?? '',
           referenceKeys: photoRows.map((r) => r.storage_key),
           skuCode: quote.price_snapshot.image.skuCode, // M2-BE-01：look.generate 按此解析真实分辨率
@@ -482,9 +484,11 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
     }
 
     if (result.status === 'succeeded') {
-      let imageKey = request.storageKey;
+      // 扩展名按实际字节校正（旧任务 key 无扩展名、或模型返回 jpg/webp）：aiide 素材库按 URL 扩展名校验类型
+      const sniffed = sniffImage(result.buffer);
+      const imageKey = withImageExtension(request.storageKey, imageExtensionFor(result));
       try {
-        await storage.put(imageKey, result.buffer, { contentType: result.contentType ?? 'image/png' });
+        await storage.put(imageKey, result.buffer, { contentType: sniffed?.contentType ?? result.contentType ?? 'image/png' });
       } catch (err) {
         await db.tx((t) => t.query(`UPDATE gen_tasks SET status = 'created', updated_at = now() WHERE id = $1`, [version.gen_task_id]));
         throw err; // 存储失败：回退状态交队列重试

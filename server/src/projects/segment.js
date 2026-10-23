@@ -17,6 +17,16 @@ import { videoSkuForMapping } from './understand.js';
 
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
+/** 上游明确失败写入 take/项目 error 的口径：message 用适配器的中文业务原因（如素材审核不通过），
+ * 上游原始信息只进技术详情（providerMessage/providerCode），不展示为业务文案。 */
+function upstreamFailure(result) {
+  return {
+    message: result.error ?? '视频生成失败，请稍后重试',
+    ...(result.providerMessage ? { providerMessage: result.providerMessage } : {}),
+    ...(result.providerCode ? { providerCode: result.providerCode } : {}),
+  };
+}
+
 // 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径）
 const skillRegistry = createSkillRegistry();
 
@@ -178,7 +188,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     if (submitted.status === 'failed') {
       await failSegment(db, ctx, { takeId: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id,
         keepDelivered: request.redelivery === true, amountFen: request.amountFen,
-        error: { message: '视频生成失败，请稍后重试' }, logger });
+        error: upstreamFailure(submitted), logger });
       return;
     }
     if (submitted.status === 'unknown' || !submitted.upstreamId) {
@@ -403,7 +413,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
     if (result.status === 'failed') {
       await failSegment(db, ctx, { takeId, projectId, userId: take.user_id, genTaskId: take.gen_task_id,
         keepDelivered: request.redelivery === true, amountFen,
-        error: { message: '视频生成失败，请稍后重试' }, logger });
+        error: upstreamFailure(result), logger });
       return;
     }
 

@@ -44,12 +44,12 @@ describe('http', () => {
   });
 
   test('档位映射的 SKU 下架后，该档位不再展示', async () => {
-    await ctx.db.query(`UPDATE skus SET status = 'inactive' WHERE sku_code = 'video.seedance25deal.480p'`);
+    await ctx.db.query(`UPDATE skus SET status = 'inactive' WHERE sku_code = 'video.seedance25hc.480p'`);
     try {
       const body = await (await fetch(`${base}/catalog`)).json();
       assert.deepEqual(body.qualityTiers.map((t) => t.id), ['hd']);
     } finally {
-      await ctx.db.query(`UPDATE skus SET status = 'active' WHERE sku_code = 'video.seedance25deal.480p'`);
+      await ctx.db.query(`UPDATE skus SET status = 'active' WHERE sku_code = 'video.seedance25hc.480p'`);
     }
   });
 

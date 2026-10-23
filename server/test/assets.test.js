@@ -294,8 +294,8 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(await worker.runOne(), true);
     const done = (await ctx.db.query(`SELECT status, image_key FROM look_versions WHERE id = $1`, [version.id])).rows[0];
     assert.equal(done.status, 'succeeded');
-    assert.equal(done.image_key, `users/${A.userId}/looks/${version.id}`);
-    assert.deepEqual(storage.puts.at(-1)?.key, `users/${A.userId}/looks/${version.id}`);
+    assert.equal(done.image_key, `users/${A.userId}/looks/${version.id}.png`, '形象 key 带扩展名（aiide 素材库按扩展名校验）');
+    assert.deepEqual(storage.puts.at(-1)?.key, `users/${A.userId}/looks/${version.id}.png`);
     const look = (await ctx.db.query(`SELECT selected_version_id FROM character_looks WHERE character_id = $1`, [chr.id])).rows[0];
     assert.equal(look.selected_version_id, version.id, '成功后自动选中新版本');
     wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
@@ -538,13 +538,13 @@ describe('assets（M1-BE-04）', () => {
     await post(base, `/characters/${chr.id}/looks/picture_book/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-sku-001' }, { cookie: A.cookie, csrf: A.csrf });
     const request = (await ctx.db.query(
       `SELECT request FROM gen_tasks WHERE idempotency_key LIKE '%look-sku-001'`)).rows[0].request;
-    assert.equal(request.skuCode, 'image.gptimage2.1080p', '下单时把 sku_code 写进 request（M2-BE-01，迁移 006）');
+    assert.equal(request.skuCode, 'image.gptimage2.1k', '下单时把 sku_code 写进 request（M2-BE-01，迁移 007）');
     const local = mockImageProvider();
     const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: local });
     await createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-sku', concurrency: 1 }).runOne();
     assert.equal(local.calls.length, 1);
-    assert.deepEqual(local.calls[0].sku, { resolution: '1080p' },
-      'look.generate 按 request.skuCode 解析分辨率传给 provider');
+    assert.deepEqual(local.calls[0].sku, { resolution: '1k' },
+      'look.generate 按 request.skuCode 解析分辨率传给 provider（迁移 007：image.gptimage2.1k）');
   });
 
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {

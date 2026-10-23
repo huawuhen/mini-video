@@ -761,6 +761,39 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.equal(cancelled.frozenFen, before - cancelled.refundedFen);
   });
 
+  test('提交被渠道明确拒绝（如素材审核不通过）：项目 failed 带上游中文原因，技术详情留上游信息；retry 免费重建', async () => {
+    const projectId = await driveToRendering('c7-0002');
+    const videoProvider = fakeVideoProvider({});
+    videoProvider.submit = async (prepared) => {
+      videoProvider.submissions.push(prepared);
+      return videoProvider.submissions.length === 1
+        ? { status: 'failed', error: '参考素材未通过渠道审核，请更换形象或照片后重试。',
+            providerMessage: '人脸未过审', providerCode: 'PROVIDER_REFERENCE_REJECTED' }
+        : { status: 'running', upstreamId: `up_${videoProvider.submissions.length}` };
+    };
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage: httpMemoryStorage() });
+    const ctxOf = () => ({ db: ctx.db, logger: silentLogger, enqueue: async () => {}, extendLease: async () => {} });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'failed');
+    assert.equal(detail.error.code, 'SEGMENT_FAILED');
+    assert.match(detail.error.message, /参考素材未通过渠道审核/, '业务文案用适配器给出的中文原因');
+    const { rows: takeRows } = await ctx.db.query(
+      `SELECT t.status, t.error FROM segment_takes t JOIN segments s ON s.id = t.segment_id
+        WHERE s.project_id = $1 AND s.idx = 0`, [projectId]);
+    const takeError = takeRows[0].error; // jsonb 列，pg 已解析为对象
+    assert.equal(takeRows[0].status, 'failed');
+    assert.equal(takeError.providerMessage, '人脸未过审', '上游原始信息只进技术详情');
+    assert.equal(detail.pricing.frozenFen, 4800, 'A 口径：明确失败保持冻结，由取消/重试消化');
+    // retry：免费重建该段，渠道不再拒绝 → 提交成功回到 rendering
+    await retryProject(ctx.db, { userId, projectId });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    const detail2 = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail2.status, 'rendering');
+    assert.equal(videoProvider.submissions.length, 2, '重试后渠道收到第二次提交');
+  });
+
   test('暂停/恢复：暂停后片段提交停住，恢复后续跑到交付', async () => {
     const sample = await makeVideo('chain-30s.mp4', { duration: 30 });
     const projectId = await driveToRendering('c7-0001');
