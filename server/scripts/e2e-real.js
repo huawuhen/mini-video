@@ -414,12 +414,13 @@ async function main() {
       process.stdout.write(`\r排队生成中… 状态 ${state.status} · ${state.progress?.message ?? ''}   `);
       await new Promise((resolve) => setTimeout(resolve, POLL_SECONDS * 1000));
       const { rows: due } = await db.query(
-        `SELECT gt.id FROM gen_tasks gt
+        `SELECT t.id AS take_id FROM gen_tasks gt
           JOIN segment_takes t ON t.gen_task_id = gt.id
           JOIN segments s ON s.id = t.segment_id
          WHERE s.project_id = $1 AND gt.status = 'running'
            AND (gt.next_poll_at IS NULL OR gt.next_poll_at <= now())`, [projectId]);
-      for (const row of due) pendingJobs.push({ type: 'gen.poll', payload: { takeId: row.id } });
+      // gen.poll 的 payload.takeId 是 take id（此前误填 gen_tasks.id，导致「片段任务不存在」空转）
+      for (const row of due) pendingJobs.push({ type: 'gen.poll', payload: { takeId: row.take_id } });
       continue;
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
