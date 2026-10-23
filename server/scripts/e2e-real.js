@@ -198,8 +198,9 @@ async function main() {
   await db.tx(async (t) => {
     await t.query(`INSERT INTO users (id, phone, nickname) VALUES ($1, '15988880001', 'E2E 真实链路')
       ON CONFLICT (id) DO NOTHING`, [userId]);
-    await t.query(`INSERT INTO wallets (user_id, available_fen) VALUES ($1, 100000)
-      ON CONFLICT (user_id) DO UPDATE SET available_fen = 100000, frozen_fen = 0`, [userId]);
+    // 只保证可用额；不清 frozen（断点续跑时冻结是账本事实，清零会导致结算「冻结金额不足」）
+    await t.query(`INSERT INTO wallets (user_id, available_fen, frozen_fen) VALUES ($1, 100000, 0)
+      ON CONFLICT (user_id) DO UPDATE SET available_fen = 100000`, [userId]);
   });
   const project = async (id) => (await db.query(`SELECT status, progress FROM projects WHERE id = $1`, [id])).rows[0];
   const pendingJobs = [];

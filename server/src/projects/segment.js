@@ -427,7 +427,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
           genTaskId: take.gen_task_id, logger });
         return; // 成功状态拿不到地址：结果未知
       }
-      await downloadToTempFile(output.url, localPath, { timeoutMs: 300_000 });
+      await downloadToTempFile(output.url, localPath, { timeoutMs: config.projects.videoDownloadTimeoutMs });
       await ctx.extendLease?.();
       const inspection = await render.inspect(localPath, {
         durationSeconds: request.durationSeconds, ratio: request.ratio,
