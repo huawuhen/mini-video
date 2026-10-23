@@ -362,3 +362,25 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | 500 | `INTERNAL` | 服务器错误 |
 | 502 | `UPSTREAM_FAILED` / `SUBMISSION_UNKNOWN` | 上游失败 / 提交结果未知（冻结待对账） |
 | 502 | `PAYMENT_UNAVAILABLE` | 支付通道暂不可用（M3） |
+
+## 8. 管理端接口（仅运营后台与运维脚本使用，**前端用户端不调用**）
+
+- 路径前缀 `/api/admin`；**独立管理员账号**（`admin_users`，用户名 + 强密码，首个管理员由 `npm run admin:create` 脚本创建，不开放注册）与独立会话 Cookie；同样校验同源 + CSRF；全部写操作写 `admin_audit_logs`。
+- 渠道凭证只写不读：创建 / 更新时传明文，之后接口只返回 `credentialMask`（后 4 位）。
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| POST | `/admin/auth/login` · `/admin/auth/logout` | `{ username, password }` | `{ admin }` |
+| GET | `/admin/channels?kind=video\|image\|llm` | – | `{ items: Channel[] }`（含状态、健康度、在途任务数、生效标记） |
+| POST | `/admin/channels` | `{ kind, name, adapter, baseUrl, credential, modelMap, costOverrides?, remark? }` | `Channel` |
+| PATCH | `/admin/channels/:id` | 同上可选字段；`credential` 缺省表示不改 | `Channel` |
+| POST | `/admin/channels/:id/test` | – | `{ ok, latencyMs, models: [{ name, priceFenPerUnit }], mismatches: [...] }`（免费，只调目录接口） |
+| POST | `/admin/channels/:id/trial` | `{ capability }` + 二次确认 `confirm: true` | 最小成本试生成（会产生真实费用，写审计） |
+| PUT | `/admin/routes/:kind/:capability` | `{ channelIds: [有序列表], autoFailover: boolean }` | 该能力的路由；第一个 `active` 为主用 |
+| POST | `/admin/channels/:id/disable` · `/enable` | – | `Channel`（disable 后不再被选中，在途任务仍可轮询） |
+| GET | `/admin/channels/health` | – | 近 1 小时各渠道成功率 / 失败数 / 排队时长 |
+
+`Channel` 字段：`id, kind, name, adapter, baseUrl, credentialMask, modelMap, status(active|standby|disabled), degraded, inFlight, recent: { total, failed, avgQueueSeconds }, createdAt, updatedAt`。
+
+新增错误码：`ADMIN_AUTH_REQUIRED`(401)、`CHANNEL_NOT_FOUND`(404)、`CHANNEL_IN_USE`(409，删除仍有在途任务的渠道)、`CHANNEL_TEST_FAILED`(400)、`NO_ACTIVE_CHANNEL`(503，用户侧提示“服务繁忙，请稍后再试”，不暴露渠道信息，并立刻告警)。
+
