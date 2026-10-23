@@ -250,7 +250,12 @@ async function main() {
         imageRefs: imageUrls, audioRefs: audioUrls,
       }, { durations: [seconds] });
     } else {
-      ({ ledger, entry } = await reserve('video-query', config.providers.videoModel, { upstreamId }, 0));
+      ledger = await readLedger();
+      // 收割 --no-wait 的任务：复用原提交的账本条目（找不到才建 0 元新条目）
+      entry = ledger.entries.filter((item) => item.taskId === upstreamId).pop();
+      if (!entry) {
+        ({ ledger, entry } = await reserve('video-query', config.providers.videoModel, { upstreamId }, 0));
+      }
     }
     try {
       let submitted = upstreamId ? { upstreamId } : null;
@@ -274,9 +279,13 @@ async function main() {
         await delay(10_000);
       }
       if (state.status === 'succeeded') {
-        console.log(`usage.total_tokens=${state.usage?.total_tokens ?? '未返回'}（用它校准 cost_fen）`);
+        const tokens = Number(state.usage?.total_tokens);
+        // 按 token 折算的费用只是口径估算（$9.63/M × 汇率），真实扣费以渠道后台为准
+        const tokenFen = Number.isFinite(tokens) ? Math.ceil((tokens * USD_PER_MTOKEN / 1_000_000) * FX_CNY_PER_USD * 100) : null;
+        console.log(`usage.total_tokens=${Number.isFinite(tokens) ? tokens : '未返回'}（按 token 折算 ≈ ${tokenFen ?? '-'} 分，用它校准 cost_fen）`);
         await saveArtifact(ledger, entry, await download(state.outputs[0].url, 512 * 1024 * 1024));
-        await finish(ledger, entry, { elapsedMs: Date.now() - startedAt });
+        await finish(ledger, entry, { elapsedMs: Date.now() - startedAt,
+          ...(Number.isFinite(tokens) ? { usageTokens: tokens, tokenFen } : {}) });
       } else if (state.status === 'failed') {
         await finish(ledger, entry, { status: `failed：${state.providerMessage ?? state.error}`, elapsedMs: Date.now() - startedAt });
         console.log(`生成失败：${state.providerMessage ?? state.error}`);

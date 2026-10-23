@@ -22,13 +22,14 @@
   - URL 硬性要求：公网 http(s)，**路径扩展名必须与 type 匹配**（图 jpg/jpeg/png/webp/bmp/tiff/gif/heic，视频 mp4/mov，音频 wav/mp3）。为此形象图存储 key 已改为带 `.png`（落盘时按实际字节校正）。
   - 支持模型清单（素材文档内列明）含 `dreamina-seedance-2-5-hc`。试听/参考音频将来上传时 key 必须带 `.wav`/`.mp3`。
 
-## 2. 计费与成本口径（估算，待真实 usage 校准）
+## 2. 计费与成本口径（2026-10-23 真实冒烟已校准 token 公式；真实扣费金额以渠道后台为准）
 
 - 视频按 **token** 计费：`$9.63/M`（输入=输出同价；Seedance 口径 token ≈ 宽×高×帧率 24×秒 ÷ 1024）。按 7.2 汇率折算：
-  - 480p 9:16（480×864）≈ 9,720 tok/s → **≈68 分/秒**；720p 9:16（704×1248）≈ 20,592 tok/s → **≈143 分/秒**。
-  - ⚠ 对照：喵呜 38/63 分、modelhub 39/47 分。现售价 80/150 分/秒在 aiide 成本口径下几乎没有毛利——**售价须用户重新决策**（迁移 007 注释同样标注）。
-- 图片按 token 计费：输入 $3.5~4.5/M、输出 $21~27/M（`gpt-image-official` 分组 7 折 / `Official API Key` 9 折，控制台看 Key 分组）。1024×1024 中档 ≈1,056 输出 token → **≈16~21 分/张**。
-- 校准方法：`aiide-smoke.js video` 完成后打印 `usage.total_tokens`，与渠道后台实际扣费对照，再以新迁移更新 `skus.cost_fen`。
+  - **实测**：5 秒 480p 9:16 → `usage.total_tokens = 48,437`（≈ 9,687 tok/s；公式估 9,720，误差 0.3%，**公式成立**）→ ≈ 336 分 / 5 秒 = **67.2 分/秒**；SKU `cost_fen=68` 不用改。
+  - 720p 9:16（704×1248）按像素比例 2.12× → ≈ 20,520 tok/s → **≈143 分/秒**（未实测，公式已验证可信）。
+  - ⚠ 对照：喵呜 38/63 分、modelhub 39/47 分。现售价 80/150 分/秒在 aiide 成本口径下毛利约 15%/5%——**售价须用户重新决策**（迁移 007 注释同样标注）。
+- 图片按 token 计费：输入 $3.5~4.5/M、输出 $21~27/M（`gpt-image-official` 分组 7 折 / `Official API Key` 9 折，控制台看 Key 分组）。响应不带 usage，1024×1024 中档 ≈1,056 输出 token → **≈16~21 分/张**（估算，核对后台扣费校准）。
+- 校准方法：`aiide-smoke.js video` 完成后打印 `usage.total_tokens` 并写入账本 `usageTokens/tokenFen`；与渠道后台实际扣费对照后若有偏差，以新迁移更新 `skus.cost_fen`。
 - `/v1/models` 无价格字段：price_audit 只做模型存在性校验（同喵呜口径），价格快照人工维护。
 
 ## 3. 适配器与装配
@@ -40,11 +41,24 @@
 - 冒烟：`server/scripts/aiide-smoke.js`（models / image / material / video / video-query，账本 `docs/m0/cost-ledger.json`，270 元硬停）。
   端到端：`server/scripts/e2e-real.js`（aiide 装配，2×5s 480p，预估 ≈7 元）。
 
-## 4. 未验证项（真实冒烟后补）
+## 4. 真实冒烟记录（2026-10-23，用户授权「按建议跑」；账本累计估算 27.55 元 / 停止线 270 元）
 
-1. `dreamina-seedance-2-5-hc` 是否真收 30 秒整段（SKU durations 沿用 {5,10,15,30}；不支持会 400 → 片段失败）。
-2. usage.total_tokens 与后台扣费的实际关系（校准 cost_fen）。
-3. 素材库过审耗时分布（轮询上限 180 秒，超时按未提交可重试）；过审失败率（真人照片可能触发人脸认证要求，见超搭云报错文案）。
-4. gpt-image-2 的 `quality` 缺省是否可用（当前不传；冒烟可试 `auto/standard/hd`）。
-5. `/v1/models` 是否需要鉴权（price_audit 带了 Bearer）。
-6. 多参考照片（edits 支持 1~4）——用户 2026-10-17 决定先用 1 张，`GENERATION_IMAGE_MAX_REFERENCES` 可开。
+| 步骤 | 调用 | 结果 | 耗时 | 费用 |
+|---|---|---|---|---|
+| models | `GET /v1/models` | 45 个模型，`dreamina-seedance-2-5-hc` 与 `gpt-image-2` 均在售（快照 `aiide-catalog.json`） | — | 免费 |
+| ① 文生图 | `POST /v1/images/generations` 1k 1:1 | ✅ 1024×1024 PNG 1.1MB，画面与提示词（动画风格 4 岁女孩黄裙半身像）完全一致 | 35 s | 估 21 分 |
+| ② 参考图 | `POST /v1/images/edits` multipart（① 的图作参考，换姿势+场景） | ✅ **人物一致性极好**（同脸/辫子/发圈/裙），姿势场景按要求改变——即生产「照片→形象」路径 | 37 s | 估 21 分 |
+| ③ 素材过审 | `POST /v1/assets/upload`（七牛签名链接 `.png`）→ 轮询 | ✅ 虚拟人脸图 **22 秒 ready**；asset id 形态 `asset-<时间>-<随机>`（非文档示例 `mat_`） | 22 s | 免费 |
+| ④ 视频 | `POST /v1/video/generations` 5s 480p 9:16，参考图经素材库引用，提示词含一句台词 | ✅ 480×854 / 24fps / h264 + AAC 32k 立体声 / 5.06 s，有声（峰值 -9.9 dB），抽帧人物与参考图一致；**usage.total_tokens = 48,437** | 提交→完成约 7 分钟（含排队） | 估 337 分 / token 折算 336 分 |
+
+- 成片下载域：`ark-acg-ap-southeast-1.tos-ap-southeast-1.volces.com`（火山 TOS 新加坡），`safeFetch` 直接拉取成功；本机无需 DoH 绕行。
+- 过审参考图在视频提交内再注册一次（新进程缓存为空）也只用了几秒；素材库免费，重复注册无成本。
+- 本次 2 个七牛测试对象（`miv-test/m0/`）已清理。
+
+## 5. 未验证项
+
+1. `dreamina-seedance-2-5-hc` 是否真收 **30 秒整段**（SKU durations 沿用 {5,10,15,30}；不支持会 400 → 片段失败）。约 20 元一次，待用户单独授权。
+2. **720p 真实 token**（公式已在 480p 验证，按像素比例推算 143 分/秒）。
+3. 图片的真实扣费（响应无 usage，只能看后台）；`quality` 缺省未传，当前默认档位出图质量已足够好。
+4. 素材过审对**真人照片**的表现（本次是 AI 虚拟人脸；真人照片可能触发平台人脸认证要求）；过审耗时在高峰期的分布。
+5. 端到端 `e2e-real.js`（≈7 元）与多参考照片（edits 1~4 张，`GENERATION_IMAGE_MAX_REFERENCES`）。

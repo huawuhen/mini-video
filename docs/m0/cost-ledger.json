@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-10-22T10:11:01.630Z",
-  "totalEstimatedFen": 2376,
+  "updatedAt": "2026-10-23T09:14:31.376Z",
+  "totalEstimatedFen": 2755,
   "entries": [
     {
       "at": "2026-10-21T07:48:26.022Z",
@@ -349,6 +349,77 @@
       "artifact": "server/.data/m0/image-1792663861628.png",
       "bytes": 1226452,
       "elapsedMs": 21144
+    },
+    {
+      "at": "2026-10-23T09:03:49.063Z",
+      "channel": "aiide",
+      "kind": "image",
+      "model": "gpt-image-2",
+      "params": {
+        "resolution": "1k",
+        "ratio": "1:1",
+        "reference": null
+      },
+      "estimatedFen": 21,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792746264325.png",
+      "bytes": 1099050,
+      "elapsedMs": 35263
+    },
+    {
+      "at": "2026-10-23T09:05:07.782Z",
+      "channel": "aiide",
+      "kind": "image",
+      "model": "gpt-image-2",
+      "params": {
+        "resolution": "1k",
+        "ratio": "1:1",
+        "reference": "image-1792746264325.png"
+      },
+      "estimatedFen": 21,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792746344944.png",
+      "bytes": 1432598,
+      "elapsedMs": 37164
+    },
+    {
+      "at": "2026-10-23T09:06:58.977Z",
+      "channel": "aiide",
+      "kind": "material",
+      "model": "dreamina-seedance-2-5-hc",
+      "params": {
+        "reference": "image-1792746344944.png"
+      },
+      "estimatedFen": 0,
+      "actualFen": 0,
+      "status": "succeeded",
+      "elapsedMs": 21825
+    },
+    {
+      "at": "2026-10-23T09:07:32.637Z",
+      "channel": "aiide",
+      "kind": "video",
+      "model": "dreamina-seedance-2-5-hc",
+      "params": {
+        "seconds": 5,
+        "resolution": "480p",
+        "ratio": "9:16",
+        "images": 1,
+        "audios": 0,
+        "materials": true
+      },
+      "estimatedFen": 337,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "task_udkUqLm62rPEpLYIlcJyuIn3yiuZORkO",
+      "artifact": "server/.data/m0/video-1792746871374.mp4",
+      "bytes": 2438769,
+      "elapsedMs": 418739,
+      "usageTokens": 48437,
+      "tokenFen": 336,
+      "note": "5s 480p 9:16：实测 48,437 tokens ≈ 9,687 tok/s（公式估 9,720，误差 0.3%）；按 $9.63/M×7.2 折算 ≈ 336 分，与 SKU cost_fen 68 分/秒口径一致；真实扣费以后台为准"
     }
   ]
 }
