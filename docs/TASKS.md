@@ -41,7 +41,8 @@
 
 | ID | 角色 | 任务 | 依赖 |
 |---|---|---|---|
-| M2-BE-01 | BE-Core | 接入真实渠道（按 M0 结论配置 SKU 与档位映射）、对账与 unknown 处理工具 | M0-02、M1-BE-06 |
+| M2-BE-03 | BE-Core + Engine | **上游渠道层与驱动框架（ARCHITECTURE §5.5）**：①驱动框架：`providers/{contract,registry,transport,contract-test}.js`，`drivers/<protocol>/` 目录约定，自动扫描注册，`npm run driver:new` 脚手架；把现有 modelhub 适配器迁成 `drivers/modelhub/`（含夹具与契约测试），新增 `drivers/openai-compatible/`（智谱 LLM），并按**用户新接入渠道的 API 文档**新增对应驱动；②渠道层：迁移 `provider_channels / channel_routes / channel_events / admin_audit_logs / admin_users` + `gen_tasks.channel_id`，凭证 AES-GCM（`CHANNEL_SECRET_KEY`），软删除，种子渠道引导；`channelRouter.pick`；视频 / 图片 / LLM 调用全部经路由层，任务绑定渠道；③`/api/admin/*`（API.md §8）与 `npm run admin:create`；健康度与连续失败告警。测试：每个驱动通过契约测试（无真实费用）；切换只影响新提交、在途回原渠道、软删除 / 停用渠道仍可轮询、unknown 不重提、提交前失败可转移、驱动缺失渠道被跳过并告警、凭证不入日志 / 不回传 | 契约测试与渠道层测试全绿；`check`/`build` 通过；扫描库与日志无明文密钥；业务层 grep 不到厂商名 | M1-BE-06、M0-02 |
+| M2-BE-01 | BE-Core | 接入真实渠道（按 M0 结论配置 SKU 与档位映射）、对账与 unknown 处理工具（经 M2-BE-03 渠道层接入，不直连单一渠道） | M0-02、M1-BE-06、**M2-BE-03** |
 | M2-BE-02 | BE-Core | 保存期清理与到期提醒数据、上传清理；failed 作品超过 7 天（可配置）自动取消并退回未结算冻结 | M1-BE-06 |
 | M2-WEB-01 | Web | 前端切换真实 API，联调全部流程；SSE | M1-BE-06 |
 | M2-OPS-01 | Ops | 生产 Dockerfile（Linux，web/api/worker，worker 含 FFmpeg 与中文字体如 Noto Sans CJK，并在镜像内跑 render 测试，生产为 Ubuntu amd64 + Docker，开发机 arm64 也要能本地构建）、Compose、备份与恢复脚本 | M1-BE-06 |
@@ -60,5 +61,7 @@
 | M3-PAY-04 | Ops | 公网 HTTPS 回调域名与反向代理（放行 notify，不被登录和 CSRF 拦截）、环境变量注入说明、沙箱联调手册 | **真实小额支付联调前必须得到用户明确授权并写明金额上限**（AGENTS.md §6）；联调后固化 PRD 6.4 里「文档未写明」的 5 项细节 | M3-PAY-02 |
 
 ### 其他
+
+**M3-ADM-01 运营后台·渠道管理页**（Web，依赖 M2-BE-03）：渠道列表（状态 / 健康度 / 在途数 / 掩码凭证）、按驱动 `configSchema` 渲染的新增 / 编辑表单、软删除、测试连接 / 试生成（二次确认）、路由排序与一键切换、启停、重新加载配置、告警红点；PC 优先。UI 完成前用 API 操作。
 
 运营后台（SKU 价格与档位映射、音频素材、风格、运营配置、用户、订单、失败任务）、内容安全审核、AI 标识合规复核、用户协议与隐私政策、备案材料配合、微信环境适配。

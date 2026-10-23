@@ -362,3 +362,27 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | 500 | `INTERNAL` | 服务器错误 |
 | 502 | `UPSTREAM_FAILED` / `SUBMISSION_UNKNOWN` | 上游失败 / 提交结果未知（冻结待对账） |
 | 502 | `PAYMENT_UNAVAILABLE` | 支付通道暂不可用（M3） |
+
+## 8. 管理端接口（仅运营后台与运维脚本使用，**前端用户端不调用**）
+
+- 路径前缀 `/api/admin`；**独立管理员账号**（`admin_users`，用户名 + 强密码，首个管理员由 `npm run admin:create` 脚本创建，不开放注册）与独立会话 Cookie；同样校验同源 + CSRF；全部写操作写 `admin_audit_logs`。
+- 渠道凭证只写不读：创建 / 更新时传明文，之后接口只返回 `credentialMask`（后 4 位）。渠道 = 驱动（代码里已有的协议）+ 地址 + 密钥 + 模型映射；见 ARCHITECTURE §5.5。
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| POST | `/admin/auth/login` · `/admin/auth/logout` | `{ username, password }` | `{ admin }` |
+| GET | `/admin/drivers` | – | `{ items: [{ id, kinds, configSchema, capabilities }] }`（代码里可用的协议驱动，新增渠道表单据此渲染） |
+| GET | `/admin/channels?kind=&includeRetired=` | – | `{ items: Channel[] }` |
+| POST | `/admin/channels` | `{ kind, name, driver, baseUrl, credential, modelMap, params?, costFen?, remark? }` | `Channel`（`driver` 不存在返回 400） |
+| PATCH | `/admin/channels/:id` | 同上可选字段；`credential` 缺省表示不改 | `Channel` |
+| POST | `/admin/channels/:id/test` | – | `{ ok, latencyMs, models: [{ name, priceFenPerUnit }], mismatches: [...] }`（免费，调驱动 `catalog()`） |
+| POST | `/admin/channels/:id/trial` | `{ capability, confirm: true }` | 最小成本试生成（真实费用，写审计） |
+| PUT | `/admin/routes/:kind/:capability` | `{ channelIds: [有序列表], autoFailover: boolean }` | 路由；第一个可用的为主用 |
+| POST | `/admin/channels/:id/disable` · `/enable` | – | `Channel` |
+| DELETE | `/admin/channels/:id` | – | 软删除（`retired`）；仍有在途任务时仍允许，在途任务继续轮询，清空后清除凭证 |
+| GET | `/admin/channels/health` | – | 近 1 小时各渠道成功率 / 失败数 / 排队时长 |
+
+`Channel` 字段：`id, kind, name, driver, baseUrl, credentialMask, modelMap, params, status(active|disabled|retired), unavailable, degraded, inFlight, recent: { total, failed, avgQueueSeconds }, createdAt, updatedAt`。
+
+新增错误码：`ADMIN_AUTH_REQUIRED`(401)、`CHANNEL_NOT_FOUND`(404)、`DRIVER_NOT_FOUND`(400，指定的协议驱动不存在)、`CHANNEL_TEST_FAILED`(400)、`NO_ACTIVE_CHANNEL`(503，用户侧提示“服务繁忙，请稍后再试”，不暴露渠道信息，并立刻告警)。
+
