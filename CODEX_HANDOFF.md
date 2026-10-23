@@ -77,7 +77,7 @@
 | M0-02（渠道接入 + 完整验证：Modelhub seedance-2.5 + gpt-image-2.5-flare） | Engine（本机开发 Agent） | `agent/eng/M0-02-modelhub-channel` | `server/src/engine/providers/**` `server/src/config.js` `server/.env.example` `server/scripts/modelhub-smoke.js` `docs/m0/**` | ✅ 完成（Lead 审查通过并合并）（完整验证完成，报告 `docs/m0/report.md`；估算累计 23.58 元 / 上限 300 元） | 2026-10-21 |
 | M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | ✅ 完成（Lead 审查通过并合并）（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
 | M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views`（worktree `~/Documents/mini-video-web01`） | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | ✅ 完成（Lead 审查通过并合并）（视图打磨完成，check/build 过，375/1280 走查过） | 2026-10-21 |
-| M2-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-01-real-upstreams` | `server/src/worker.js` `server/src/config.js` `server/src/engine/{llm,providers}/**` `server/src/queue/{cron.js,price-audit.js}` `server/src/projects/{segment.js,service.js}` `server/src/characters/service.js` `server/migrations/00{4,5}*.sql` `server/scripts/{e2e-real.js,modelhub-smoke.js}` `server/.env.example` `server/test/**`（金额口径与新增用例） | 待审查（真实接入全部完成；图片模型已按用户指示换 gpt-image-2 并真实冒烟通过；端到端等商家侧恢复后重跑，见 §7） | 2026-10-22 |
+| M2-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-01-real-upstreams` | `server/src/worker.js` `server/src/config.js` `server/src/engine/{llm,providers}/**` `server/src/queue/{cron.js,price-audit.js}` `server/src/projects/{segment.js,service.js}` `server/src/characters/service.js` `server/migrations/00{4,5,6,7}*.sql` `server/scripts/{e2e-real.js,modelhub-smoke.js,aiide-smoke.js}` `server/.env.example` `server/test/**`（金额口径与新增用例） | 待审查（真实上游完成；渠道已按用户指示切换 aiide（2026-10-23），喵呜适配器保留未删；端到端待 AIIDE_API_KEY + 冒烟授权后跑，见 §7） | 2026-10-23 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -88,6 +88,7 @@
 
 | 日期 | 决策 | 来源 |
 |---|---|---|
+| 2026-10-23 | **生成渠道更换为 aiide**（替代喵呜）：视频 `dreamina-seedance-2-5-hc`、图片 `gpt-image-2`（文档 https://aiide.apifox.cn/chinese，可参考移植超搭云 `aiide/` SDK）。SKU 切换见迁移 007；渠道按 token 计费（估算 480p≈68、720p≈143 分/秒），**高于现售价的毛利空间，售价待用户重新决策**。 | 用户 |
 | 2026-10-22 | **图片模型由 gpt-image-2.5-flare 更换为 gpt-image-2**（同渠道 Modelhub）：适配器按官网参数页与实时目录改为同形态（独立 resolution 字段 + low/medium/high 档位，另有 image_count 1-4 产品固定 1 张）；SKU `image.flare.1k` → `image.gpt2.1k`（迁移 005，成本 23→21 分/张，**售价维持 50 分**），flare 下线但适配器保留可随时切回。真实冒烟通过（文生图 + 参考图合成各 1 张，1k/low 9 分/张）。 | 用户 |
 | 2026-10-22 | ① **SKU 定价**：标准档=seedance-2.5 **480p，售价 0.8 元/秒**（80 分）；高清档=**720p，售价 1.5 元/秒**（150 分）；渠道成本 39/47 分/秒（以实时目录为准，调价须报警）；90 秒成片标准 72 元、高清 135 元；1080p 首批不开放；形象图售价维持 0.5 元/个（成本 0.23）。需新迁移写入真实 SKU 与档位映射替换 mock 占位（含 `cost_fen`），属 M2-BE-01。② **音色一致性复听通过**（用户听感：像同一个人），同一音色参考跨片段方案成立，TTS 备选方案不启动 | 用户 |
 | 2026-10-21 | ① 智谱 Coding Plan 用于产品后端的合规问题，用户决定不予考虑；② **七牛联调（M2-OPS-02）授权**：桶 `redith`，累计费用上限 **20 元**（采纳 Lead 建议），key 前缀 `miv-test/`，联调后清理测试对象；密钥只放开发设备 env，不入库不进日志；达 16 元停止并汇报 | 用户 |
@@ -131,6 +132,7 @@
 5. 生成式 AI 备案主体（M3）。
 6. 充值相关（PRD 6.4、§12 第 4 条）：（预设金额已决：50/100/500/1000 元，上限 1000 元）充值退款政策、易支付商户资质 / 结算周期 / 费率、真实小额联调的授权与金额上限。
 7. ~~（M2-OPS-02 联调发现）七牛桶选择~~ **已决（2026-10-21，用户）**：新建**私有桶 `redith-h5` + CDN `cdnh5.redith.cn`**（HTTPS 证书、CDN 回源鉴权均已配置——回源鉴权是官方对「私有空间 + 自定义域名」的强制要求，须保留）。旧桶 `redith` 保持公开不动，桶内既有实验数据不受影响。Engine 已在该配置上重跑联调 **10/10 通过**（过期/无 token 均被 403 拒绝；详见 `server/src/engine/README.md` 联调结论）。生产环境变量：`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`（region 必须显式配置）。
+8. **（2026-10-23，aiide 渠道切换）两项待用户**：① **`AIIDE_API_KEY`** 请放到开发机 `server/.env`（不入库），并授权真实冒烟（`aiide-smoke.js` models/image/material/video 首批预估 ≈4 元；端到端 `e2e-real.js` ≈7 元；沿用 M0 账本 270 元硬停线，当前累计 23.76 元）；② **售价决策**：aiide 按 token 计费，估算成本 480p≈68、720p≈143 分/秒（喵呜 38/63、modelhub 39/47），现售价 80/150 分/秒几乎无毛利——建议真实冒烟拿到 `usage.total_tokens` 与后台扣费校准后再定价（可选项：维持售价承担低毛利 / 上调售价 / 标准档换 720p→480p 的档位策略不变但调价）。详见 `docs/m0/channel-aiide.md` §2。
 
 ## 5. 接口/跨域变更申请
 
@@ -177,6 +179,14 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-23 · BE-Core · M2-BE-01 渠道切换：aiide（seedance-2.5-hc 火山方舟协议 + gpt-image-2 OpenAI Images）
+
+- **背景**：用户 2026-10-23 指定更换渠道为 aiide（上一渠道喵呜 2026-10-22/23 接入后遇渠道服务器故障；两次切换的交接记录此前漏写，本条一并补记背景）。视频 `dreamina-seedance-2-5-hc`（火山方舟协议 `/v1/video/generations`）、图片 `gpt-image-2`（OpenAI Images）。协议按 apifox 文档逐页核对，SDK 形态参考超搭云 `aiide/materials.js`。分支 `agent/be/M2-BE-01-real-upstreams`，提交 `e439310` / `a1fe2ad` / `0861b00` + 本条文档提交。渠道笔记 `docs/m0/channel-aiide.md`。
+- **改动**：`server/src/engine/providers/{aiide-materials,aiide-video,aiide-image,image-bytes}.js`（新增）、`providers/index.js`、`config.js`、`worker.js`、`queue/price-audit.js`（渠道过滤改读 config）、`characters/service.js` + `projects/service.js`（形象 key 补 `.png`——素材库按 URL 扩展名校验；落盘按字节嗅探校正）、`projects/segment.js`（上游明确失败透传适配器中文原因到项目 error，技术详情留 providerMessage/Code）、`migrations/007-aiide-skus.sql`（SKU 换 aiide：售 80/150/50 不变，成本按 token 估算 68/143/21 分——**远高于喵呜 38/63，售价毛利待用户决策**；tier_mappings v4）、`.env.example`、`scripts/{aiide-smoke.js(新增),e2e-real.js(换装配,2×5s 480p 预估≈7 元)}`。
+- **关键协议点**：① 视频参考图（人脸/虚拟人）**必须先经素材库过审**（`/v1/assets/upload` → `asset://` 引用），否则生成失败——数字人形象全部要走；② 素材库按 URL 扩展名校验类型（形象 key 由此补 `.png`；音色参考将来须 `.wav`/`.mp3`）；③ 图片参考照片走 `/v1/images/edits` multipart（参考照片签名下载为字节上传）——顺带修正喵呜版本「存储 key 被 http(s) 过滤静默丢弃、参考照片实际未发」的回归；④ 轮询状态双层映射（外层 SUCCESS/FAILURE、内层 succeeded/failed/expired），成功态 `fail_reason` 字段错放成片链接已兜底；⑤ 按 token 计费（$9.63/M），`usage.total_tokens` 透传，冒烟打印供校准 cost_fen。
+- **验证**：`node --test test/engine/aiide.test.js` 23/23；`npm run test:server` **277/277**（新增 aiide 23 例 + 项目级「渠道明确拒绝→failed 带中文原因」1 例；cron/http/wallet/project-api/assets 的 SKU 与 key 断言随迁移 007 更新）；`npm run check`、`npm run build` 通过。假上游全覆盖提交/轮询/素材过审/错误分类，未产生真实费用。
+- **未完成 / 风险**：① **`.env` 尚无 `AIIDE_API_KEY`**——真实冒烟（`aiide-smoke.js`：models/image/material/video 四步，预估首批 ≈4 元内）与端到端（`e2e-real.js`，预估 ≈7 元）待用户提供密钥并授权（沿用 M0 账本 270 元硬停线，当前累计估算 23.76 元）；② 成本口径是估算（token 公式 × 汇率 7.2），**现售价下毛利几乎为零，须用户重新决策售价**；③ 30 秒整段是否被 aiide 接受未验证（SKU durations 沿用 {5,10,15,30}，不支持会 400→片段失败）；④ 素材过审耗时与失败率未验证（轮询上限 180 秒，超时按未提交可重试；真人照片可能触发平台人脸认证要求）；⑤ gpt-image-2 `quality` 缺省未传，冒烟验证；⑥ 喵呜/modelhub 适配器与 modelhub-smoke.js 保留未删（modelhub-smoke 引用的 config 字段已不存在，已不可运行），是否物理删除待 Lead 决定。
 
 ### 2026-10-22 · BE-Core · M2-BE-01 补充：图片模型更换为 gpt-image-2（用户指示）
 
