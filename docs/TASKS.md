@@ -41,7 +41,7 @@
 
 | ID | 角色 | 任务 | 依赖 |
 |---|---|---|---|
-| M2-BE-03 | BE-Core（含 Engine 适配器改造） | **上游渠道层（ARCHITECTURE §5.5）**：迁移 `provider_channels / channel_routes / channel_events / admin_audit_logs / admin_users` + `gen_tasks.channel_id`；凭证 AES-GCM 加密；`channelRouter.pick(capability)`；视频 / 图片 / LLM 三类调用经路由层，任务绑定渠道，轮询回原渠道；`/api/admin/*` 渠道管理接口（API.md §8）与 `npm run admin:create`；种子渠道从环境变量引导；健康度统计与连续失败告警；`openai-compatible` 文本适配器（智谱）。测试：切换只影响新提交、在途任务仍回原渠道、禁用渠道仍可轮询、提交前失败自动转移而 unknown 不重提、凭证不入日志 / 不回传、无生效渠道返回业务提示 | 渠道切换与故障转移全部测试通过；`check`/`build` 通过；凭证扫描无明文 | M1-BE-06、M0-02 |
+| M2-BE-03 | BE-Core（含 Engine 适配器改造） | **上游渠道层（ARCHITECTURE §5.5）**：渠道的地址 / 密钥 / 模型映射 / 成本全部在 `.env`（`CHANNELS_<KIND>`、`CHANNEL_<ID>_*`），启动解析 + 每 30 秒文件变更热加载 + `SIGHUP` + 管理员 reload，解析失败保留旧配置；迁移 `channel_overrides / channel_states / channel_events / admin_audit_logs / admin_users` + `gen_tasks.channel_id`（**库里不存密钥**）；`channelRouter.pick(capability)`；视频 / 图片 / LLM 调用经路由层，任务绑定渠道，轮询回原渠道；`/api/admin/*`（API.md §8）与 `npm run admin:create`；健康度统计与连续失败告警；`openai-compatible` 文本适配器（智谱）；把现有 modelhub 适配器改为读渠道实例，并按新视频 / 图片渠道的 API 文档补对应 adapter。测试：切换只影响新提交、在途任务仍回原渠道、停用渠道仍可轮询、`.env` 删渠道在途任务不退款不重提、提交前失败自动转移而 unknown 不重提、热加载失败保留旧配置、密钥不入日志 / 不回传 | 渠道切换与故障转移测试通过；`check`/`build` 通过；扫描库与日志无密钥 | M1-BE-06、M0-02 |
 | M2-BE-01 | BE-Core | 接入真实渠道（按 M0 结论配置 SKU 与档位映射）、对账与 unknown 处理工具（经 M2-BE-03 渠道层接入，不直连单一渠道） | M0-02、M1-BE-06、**M2-BE-03** |
 | M2-BE-02 | BE-Core | 保存期清理与到期提醒数据、上传清理；failed 作品超过 7 天（可配置）自动取消并退回未结算冻结 | M1-BE-06 |
 | M2-WEB-01 | Web | 前端切换真实 API，联调全部流程；SSE | M1-BE-06 |
@@ -62,6 +62,6 @@
 
 ### 其他
 
-**M3-ADM-01 运营后台·渠道管理页**（Web，依赖 M2-BE-03）：渠道列表（状态 / 健康度 / 在途数 / 掩码凭证）、新增 / 编辑 / 测试连接 / 试生成（二次确认）、路由排序与一键切换、启停、告警红点；PC 优先。UI 完成前用 API 操作。
+**M3-ADM-01 运营后台·渠道管理页**（Web，依赖 M2-BE-03）：渠道列表（状态 / 健康度 / 在途数 / 掩码凭证，只读，换 Key 请改 `.env`）、测试连接 / 试生成（二次确认）、路由排序与一键切换、启停、重新加载配置、告警红点；PC 优先。UI 完成前用 API 操作。
 
 运营后台（SKU 价格与档位映射、音频素材、风格、运营配置、用户、订单、失败任务）、内容安全审核、AI 标识合规复核、用户协议与隐私政策、备案材料配合、微信环境适配。

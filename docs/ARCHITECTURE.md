@@ -228,41 +228,60 @@ inspect(videoPath, { durationSeconds, ratio, resolution, expectAudio }) → { ok
 
 - 拼接：响度统一（EBU R128）、硬切 / 尾帧衔接、H.264 + AAC MP4、显式 AI 生成标识 + 元数据隐式标识。**不加 BGM、不加字幕**。
 
-### 5.5 上游渠道层（多渠道 + 管理员热切换，用户 2026-10-23 提出）
+### 5.5 上游渠道层（多渠道 + 管理员热切换，用户 2026-10-23 提出；2026-10-23 改为「地址与密钥放 .env」）
 
-**目标**：视频 / 图片 / 文本 LLM 各自可配置多个上游渠道，渠道坏了由管理员在后台改配置即可恢复，**不改代码、不重启、不发版**；前端与用户完全无感知（只看到风格与画质档位，错误统一为业务中文提示）。
+**目标**：视频 / 图片 / 文本 LLM 各自可配置多个上游渠道，渠道坏了管理员在后台切换即可恢复，**不改代码、不发版**；前端与用户完全无感知（只看到风格与画质档位，错误统一为业务中文提示）。
+
+**分工（用户要求：URL 与 Key 由人手动改 `.env`）**：
+- **`.env` 管“有哪些渠道、怎么连”**：地址、密钥、模型映射、默认顺序，全部手动编辑，**密钥不进数据库、不经任何 API 读写**，因此不需要加密存库与 `CHANNEL_SECRET_KEY`。
+- **数据库管“现在用哪个”**：管理员后台只做路由层操作——调整优先级、启停、测试连接、查看健康度。切换结果存库，重启不丢，不含任何密钥。
+
+**.env 约定**（示例；渠道 id 为小写字母数字下划线）：
+
+```
+CHANNELS_VIDEO=nova,modelhub           # 视频渠道，默认优先级从左到右
+CHANNELS_IMAGE=nova,modelhub
+CHANNELS_LLM=zhipu
+CHANNEL_NOVA_ADAPTER=openai-compatible # 引用代码里已有的协议适配器 id
+CHANNEL_NOVA_BASE_URL=https://...
+CHANNEL_NOVA_API_KEY=...
+CHANNEL_NOVA_MODELS={"video.480p":"xxx","video.720p":"yyy","image.look":"zzz"}   # 逻辑能力 → 渠道真实模型名
+CHANNEL_NOVA_COST_FEN={"video.480p":39,"video.720p":47}                          # 可选：渠道成本，缺省取实时目录
+```
+
+**生效与热加载**：API 与 Worker 启动时解析一次；之后**每 30 秒检查 `.env` 文件修改时间，变化则重新解析**（也可由管理员点“重新加载配置”、或对进程发 `SIGHUP`），不用重启。解析失败（缺字段、JSON 非法）时**保留旧配置并告警**，不会因手滑改坏 `.env` 而全站不可用。Docker 部署须把 `.env` 以文件挂载进容器（不是仅 `env_file` 注入，那样改了不会热加载）；环境变量与文件同名时以文件为准。
 
 **分层**（业务代码只依赖左边，不认识具体渠道）：
 
 ```
-业务层：档位(标准/高清) → 逻辑能力 capability（如 video.480p、image.look、llm.story）
+业务层：档位(标准/高清) → 逻辑能力 capability（video.480p、image.look、llm.story）
    │  SKU 定价与档位映射不变（用户价由 SKU 决定，与渠道无关）
-路由层：channelRouter.pick(capability) → 当前生效渠道（管理员指定主用 + 有序备用）
-   │
-渠道层：provider_channels（凭证/地址/模型映射） × 协议适配器 adapter（modelhub / 以后新增）
+路由层：channelRouter.pick(capability) → 当前生效渠道
+   │  顺序 = 管理员在库里的覆盖（若有）否则 .env 默认；跳过 disabled / 未配置该能力的渠道
+渠道层：.env 解析出的渠道实例 × 协议适配器 adapter
 ```
 
-**数据模型**（迁移新增）：
-- `provider_channels(id pch_, kind[video|image|llm], name, adapter, base_url, credential_enc, model_map jsonb, cost_overrides jsonb, status[active|standby|disabled], priority, remark, created/updated)`：`adapter` 是代码里已有的协议适配器 id（如 `modelhub`）；`model_map` 把逻辑能力映射到该渠道的真实模型名（如 `video.480p → seedance-2.5`）；`credential_enc` 用环境变量主密钥（`CHANNEL_SECRET_KEY`）做 AES-256-GCM 加密存库，**任何 API 都不回传明文，只回传掩码（后 4 位）**，日志脱敏。
-- `channel_routes(kind, capability, channel_id, rank)`：每个能力的渠道优先级列表；rank 最小且 `active` 的为生效渠道。
-- `channel_events(id, channel_id, kind, ok, error_code, latency_ms, at)`：每次提交 / 查询的结果摘要，用于健康度与故障告警。
-- `admin_audit_logs(id, admin_id, action, target, before, after, at)`：渠道的每次改动留痕（不含凭证明文）。
+**数据模型**（迁移新增，均**不含密钥**）：
+- `channel_overrides(kind, capability, channel_ids text[], auto_failover boolean, updated_by, updated_at)`：管理员覆盖的有序渠道列表；缺省用 `.env` 顺序。
+- `channel_states(channel_id, status[active|disabled], degraded, updated_at)`：管理员启停与自动降级标记（渠道 id 即 `.env` 中的名字）。
+- `channel_events(id, channel_id, kind, ok, error_code, latency_ms, at)`：提交 / 查询结果摘要，用于健康度与告警。
+- `admin_audit_logs(id, admin_id, action, target, before, after, at)`：每次切换留痕。
+- `admin_users`：独立管理员账号。
 - `gen_tasks` 新增 `channel_id`：**任务提交时绑定渠道，之后轮询 / 取消 / 对账一律回到该渠道**，不受后续切换影响。
 
 **规则（资金安全优先）**：
-1. **切换只影响新提交**：在途任务继续用原渠道轮询到结束；原渠道被禁用时，其凭证保留到在途任务清空（`disabled` 渠道仍可被 `gen.poll` 取用，不可被路由选中）。
-2. **绝不因切换而重提**：`unknown` 的提交仍冻结待对账，不会自动换渠道重提（沿用 §4 口径）；故障转移只发生在**提交前即可确定「没发出去」**的错误（连接失败、DNS、鉴权失败、渠道返回明确的“不可用/限流”且 `submitted=false`）。
-3. **自动故障转移（可选，默认关）**：同一渠道连续 N 次（默认 5）提交前失败，标记 `degraded` 并告警；管理员开启「自动转移」后，新提交按优先级落到下一个 `active` 渠道。默认只告警 + 人工切换，避免备用渠道质量 / 成本不同被悄悄启用。
-4. **成本与定价分离**：用户价由 SKU 决定；渠道自己的成本记入 `gen_tasks.cost_fen`（由 `cost_overrides` 或实时目录得出），利润按渠道成本核算。备用渠道成本更高时，后台列表醒目标出，用户价不变（平台承担差额，由管理员决策）。
-5. **同作品内渠道可变**：参考图 / 尾帧 / 音频都是 URL 传递，不依赖渠道状态，作品中途换渠道可继续；不同渠道模型风格可能有差异，后台切换时提示“新提交将使用 XX 渠道，画面风格可能略有差异”。
-6. **新渠道上线前先体检**：后台“测试连接”走渠道的免费目录接口（如 `GET /v1/models`）核对模型是否存在、单价是否与 `cost_fen` 一致；“试生成”（会产生真实费用）需二次确认并写入审计。
-7. **可观测**：每个渠道展示近 1 小时成功率 / 提交失败数 / 平均排队时长 / 当前在途任务数；连续失败、成功率骤降触发告警（日志 + 后台红点，M3 接钉钉 / 邮件）。
+1. **切换只影响新提交**：在途任务继续用原渠道轮询到结束；被管理员停用的渠道仍可被 `gen.poll` 使用，直到在途清空。**从 `.env` 删除某渠道前须确认在途为 0**，否则在途任务无处可轮询：此时任务保持 `running/unknown`、告警、**不退款不重提**，补回配置即恢复。
+2. **绝不因切换而重提**：`unknown` 的提交仍冻结待对账，不会自动换渠道重提（沿用 §4 口径）；故障转移只发生在**提交前即可确定「没发出去」**的错误（连接失败、DNS、鉴权失败、渠道明确返回不可用 / 限流且 `submitted=false`）。
+3. **自动故障转移（可选，默认关）**：同一渠道连续 N 次（默认 5）提交前失败，标记 `degraded` 并告警；管理员开启后新提交落到下一个可用渠道。默认只告警 + 人工切换，避免备用渠道质量 / 成本不同被悄悄启用。
+4. **成本与定价分离**：用户价由 SKU 决定；渠道成本记入 `gen_tasks.cost_fen`（来自 `CHANNEL_*_COST_FEN` 或实时目录）。备用渠道成本更高 / 高于用户价时，后台醒目标出，用户价不变。
+5. **同作品内渠道可变**：参考图 / 尾帧 / 音频都是 URL 传递，不依赖渠道状态，作品中途换渠道可继续；不同渠道模型风格可能有差异，后台切换时提示。
+6. **体检**：后台“测试连接”走渠道免费目录接口，核对模型是否存在、单价是否与成本配置一致；“试生成”会产生真实费用，需二次确认并写审计。
+7. **可观测**：每个渠道展示近 1 小时成功率 / 提交失败数 / 平均排队时长 / 在途数；连续失败触发告警（日志 + 后台红点，M3 接钉钉 / 邮件）。
+8. **安全**：`.env` 权限 600、不入库不进日志；渠道 API 响应与审计只含掩码（后 4 位）；管理员后台**不提供**读写密钥的入口（需要换 Key 就编辑 `.env`）。
 
-**适配器与新增渠道的边界**（对用户诚实）：管理员可在后台增删改“使用已有协议适配器的渠道”（换 Key、换地址、换模型名、增加同协议的备用商）；**如果新渠道协议与现有适配器不同，需要开发一个新的 adapter（实现 §5 的统一接口），但业务代码、状态机、计费、前端都不用动**。首批协议适配器：`modelhub`（视频 / 图片，已完成）、`openai-compatible`（文本 LLM，智谱 / 其他兼容服务共用）。
+**适配器与新增渠道的边界**：在 `.env` 里增删改“使用已有协议适配器的渠道”无需任何代码；**协议与现有适配器都不同的新渠道，需要开发一个新 adapter（实现 §5 统一接口），但业务代码、状态机、计费、前端都不用动**。首批适配器：`modelhub`（已完成）、`openai-compatible`（文本 LLM，智谱 / 其他兼容服务共用），视频 / 图片新渠道的 adapter 由开发 Agent 按其 API 文档实现。
 
-**管理端 API**：`docs/API.md` §8（`/api/admin/*`，独立管理员账号与会话，不与用户体系混用）。管理员 UI 在运营后台（M3-ADM-01）；在 UI 完成前，管理员可直接用 API / 脚本操作，保证渠道应急不依赖前端。
-
-**启动引导**：首次部署时，`MODELHUB_*` / `LLM_*` 环境变量作为“种子渠道”写入 `provider_channels`（仅当表为空）；此后以数据库为准，环境变量不再生效，避免“改了环境变量却没生效”的困惑。
+**管理端 API**：`docs/API.md` §8（`/api/admin/*`，独立管理员账号与会话）。UI 在运营后台（M3-ADM-01）；在此之前管理员可用 API / 脚本应急。
 
 ## 6. 引擎复用清单（来源：`/root/chaodayun` @ `2926b42`）
 
