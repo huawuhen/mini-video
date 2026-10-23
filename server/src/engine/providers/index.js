@@ -27,3 +27,7 @@ export { createModelhubImageAdapter, createFlare25ImageAdapter } from './modelhu
 export { createImageProvider } from './image.js';
 export { createMiaowuaiVideoAdapter } from './miaowuai-video.js';
 export { createMiaowuaiImageProvider } from './miaowuai-image.js';
+export { createAiideMaterials, assertMaterialUrl, materialCacheKey, MATERIAL_EXTENSIONS } from './aiide-materials.js';
+export { createAiideVideoAdapter, pickVideoUrl } from './aiide-video.js';
+export { createAiideImageProvider, sizeFor as aiideImageSizeFor } from './aiide-image.js';
+export { sniffImage, imageExtensionFor, withImageExtension } from './image-bytes.js';
