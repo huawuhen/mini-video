@@ -2,9 +2,9 @@
 //   node --env-file=.env scripts/e2e-real.js "一句话故事"          # 全程：剧本→形象→确认→视频→拼接
 //   node --env-file=.env scripts/e2e-real.js --resume prj_xxxx     # 断点续跑（渠道排队可能超过单次终端会话时长；
 //                                                                  # 视频任务在上游继续，续跑只接结果，不重复提交）
-// 用最小成本走完 想法→剧本(LLM)→形象(图模型)→确认点B→提示词绑定(LLM)→2×4 秒 480p 视频(渠道)→拼接→交付。
+// 用最小成本走完 想法→剧本(LLM)→形象(图模型)→确认点B→提示词绑定(LLM)→2×5 秒 480p 视频(aiide)→拼接→交付。
 // 连接 config.databaseUrl（本地隔离测试库 compose miv-test），不触碰生产；费用记入成本账本。
-// 预估成本：形象 1×10 分（low 档）+ 视频 2×4s×39 分 = 322 分 ≈ 3.2 元（LLM 为 Coding Plan 套餐内）。
+// 预估成本：形象 1×21 分 + 视频 2×5s×68 分 = 701 分 ≈ 7 元（LLM 为 Coding Plan 套餐内；渠道按 token 计费，实际以 usage 为准）。
 // 开发机代理为 fake-IP DNS：渠道 API 直连可用；七牛 CDN 下载走 DoH 绕行（仅本脚本，产品代码不改）。
 import { appendFile, mkdir } from 'node:fs/promises';
 import dns from 'node:dns/promises';
@@ -16,7 +16,7 @@ import { loadConfig } from '../src/config.js';
 import { createDb } from '../src/db/pool.js';
 import { createStoryAgent } from '../src/engine/story/index.js';
 import { createOpenAiCompatLlm } from '../src/engine/llm/openai.js';
-import { createMiaowuaiVideoAdapter, createMiaowuaiImageProvider } from '../src/engine/providers/index.js';
+import { createAiideMaterials, createAiideVideoAdapter, createAiideImageProvider } from '../src/engine/providers/index.js';
 import { createStorageFromConfig } from '../src/engine/storage/index.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 import { createLogger } from '../src/logger.js';
@@ -37,10 +37,11 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const ledgerPath = path.join(repoRoot, 'server/.data/e2e-cost-ledger.json');
 const POLL_SECONDS = 20;
 const POLL_MAX_MINUTES = 100;
-const IMAGE_COST_BY_DETAIL = { low: 10, medium: 23, high: 33 }; // M0 实测目录价；e2e 用 low 控成本
+// aiide 成本估算（迁移 007 注释口径，待真实 usage 校准）：图片 gpt-image-2 1k ≈ 21 分/张；视频 480p ≈ 68 分/秒
+const IMAGE_COST_FEN = 21;
 const COST = {
-  imageFen: (config) => IMAGE_COST_BY_DETAIL[config.providers.imageDetailLevel] ?? 23,
-  videoPerSecond: 39, // 与 skus.cost_fen 同步（price_audit 调价对账会校验）
+  imageFen: () => IMAGE_COST_FEN,
+  videoPerSecond: 68, // 与 skus.cost_fen 同步（price_audit 调价对账会校验）
 };
 
 // 开发机代理 fake-IP DNS 绕行（与 modelhub-smoke.js 同款，仅本脚本使用）
@@ -166,26 +167,32 @@ async function main() {
   const { createQiniuStorage } = await import('../src/engine/storage/qiniu.js');
   const storage = createQiniuStorage(config.storage.qiniu,
     { defaultTtlSeconds: config.storage.signedUrlTtlSeconds, fetchImpl: nodeHttpsFetch });
-  const videoProvider = createMiaowuaiVideoAdapter({ baseUrl: config.providers.miaowuaiBaseUrl,
-    apiKey: config.providers.miaowuaiApiKey, model: config.providers.videoModel,
-    fetchImpl: dohFallbackFetch, timeoutMs: config.providers.requestTimeoutMs, logger });
-  const imageProvider = createMiaowuaiImageProvider({ baseUrl: config.providers.miaowuaiBaseUrl,
-    apiKey: config.providers.miaowuaiApiKey, model: config.providers.imageModel,
-    resolution: config.providers.imageResolution,
-    fetchImpl: dohFallbackFetch,
-    pollIntervalMs: config.providers.imagePollIntervalMs, pollTimeoutMs: config.providers.imagePollTimeoutMs,
-    requestTimeoutMs: config.providers.requestTimeoutMs,
-    downloadImage: async (url, headers) => {
-      const response = await devSafeFetch(url, { maxBytes: 20 * 1024 * 1024, headers });
-      const chunks = [];
-      for await (const chunk of response.stream) chunks.push(chunk);
-      return { buffer: Buffer.concat(chunks), contentType: response.contentType };
-    },
-    logger });
+  // 参考照片：存储 key → 签名链接 → 受控下载字节（图片 edits 以文件上传）
+  const downloadBytes = async (url) => {
+    const response = await devSafeFetch(url, { maxBytes: 20 * 1024 * 1024 });
+    const chunks = [];
+    for await (const chunk of response.stream) chunks.push(chunk);
+    return { buffer: Buffer.concat(chunks), contentType: response.contentType };
+  };
+  const loadReference = async (key) => ({
+    ...(await downloadBytes(await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds }))),
+    name: key.split('/').pop(),
+  });
+  const aiideArgs = { baseUrl: config.providers.aiideBaseUrl, apiKey: config.providers.aiideApiKey,
+    fetchImpl: dohFallbackFetch, logger };
+  const materials = createAiideMaterials({ ...aiideArgs, requestTimeoutMs: config.providers.requestTimeoutMs,
+    pollIntervalMs: config.providers.aiideMaterialsPollIntervalMs, pollTimeoutMs: config.providers.aiideMaterialsPollTimeoutMs,
+    purpose: config.providers.aiideMaterialsPurpose });
+  const videoProvider = createAiideVideoAdapter({ ...aiideArgs, model: config.providers.videoModel, materials,
+    timeoutMs: config.providers.requestTimeoutMs, generateAudio: config.providers.videoGenerateAudio });
+  const imageProvider = createAiideImageProvider({ ...aiideArgs, model: config.providers.imageModel,
+    resolution: config.providers.imageResolution, ratio: config.providers.imageRatio,
+    quality: config.providers.imageQuality, maxReferences: config.providers.imageMaxReferences,
+    requestTimeoutMs: config.providers.requestTimeoutMs, loadReference, downloadImage: downloadBytes });
   const llm = createOpenAiCompatLlm({ baseUrl: config.providers.llmBaseUrl, apiKey: config.providers.llmApiKey,
     model: config.providers.llmModel, logger });
   const storyAgent = createStoryAgent({ llm, logger });
-  logger.info(`上游就绪：视频 ${config.providers.videoModel}/480p、图片 ${config.providers.imageModel}/${config.providers.imageDetailLevel}、LLM ${config.providers.llmModel}、存储 ${config.storage.qiniu.bucket}`);
+  logger.info(`上游就绪：视频 ${config.providers.videoModel}/480p、图片 ${config.providers.imageModel}/${config.providers.imageResolution}、LLM ${config.providers.llmModel}、存储 ${config.storage.qiniu.bucket}`);
 
   const userId = 'usr_e2ereal000001';
   await db.tx(async (t) => {
@@ -234,7 +241,8 @@ async function main() {
             logger.warn(`诊断栈：${String(error.stack).split('\n').slice(0, 14).join(' || ')}`);
             try {
               const t0 = Date.now();
-              const probe = await fetch(`${config.providers.modelhubBaseUrl.replace(/\/+$/, '')}/v1/models`);
+              const probe = await fetch(`${config.providers.aiideBaseUrl.replace(/\/+$/, '')}/v1/models`,
+                { headers: { Authorization: `Bearer ${config.providers.aiideApiKey}` } });
               logger.warn(`诊断：同进程裸 fetch GET /v1/models → ${probe.status}，${Date.now() - t0}ms（连通则属连接复用问题）`);
             } catch (e) {
               logger.warn(`诊断：同进程裸 fetch 也失败：${e.message} cause=${e.cause?.code ?? '-'}`);
@@ -262,7 +270,7 @@ async function main() {
       input: { storyText, sourceType: 'text', styleId: 'picture_book', qualityTierId: 'standard',
         ratio: '9:16', characterIds: [], idempotencyKey: `e2e-${Date.now()}` }, config });
     projectId = created.projectId;
-    logger.info(`作品已创建 ${projectId}，真实故事理解中（allowedDurations=[4]、maxSeconds=8，控制成本 2×4s）…`);
+    logger.info(`作品已创建 ${projectId}，真实故事理解中（allowedDurations=[5]、maxSeconds=10，控制成本 2×5s）…`);
 
     // ── 故事理解：直接调 storyAgent（allowedDurations 4 秒档控成本），按 handler 同款口径持久化 ──
     const projectRow = (await db.query(`SELECT tier_mapping_id FROM projects WHERE id = $1`, [projectId])).rows[0];
@@ -271,7 +279,7 @@ async function main() {
     const understandStartedAt = Date.now();
     const plan = await storyAgent.understand({ storyText, inputKind: 'idea', expanded: false,
       style: { name: '绘本水彩', promptHint: 'children picture book, watercolor texture, gentle palette' },
-      maxSeconds: 8, allowedDurations: [4], characters: [],
+      maxSeconds: 10, allowedDurations: [5], characters: [],
       voices: (await db.query(`SELECT id, name, gender, age_group AS "ageGroup", description FROM voices
         WHERE status = 'active' ORDER BY sort, id`)).rows, skillId });
     await recordCost({ kind: 'llm', model: config.providers.llmModel, phase: 'understand',
@@ -323,8 +331,7 @@ async function main() {
       request: { kind: 'cast_looks', projectId } }));
     await confirmStory(db, { userId, projectId, quoteId: looksQuote, idempotencyKey: `e2e-cs-${Date.now()}`, config });
     logger.info('已确认故事，进入形象生成（真实图片模型）…');
-    const lookHandlers = { 'look.generate': createLookGenerateHandler({ db, logger, storage, imageProvider,
-      imageDetailLevel: config.providers.imageDetailLevel }) };
+    const lookHandlers = { 'look.generate': createLookGenerateHandler({ db, logger, storage, imageProvider }) };
     for (;;) {
       const ran = await pumpJobs(['look.generate'], lookHandlers);
       const state = await project(projectId);
@@ -348,7 +355,7 @@ async function main() {
     }
     logger.info('形象全部就绪，进入确认点 B');
     await recordCost({ kind: 'image', model: config.providers.imageModel, phase: 'cast_looks',
-      estimatedFen: COST.imageFen(config), note: `1 张 1k/${config.providers.imageDetailLevel}` });
+      estimatedFen: COST.imageFen(config), note: '1 张 1k' });
   }
 
   // ── 确认点 B（cast_review 时）：预占视频费（真实 SKU 480p = 80 分/秒）→ rendering ──
@@ -432,7 +439,7 @@ async function main() {
   logger.info(`成片：${renderRow?.video_key ?? '（尚未就绪）'} ${renderRow?.duration_seconds ?? '?'} 秒`);
   if (state.status === 'delivered') {
     await recordCost({ kind: 'summary', projectId, status: state.status,
-      estimatedFen: COST.imageFen(config) + 8 * COST.videoPerSecond, note: '预估合计（1 形象 + 2×4s 480p）' });
+      estimatedFen: COST.imageFen(config) + 10 * COST.videoPerSecond, note: '预估合计（1 形象 + 2×5s 480p）' });
     logger.info(`成本账本：${path.relative(repoRoot, ledgerPath)}`);
   } else {
     logger.info(`未完成（${state.status}）——稍后用 --resume ${projectId} 续跑`);
