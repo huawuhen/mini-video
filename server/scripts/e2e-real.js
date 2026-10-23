@@ -8,6 +8,7 @@
 // 开发机代理为 fake-IP DNS：渠道 API 直连可用；七牛 CDN 下载走 DoH 绕行（仅本脚本，产品代码不改）。
 import { appendFile, mkdir } from 'node:fs/promises';
 import dns from 'node:dns/promises';
+import https from 'node:https';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createLookGenerateHandler } from '../src/characters/service.js';
@@ -23,7 +24,7 @@ import { createDownloader, createLocalFetcher } from '../src/projects/download.j
 import { createProjectHandlers } from '../src/projects/handlers.js';
 import { createRender } from '../src/render/index.js';
 import { newId } from '../src/db/ids.js';
-import { confirmCast, confirmStory, createProject } from '../src/projects/service.js';
+import { confirmCast, confirmStory, createProject, retryProject } from '../src/projects/service.js';
 import { createQuote } from '../src/wallet/pricing.js';
 import { videoSkuForMapping } from '../src/projects/understand.js';
 import { createSkillRegistry } from '../src/engine/skills/index.js';
@@ -136,21 +137,35 @@ async function main() {
           AND type IN ('look.generate', 'project.bind_prompts', 'segment.generate') RETURNING id`);
     if (back.rowCount) logger.warn(`收回上次会话遗留的 running job ${back.rowCount} 个`);
   }
-  // 本机 DNS（114.114.114.114）对部分域名间歇失败：上传通道失败自动重试（下载已有 DoH 兜底）
-  const retryFetch = async (url, init = {}, attempt = 0) => {
-    try {
-      return await fetch(url, init);
-    } catch (error) {
-      const text = String(error.message) + (error.cause?.code ?? '');
-      if (attempt >= 3 || !/fetch failed|ENOTFOUND|ECONNRESET|terminated|timeout/i.test(text)) throw error;
-      logger.warn(`上传请求失败（${text.slice(0, 60)}），1.5 秒后重试 ${attempt + 1}/3`);
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      return retryFetch(url, init, attempt + 1);
-    }
-  };
+  // 本机 DNS 对部分域名间歇 ENOTFOUND（undici fetch 受影响，node:https 一直正常——见排障记录）：
+  // 七牛上传通道改用 node:https 全新连接实现（同 directFetch 口径），失败自动重试 3 次
+  const nodeHttpsFetch = (url, init = {}, attempt = 0) => new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const headers = { ...init.headers };
+    if (init.body && headers['Content-Length'] === undefined) headers['Content-Length'] = Buffer.byteLength(init.body);
+    const req = https.request({ hostname: u.hostname, path: `${u.pathname}${u.search}`, port: 443,
+      method: init.method ?? 'GET', headers, agent: false }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        headers: res.headers,
+        text: async () => Buffer.concat(chunks).toString('utf8'),
+        json: async () => JSON.parse(Buffer.concat(chunks).toString('utf8') || 'null'),
+      }));
+    });
+    req.on('error', (e) => {
+      if (attempt < 3) setTimeout(() => nodeHttpsFetch(url, init, attempt + 1).then(resolve, reject), 1500);
+      else reject(e);
+    });
+    req.setTimeout(120_000, () => req.destroy(new Error('上传请求超时')));
+    if (init.body) req.write(init.body);
+    req.end();
+  });
   const { createQiniuStorage } = await import('../src/engine/storage/qiniu.js');
   const storage = createQiniuStorage(config.storage.qiniu,
-    { defaultTtlSeconds: config.storage.signedUrlTtlSeconds, fetchImpl: retryFetch });
+    { defaultTtlSeconds: config.storage.signedUrlTtlSeconds, fetchImpl: nodeHttpsFetch });
   const videoProvider = createMiaowuaiVideoAdapter({ baseUrl: config.providers.miaowuaiBaseUrl,
     apiKey: config.providers.miaowuaiApiKey, model: config.providers.videoModel,
     fetchImpl: dohFallbackFetch, timeoutMs: config.providers.requestTimeoutMs, logger });
@@ -256,7 +271,9 @@ async function main() {
     const understandStartedAt = Date.now();
     const plan = await storyAgent.understand({ storyText, inputKind: 'idea', expanded: false,
       style: { name: '绘本水彩', promptHint: 'children picture book, watercolor texture, gentle palette' },
-      maxSeconds: 8, allowedDurations: [4], characters: [], voices: [], skillId });
+      maxSeconds: 8, allowedDurations: [4], characters: [],
+      voices: (await db.query(`SELECT id, name, gender, age_group AS "ageGroup", description FROM voices
+        WHERE status = 'active' ORDER BY sort, id`)).rows, skillId });
     await recordCost({ kind: 'llm', model: config.providers.llmModel, phase: 'understand',
       estimatedFen: 0, note: 'Coding Plan 套餐内', usage: plan.usage, elapsedMs: Date.now() - understandStartedAt });
     logger.info(`剧本理解完成 degraded=${plan.degraded} segments=${plan.segmentCount}（预算 2×4s）`);
@@ -273,6 +290,15 @@ async function main() {
            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, 'new')`,
           [castId, projectId, index, person.name, person.description ?? '', person.gender, person.ageGroup]);
       }
+      // 为每个角色分配不重复音色（真实产品由 LLM 推荐/用户选择；e2e 直接分配以过确认 B）
+      for (const [index, castId] of castIds.entries()) {
+        await t.query(
+          `UPDATE project_cast SET voice_id = (SELECT id FROM voices WHERE status = 'active'
+              ORDER BY sort, id OFFSET $1 LIMIT 1), voice_source = 'ai'
+            WHERE id = $2 AND voice_id IS NULL`,
+          [index % 8, castId]);
+      }
+
       for (const [index, segment] of plan.segments.entries()) {
         await t.query(
           `INSERT INTO segments (id, project_id, idx, duration_seconds, plot, camera_notes, dialogue, ambience, transition, cast_ids)
@@ -339,6 +365,7 @@ async function main() {
   const fetchLocal = createLocalFetcher({ storage, maxBytes: config.projects.maxVideoBytes });
   const handlers = createProjectHandlers({ db, logger, config, storyAgent, videoProvider, storage,
     render, downloadToTempFile, fetchLocal });
+  let retriedOnce = false;
   const deadline = Date.now() + POLL_MAX_MINUTES * 60_000;
   let videoCostRecorded = false;
   for (;;) {
@@ -354,7 +381,14 @@ async function main() {
       continue;
     }
     const state = await project(projectId);
-    if (state.status === 'delivered' || state.status === 'failed') break;
+    if (state.status === 'delivered') break;
+    if (state.status === 'failed' && !retriedOnce) {
+      retriedOnce = true;
+      logger.warn(`项目 failed（${state.progress?.message ?? ''}），按产品 retry 路径自动重试一次…`);
+      await retryProject(db, { userId, projectId });
+      continue;
+    }
+    if (state.status === 'failed' || state.status === 'canceled') break;
     if (Date.now() > deadline) {
       logger.info(`本次会话 ${POLL_MAX_MINUTES} 分钟到点，视频仍在渠道排队。用 --resume ${projectId} 续跑（不重复提交、不重复计费）。`);
       break;

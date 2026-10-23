@@ -110,7 +110,12 @@ export function createMiaowuaiVideoAdapter({ baseUrl, apiKey, model = 'seedance-
         if ([404, 410].includes(status)) {
           return { status: 'failed', error: '喵呜视频任务不存在或已过期。', providerMessage: short(data) };
         }
-        return { status: 'unknown', providerMessage: short(data) };
+        // 单次查询失败（网络/5xx）抛可重试异常，交 gen.poll 的队列退避继续轮询——
+        // 任务已在渠道侧，绝不因一次查询失败就冻结
+        throw new ProviderError('喵呜视频任务查询失败。', {
+          code: 'PROVIDER_QUERY_FAILED', submitted: true, retryable: true, status,
+          providerMessage: short(data),
+        });
       }
       const taskStatus = String(data.status ?? data.task_status ?? '').toLowerCase();
       if (TERMINAL_FAILURE.has(taskStatus) || data.error) {
