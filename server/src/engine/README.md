@@ -9,7 +9,7 @@
 | `story/` | `createStoryAgent({ llm, logger, skills })` → `{ expandIdea, understand, bindPrompts }`；`classifyInput` | 时长只取 `allowedDurations`，总时长 ≤ `maxSeconds`；宽容解析 + 严格校验 + 2 次修复 + 确定性兜底（`degraded: true`）；支持 `{ signal, timeoutMs }`（默认每次调用 90 秒） |
 | `skills/` | `createSkillRegistry([...])` → `get(skillId)` / `forModel(model)`；`wan30Skill`、`genericSkill`、`defineSkill` | 每个视频模型一个 Skill（提示词、模板、校验、默认值）；未知模型回退 `generic`；M0 假设全部在 `limits` 里可配置 |
 | `llm/` | `createPiLlm({ model, streamFn })`、`createMockLlm(script)` | 最小接口 `complete({ system, messages, signal }) → { text, usage }`；测试用脚本化模拟 |
-| `providers/` | `createRegistry([...adapters])`、Modelhub Wan 3.0 / Seedance 2.5 / 图片适配器、`createImageProvider` | `prepare / submit / query / normalize`；视频固定 `omni_reference`，`tailRef` 作为普通参考图排在最前，尽力而为，不保证首帧衔接；图片参考只取第一张 |
+| `providers/` | **驱动框架（M2-BE-03）**：`contract.js`（契约与错误分类）、`transport.js`（共用 HTTP 层）、`registry.js`（扫描 `drivers/*/index.js` 自动注册）、`image-bytes.js`；契约测试套件 `contract-test.js`（驱动测试回放样本用） | 驱动实例按 kind 分形状：video `{ capabilities/prepare/submit/query/normalize }`、image `{ capabilities/generate }`、llm `{ capabilities/complete }`；`tailRef` 作为普通参考图排在最前，尽力而为，不保证首帧衔接；图片参考只取第一张。详见 drivers/ 各目录 README |
 | `storage/` | `createStorage(config)` → `{ put, signedUrl, remove }`；`memory` 实现 | 七牛 Kodo 私有空间 + 签名链接 |
 | `transfer/` | `transferFromUrl(...)` | 上游临时链接 → 七牛，经 `net` 校验 |
 | `net/` | `safeFetch(url, { maxBytes, timeoutMs })` | SSRF / 大小 / 超时，可注入模拟网络 |
@@ -73,7 +73,7 @@ bindPrompts({ style, ratio, segments, cast, bible, voicesEnabled, skillId, maxIm
 行为约定：
 
 - 最终提示词 `prompt` 由 Skill 的 `assemble` **逐字拼装**（风格、场景、道具、人物外观、连贯性、写实与避坑模板不经过 LLM 改写）；对白由代码嵌入（`某 handle says in Mandarin Chinese, {delivery}: 「原句」`），镜头里出现才加 `Lip sync.`，全段无对白写 `No dialogue.`。
-- **图片编号与提交顺序一致**：视频适配器的提交顺序是 `[tailRef, ...imageRefs]`（`modelhub-video` 尾帧排最前），所以 `usePrevTail=true` 时提示词 `图1` 写「上一段的最后一帧」、人物形象图从 `图2` 开始，调用方把尾帧图片作为第 1 张参考图提交（`omni_reference` 普通参考，尽力而为，不保证首帧衔接）；无尾帧时人物从 `图1` 开始。`usePrevTail=true` 时形象图预算已减 1（`droppedRefs` 计入裁剪数）。跨模块一致性有专门测试：`server/test/engine/skill-provider-numbering.test.js`。
+- **图片编号与提交顺序一致**：视频驱动的提交顺序是 `[tailRef, ...imageRefs]`（尾帧排最前），所以 `usePrevTail=true` 时提示词 `图1` 写「上一段的最后一帧」、人物形象图从 `图2` 开始，调用方把尾帧图片作为第 1 张参考图提交（`omni_reference` 普通参考，尽力而为，不保证首帧衔接）；无尾帧时人物从 `图1` 开始。`usePrevTail=true` 时形象图预算已减 1（`droppedRefs` 计入裁剪数）。跨模块一致性有专门测试：`server/test/engine/skill-provider-numbering.test.js`。
 - `音色参考音频M` 编号 = `audioRefs` 顺序（按说话次数排序）。
 - `startState` = 上一段 `endState`（仅 `transition: 'prev_tail'`），已写入返回与 `final_prompt`。
 - `ratio` 参数保留但**不进提示词正文**（画幅由生成请求的 ratio 字段表达）。

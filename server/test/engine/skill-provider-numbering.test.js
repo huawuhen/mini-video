@@ -1,12 +1,13 @@
-// Cross-module consistency check (M1-ENG-04 review must-fix 1): the 图N numbers that
-// `assemble` writes into the prompt must match the actual submission order of
-// `image_file_N` built by the modelhub video adapter ([tailRef, ...imageRefs]).
+// Cross-module consistency check (M1-ENG-04 review must-fix 1, M2-BE-03 改用 aiide-ark 驱动):
+// the 图N numbers that `assemble` writes into the prompt must match the actual submission
+// order of reference images built by the video driver ([tailRef, ...imageRefs] →
+// metadata.content[] of the ark protocol, in order).
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
-import { after, before, describe, test } from 'node:test';
+import { describe, test } from 'node:test';
 import { createStoryAgent } from '../../src/engine/story/index.js';
 import { createMockLlm } from '../../src/engine/llm/mock.js';
-import { createModelhubTransport, createWan30Adapter } from '../../src/engine/providers/index.js';
+import arkDriver from '../../src/engine/providers/drivers/aiide-ark/index.js';
+import { createScriptedFetch } from '../../src/engine/providers/contract-test.js';
 
 const SHOTS = { shots: [
   { start: 0, end: 4, size: 'Medium-wide shot', transition: 'cut',
@@ -15,31 +16,19 @@ const SHOTS = { shots: [
   { start: 4, end: 9, size: 'Medium shot', transition: 'cut', action: 'The mother claps slowly.',
     dialogue: [], reaction: '', environment: '', camera: 'static' } ], avoid: [] };
 
-function fakeUpstream() {
-  const bodies = [];
-  const server = createServer((req, res) => {
-    const chunks = [];
-    req.on('data', (chunk) => chunks.push(chunk));
-    req.on('end', () => {
-      bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ task_id: 'task_numbering' }));
-    });
-  });
-  return { server, bodies };
-}
-
-describe('提示词 图N 与提交 image_file_N 跨模块一致（M1-ENG-04 复审必改 1）', () => {
-  let upstream;
-  let adapter;
-  before(async () => {
-    upstream = fakeUpstream();
-    upstream.server.listen(0, '127.0.0.1');
-    await new Promise((resolve) => upstream.server.once('listening', resolve));
-    adapter = createWan30Adapter(createModelhubTransport({
-      baseUrl: `http://127.0.0.1:${upstream.server.address().port}`, apiKey: 'fixture-token', timeoutMs: 2000 }));
-  });
-  after(async () => { upstream.server.closeAllConnections(); await new Promise((resolve) => upstream.server.close(resolve)); });
+describe('提示词 图N 与驱动提交参考图顺序跨模块一致（M1-ENG-04 复审必改 1）', () => {
+  function makeAdapter() {
+    const scripted = createScriptedFetch([
+      { match: '/v1/video/generations', method: 'POST', status: 200,
+        json: { id: 'task_numbering', task_id: 'task_numbering', object: 'video', status: '', progress: 0 } },
+    ]);
+    const adapter = arkDriver.create({
+      id: 'pch_numbering0', kind: 'video', name: 'numbering', driver: 'aiide-ark',
+      baseUrl: 'https://channel.example.test', credential: 'sk-numbering-test',
+      modelMap: { video: 'dreamina-seedance-2-5-hc' }, params: { requestTimeoutMs: 2_000 },
+    }, { deps: { fetchImpl: scripted.fetchImpl } });
+    return { adapter, scripted };
+  }
 
   async function bindOnce({ usePrevTail }) {
     const llm = createMockLlm([JSON.stringify(SHOTS), JSON.stringify(SHOTS)]);
@@ -71,14 +60,19 @@ describe('提示词 图N 与提交 image_file_N 跨模块一致（M1-ENG-04 复�
     assert.match(bound.prompt, /图2：the mother 的主体参考（锁定外貌与服装）：a woman in her thirties。/);
     assert.match(bound.prompt, /图3：the girl 的主体参考（锁定外貌与服装）：a four-year-old girl。/);
     assert.ok(!/图4：/.test(bound.prompt), '没有多余的图4');
-    await adapter.submit(adapter.prepare({ prompt: bound.prompt, imageRefs: bound.imageRefs,
-      tailRef: 'https://upstream.example/tail.png', durationSeconds: 9, ratio: '9:16' }),
+    const { adapter, scripted } = makeAdapter();
+    // 与 segment.js 同口径：存储 key 先转上游可访问的引用（生产为签名 URL，此处用 asset:// 免过审），尾帧排最前
+    const toRef = (key) => `asset://mat_${key.replace(/[^a-z0-9]/gi, '_')}`;
+    await adapter.submit(adapter.prepare({ prompt: bound.prompt,
+      imageRefs: ['asset://mat_tail', ...bound.imageRefs.map(toRef)],
+      durationSeconds: 9, ratio: '9:16', resolution: '480p' }),
       { idempotencyKey: 'numbering-tail' });
-    const body = upstream.bodies.at(-1);
-    assert.equal(body.image_file_1, 'https://upstream.example/tail.png', '提交时尾帧排最前');
-    assert.equal(body.image_file_2, 'looks/m.png', '提示词 图2 = 提交的第 2 张（妈妈的形象图）');
-    assert.equal(body.image_file_3, 'looks/b.png', '提示词 图3 = 提交的第 3 张（宝宝的形象图）');
-    assert.equal(body.image_file_4, undefined);
+    const content = JSON.parse(scripted.calls[0].body).metadata.content
+      .filter((item) => item.type === 'image_url');
+    assert.equal(content[0].image_url.url, 'asset://mat_tail', '提交时尾帧排最前');
+    assert.equal(content[1].image_url.url, 'asset://mat_looks_m_png', '提示词 图2 = 提交的第 2 张（妈妈的形象图）');
+    assert.equal(content[2].image_url.url, 'asset://mat_looks_b_png', '提示词 图3 = 提交的第 3 张（宝宝的形象图）');
+    assert.equal(content[3], undefined);
   });
 
   test('无尾帧：人物从 图1 开始，编号一一对应', async () => {
@@ -87,11 +81,14 @@ describe('提示词 图N 与提交 image_file_N 跨模块一致（M1-ENG-04 复�
     assert.match(bound.prompt, /图1：the mother 的主体参考（锁定外貌与服装）：a woman in her thirties。/);
     assert.match(bound.prompt, /图2：the girl 的主体参考（锁定外貌与服装）：a four-year-old girl。/);
     assert.ok(!bound.prompt.includes('上一段的最后一帧'));
-    await adapter.submit(adapter.prepare({ prompt: bound.prompt, imageRefs: bound.imageRefs,
-      durationSeconds: 9, ratio: '9:16' }), { idempotencyKey: 'numbering-notail' });
-    const body = upstream.bodies.at(-1);
-    assert.equal(body.image_file_1, 'looks/m.png');
-    assert.equal(body.image_file_2, 'looks/b.png');
-    assert.equal(body.image_file_3, undefined);
+    const { adapter, scripted } = makeAdapter();
+    await adapter.submit(adapter.prepare({ prompt: bound.prompt,
+      imageRefs: bound.imageRefs.map((key) => `asset://mat_${key.replace(/[^a-z0-9]/gi, '_')}`),
+      durationSeconds: 9, ratio: '9:16', resolution: '480p' }), { idempotencyKey: 'numbering-notail' });
+    const content = JSON.parse(scripted.calls[0].body).metadata.content
+      .filter((item) => item.type === 'image_url');
+    assert.equal(content[0].image_url.url, 'asset://mat_looks_m_png');
+    assert.equal(content[1].image_url.url, 'asset://mat_looks_b_png');
+    assert.equal(content[2], undefined);
   });
 });

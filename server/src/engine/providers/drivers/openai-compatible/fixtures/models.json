@@ -1,0 +1,7 @@
+{
+  "object": "list",
+  "data": [
+    { "id": "glm-4.6", "object": "model", "owned_by": "zhipu" },
+    { "id": "glm-4.5", "object": "model", "owned_by": "zhipu" }
+  ]
+}

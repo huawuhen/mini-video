@@ -1,0 +1,4 @@
+{
+  "_note": "真实 524 是 Cloudflare HTML；本夹具仅回放状态码，正文用占位 JSON（驱动只看状态码）",
+  "error": "gateway timeout"
+}
