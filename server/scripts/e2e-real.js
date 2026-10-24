@@ -43,7 +43,7 @@ const POLL_MAX_MINUTES = 100;
 const IMAGE_COST_FEN = 36;
 const COST = {
   imageFen: () => IMAGE_COST_FEN,
-  videoPerSecond: 143, // 720p 渠道成本（迁移 008 公式推算 142.8 取 143）——本轮端到端实测校准对象
+  videoPerSecond: 151, // 720p 渠道成本（2026-10-24 实测 108,900 tokens/5s = 21,780 tok/s，Lead 裁决采用；迁移 010）
 };
 
 // 开发机代理 fake-IP DNS 绕行（与 modelhub-smoke.js 同款，仅本脚本使用）

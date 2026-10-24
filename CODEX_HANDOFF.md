@@ -196,6 +196,12 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-24 · BE-Core · 720p 渠道成本口径 143 → 151（Lead 裁决采纳实测）
+
+- **背景**：M2-BE-03-e2e 实测 720p 真实 token 108,900/5 秒段（两段一致）→ 21,780 tok/s ≈151 分/秒，较公式推算 143 偏差 +5.6% 超 5% 阈值（见下条 §7）；Lead 裁决：**渠道成本口径改 151，480p 不变，用户售价不变**。同分支 `agent/be/M2-BE-03-e2e` 追加提交。
+- **改动**：① 新增 `migrations/010-aiide-720p-cost.sql`——`UPDATE provider_channels SET cost_fen = jsonb_set(cost_fen, '{video.720p}', '151') WHERE driver = 'aiide-ark' AND kind = 'video'`，**已有库跑 migrate 即生效**（本地库已应用并经 `channel:list` 核对：`{"video.480p":68,"video.720p":151}`）；② `worker.js` 种子默认值 143 → 151（新部署首次种子即正确）；③ `scripts/e2e-real.js` 校准口径同步 151；④ `docs/m0/channel-aiide.md`（单价段落 + 原「未验证」项标记已实测）与 `drivers/aiide-ark/README.md` 的 143 → 151，均注明「实测，2026-10-24」及依据（108,900 tokens/5s ×2 一致 → 21,780 tok/s）。480p 68 分/秒与逻辑 SKU 用户价（`video.720p` 200 分/秒）均未动；价格审计（`providers.price_audit`）本身只校验模型目录存在性，成本标记（`costVsPrice`「成本高于用户价」）读库内 `cost_fen`，随 ①② 自动生效；无硬编码 143 的测试（costVsPrice 测试用独立夹具值）。
+- **验证结果**：`npm run test:server` **342/342**、`npm run check`、`npm run build` 通过；迁移在本地库应用后 `channel:list` 显示 151。零真实费用。
+
 ### 2026-10-24 · BE-Core · M2-BE-03-e2e 真实渠道端到端验证（720p 全流程 delivered）
 
 - **背景**：用户授权（§3 2026-10-24：累计上限 50 元、本轮 720p、停止线 40 元、每笔记账）。分支 `agent/be/M2-BE-03-e2e`（基于 main `72cd936`）。步骤：admin:create + channel:seed（aiide 生效/喵呜备用/智谱 LLM，`channel:list` 核对 5 渠道与成本标注）→ `e2e-real.js` 2×5s 720p 全流程 → 渠道绑定/切换/错密钥三项验证 → token 校准。
