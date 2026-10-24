@@ -1,6 +1,6 @@
 {
-  "updatedAt": "2026-10-23T09:52:36.254Z",
-  "totalEstimatedFen": 4777,
+  "updatedAt": "2026-10-24T01:47:16.471Z",
+  "totalEstimatedFen": 5135,
   "entries": [
     {
       "at": "2026-10-21T07:48:26.022Z",
@@ -443,6 +443,59 @@
       "bytes": 16350092,
       "usageTokens": 288625,
       "tokenFen": 2002
+    },
+    {
+      "at": "2026-10-24T01:41:15.580Z",
+      "channel": "aiide",
+      "kind": "image",
+      "model": "gpt-image-2",
+      "params": {
+        "resolution": "1k",
+        "ratio": "1:1",
+        "reference": "微信图片_20260710181509_27_46.png"
+      },
+      "estimatedFen": 21,
+      "actualFen": null,
+      "status": "succeeded",
+      "artifact": "server/.data/m0/image-1792806108416.png",
+      "bytes": 1279707,
+      "elapsedMs": 32832
+    },
+    {
+      "at": "2026-10-24T01:43:18.835Z",
+      "channel": "aiide",
+      "kind": "material",
+      "model": "dreamina-seedance-2-5-hc",
+      "params": {
+        "reference": "image-1792806108416.png"
+      },
+      "estimatedFen": 0,
+      "actualFen": 0,
+      "status": "succeeded",
+      "elapsedMs": 28064
+    },
+    {
+      "at": "2026-10-24T01:43:38.225Z",
+      "channel": "aiide",
+      "kind": "video",
+      "model": "dreamina-seedance-2-5-hc",
+      "params": {
+        "seconds": 5,
+        "resolution": "480p",
+        "ratio": "9:16",
+        "images": 1,
+        "audios": 0,
+        "materials": true
+      },
+      "estimatedFen": 337,
+      "actualFen": null,
+      "status": "succeeded",
+      "taskId": "task_Pq4hDAjeIZlsBODY4b1ECEluBBcEJT1O",
+      "artifact": "server/.data/m0/video-1792806436466.mp4",
+      "bytes": 2792133,
+      "elapsedMs": 218246,
+      "usageTokens": 48437,
+      "tokenFen": 336
     }
   ]
 }
