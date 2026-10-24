@@ -377,12 +377,12 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | PATCH | `/admin/channels/:id` | 同上可选字段；`credential` 缺省表示不改 | `Channel` |
 | POST | `/admin/channels/:id/test` | – | `{ ok, latencyMs, models: [{ name, priceFenPerUnit }], mismatches: [...] }`（免费，调驱动 `catalog()`） |
 | POST | `/admin/channels/:id/trial` | `{ capability, confirm: true }` | 最小成本试生成（真实费用，写审计） |
-| PUT | `/admin/routes/:kind/:capability` | `{ channelIds: [有序列表], autoFailover: boolean }` | 路由；第一个可用的为主用 |
+| PUT | `/admin/routes/:kind/:capability` | `{ channelIds: [有序列表] }` | 路由；第一个可用的为主用 |
 | POST | `/admin/channels/:id/disable` · `/enable` | – | `Channel` |
 | DELETE | `/admin/channels/:id` | – | 软删除（`retired`）；仍有在途任务时仍允许，在途任务继续轮询，清空后清除凭证 |
 | GET | `/admin/channels/health` | – | 近 1 小时各渠道成功率 / 失败数 / 排队时长 |
 
 `Channel` 字段：`id, kind, name, driver, baseUrl, credentialMask, modelMap, params, status(active|disabled|retired), unavailable, degraded, inFlight, recent: { total, failed, avgQueueSeconds }, createdAt, updatedAt`。
 
-新增错误码：`ADMIN_AUTH_REQUIRED`(401)、`CHANNEL_NOT_FOUND`(404)、`DRIVER_NOT_FOUND`(400，指定的协议驱动不存在)、`CHANNEL_TEST_FAILED`(400)、`NO_ACTIVE_CHANNEL`(503，用户侧提示“服务繁忙，请稍后再试”，不暴露渠道信息，并立刻告警)。
+新增错误码：`ADMIN_AUTH_REQUIRED`(401)、`CHANNEL_NOT_FOUND`(404)、`DRIVER_NOT_FOUND`(400，指定的协议驱动不存在)、`CHANNEL_TEST_FAILED`(400)、`NO_ACTIVE_CHANNEL`(503，用户侧提示“视频/图片生成服务暂时不可用，请稍后再试”，不暴露渠道名称；上游原始错误只放作品「技术详情」，并写日志)。
 
