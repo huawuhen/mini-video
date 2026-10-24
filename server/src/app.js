@@ -10,6 +10,7 @@ import { quoteRoutes } from './api/quotes.js';
 import { uploadRoutes } from './api/uploads.js';
 import { walletRoutes } from './api/wallet.js';
 import { projectRoutes } from './api/projects.js';
+import { adminRoutes } from './api/admin.js';
 import { extractText } from './engine/extract/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { loadConfig } from './config.js';
@@ -28,7 +29,8 @@ import { createMemoryStorage } from './engine/storage/memory.js';
  * @param {{ put(key, buffer, opts): Promise<void>, remove(keys): Promise<void> }} [deps.storage]  对象存储；缺省内存实现（生产必须注入真实实现）
  * @param {(buffer: Buffer, mime: string) => Promise<string>} [deps.extractText]  docx 文本提取（M1-ENG-03）；未注入时 docx 上传返回 UPLOAD_TYPE_INVALID
  */
-export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider, storage, extractText }) {
+export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider, storage, extractText,
+  channelLayer = null }) {
   if (config.production && !storage) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
   const objectStorage = storage ?? createMemoryStorage();
   const app = express();
@@ -64,8 +66,15 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   api.use(uploadRoutes({ config, db, logger, storage: objectStorage, urlFor, extractText }));
   api.use(characterRoutes({ db, urlFor }));
 
-  // 作品（M1-BE-06）：API §6 全部路由 + SSE
-  api.use(projectRoutes({ config, db, logger, storage: objectStorage, urlFor }));
+  // 作品（M1-BE-06）：API §6 全部路由 + SSE；M2-BE-03：用户侧门禁经渠道路由层（real 模式）
+  const channelRouter = channelLayer?.router ?? null;
+  api.use(projectRoutes({ config, db, logger, storage: objectStorage, urlFor, channelRouter }));
+
+  // 管理端（M2-BE-03，API.md §8）：独立管理员会话；用户端不调用
+  if (channelLayer) {
+    api.use(adminRoutes({ db, config, logger, service: channelLayer.service,
+      registry: channelLayer.registry, secretKey: config.channels.secretKey }));
+  }
 
   api.use(notFound());
   api.use(errorHandler(logger));
@@ -79,13 +88,29 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const logger = createLogger({ level: config.logLevel, base: { proc: 'api' } });
   const db = createDb({ url: config.databaseUrl, max: config.dbPoolMax, logger });
   const storage = createStorageFromConfig(config); // M1-ENG-03：按 config.storage.driver 注入（生产 qiniu，开发 memory）
-  const server = createApp({ config, db, logger, storage, extractText }).listen(config.port, config.host, () => {
-    logger.info('api_listening', { host: config.host, port: config.port });
+  const boot = async () => {
+    let channelLayer = null;
+    if (config.providers.real) {
+      // M2-BE-03：real 模式 API 进程也装配渠道层（用户侧门禁 pick + 管理端路由）
+      const { createChannelLayer, seedChannels } = await import('./worker.js');
+      channelLayer = await createChannelLayer({ config, db, logger, storage });
+      if (config.channels.autoSeed) await seedChannels({ config, db, service: channelLayer.service, logger });
+    }
+    return createApp({ config, db, logger, storage, extractText, channelLayer })
+      .listen(config.port, config.host, () => {
+        logger.info('api_listening', { host: config.host, port: config.port });
+      });
+  };
+  const server = boot().then((srv) => srv).catch((err) => {
+    logger.error('api_boot_failed', { message: err?.message });
+    process.exit(1);
   });
   const shutdown = (signal) => {
     logger.info('api_shutdown', { signal });
-    server.close(() => db.close().finally(() => process.exit(0)));
-    setTimeout(() => process.exit(1), 10_000).unref();
+    Promise.resolve(server).then((srv) => {
+      srv.close(() => db.close().finally(() => process.exit(0)));
+      setTimeout(() => process.exit(1), 10_000).unref();
+    });
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
