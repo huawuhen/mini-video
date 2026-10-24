@@ -13,6 +13,7 @@ export function cronTasks(config) {
     { type: 'projects.failed_sweep', everySeconds: config.cron.expireSweepEverySeconds }, // M2-BE-01：failed 超 N 天自动取消退款
     { type: 'jobs.cleanup', everySeconds: config.cron.jobsCleanupEverySeconds },
     { type: 'providers.price_audit', everySeconds: config.cron.priceAuditEverySeconds }, // M2-BE-01：渠道调价对账（real 模式执行）
+    { type: 'channels.retired_sweep', everySeconds: config.cron.sweepEverySeconds }, // M2-BE-03：软删除渠道在途清空后清除凭证
   ];
 }
 

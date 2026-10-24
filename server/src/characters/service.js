@@ -277,7 +277,8 @@ export async function replacePhotos(db, { userId, id, uploadIds, maxPhotos, urlF
  * character_looks/look_versions(pending) + gen_tasks → enqueue look.generate。
  * 同一 idempotencyKey 重放返回同一版本、不重复扣费；幂等键由用户 id + 请求键派生。
  */
-export async function createLookVersion(db, { userId, characterId, styleId, quoteId, idempotencyKey, urlFor }) {
+export async function createLookVersion(db, { userId, characterId, styleId, quoteId, idempotencyKey, urlFor, channelRouter = null }) {
+  if (channelRouter) await channelRouter.pick('image'); // M2-BE-03：无生效图片渠道提前明确报错（不预占）
   return db.tx(async (t) => {
     const replayKey = `look.create:${userId}:${idempotencyKey}`;
     // §6 审查 2：同键并发（手机双击）先按「用户+请求键」串行化——否则两个事务都查不到重放，
@@ -326,7 +327,7 @@ export async function createLookVersion(db, { userId, characterId, styleId, quot
        VALUES ($1, $2, 'image', $3, $4, 'unassigned', 'created', $5, $6)`,
       [genTaskId, userId, quote.price_snapshot.image.skuCode, quote.price_snapshot.image.version,
         JSON.stringify({
-          // key 带扩展名：aiide 素材库按 URL 扩展名校验（落盘时按实际字节再校正，见 look.generate）
+          // key 带扩展名：部分渠道按 URL 扩展名校验素材类型（落盘时按实际字节再校正，见 look.generate）
           versionId, characterId, styleId, storageKey: `users/${userId}/looks/${versionId}.png`, amountFen,
           promptHint: styleRows[0]?.prompt_hint ?? '', description: character.description ?? '',
           referenceKeys: photoRows.map((r) => r.storage_key),
@@ -381,7 +382,7 @@ export async function deleteCharacter(db, { userId, id }) {
  */
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
-export function createLookGenerateHandler({ db, logger, storage, imageProvider, imageDetailLevel }) {
+export function createLookGenerateHandler({ db, logger, storage, imageProvider, imageDetailLevel, channelRouter = null }) {
   return async function lookGenerate(payload, ctx) {
     const versionId = payload.versionId;
     const { rows } = await db.query(
@@ -395,12 +396,21 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
     if (version.status === 'succeeded' || version.status === 'failed') return; // 已终态：幂等空转
     const request = version.request; // { versionId, characterId, styleId, storageKey, amountFen, promptHint, description, referenceKeys }
 
+    // M2-BE-03：经渠道路由层选生效渠道（无生效渠道 → 明确失败文案，不冻结不重试）；选中后把
+    // channel_id 写进 gen_tasks（此后轮询/对账回该渠道，切换只影响新提交）。mock 模式沿用注入 provider。
+    let routed = null;
+    let provider = imageProvider;
+    if (channelRouter) {
+      routed = await channelRouter.pick('image');
+      provider = routed.instance;
+    }
     // 提交守卫：只有 created → submitting；其余状态按下面分派，绝不重提
     const claim = await db.tx(async (t) => {
       const created = await t.query(
-        `UPDATE gen_tasks SET status = 'submitting', provider = $2, updated_at = now()
+        `UPDATE gen_tasks SET status = 'submitting', provider = $2,
+           channel_id = COALESCE($3, channel_id), updated_at = now()
           WHERE id = $1 AND status = 'created' RETURNING id`,
-        [version.gen_task_id, imageProvider.id], // §6 审查 4：provider 记录真实注入实现
+        [version.gen_task_id, provider.id, routed?.channelId ?? null], // §6 审查 4：provider 记录真实注入实现
       );
       if (created.rows.length) return { claimed: true };
       const { rows: cur } = await t.query(`SELECT status, updated_at FROM gen_tasks WHERE id = $1`, [version.gen_task_id]);
@@ -439,9 +449,10 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
         if (imageDetailLevel) skuOverride.detailLevel = imageDetailLevel;
       }
     }
+    const submittedAt = Date.now();
     let result;
     try {
-      result = await imageProvider.generate({
+      result = await provider.generate({
         characterId: request.characterId,
         styleId: request.styleId,
         promptHint: request.promptHint,
@@ -469,6 +480,10 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
       return; // 未明确证明未提交：不再重提，版本 pending，费用冻结待对账
     }
     await ctx.extendLease?.();
+    // M2-BE-03：真实请求结果统计（只记实际发生的请求；524/504 重试的 attempts 记入尝试记录）
+    if (routed) await channelRouter.recordSubmission({ channelId: routed.channelId, genTaskId: version.gen_task_id,
+      status: result.status, latencyMs: Date.now() - submittedAt,
+      ...(result.attempts && result.attempts > 1 ? { errorCode: `retry_${result.attempts}` } : {}) });
 
     if (result.status === 'unknown') {
       await db.tx(async (t) => {
@@ -484,7 +499,7 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
     }
 
     if (result.status === 'succeeded') {
-      // 扩展名按实际字节校正（旧任务 key 无扩展名、或模型返回 jpg/webp）：aiide 素材库按 URL 扩展名校验类型
+      // 扩展名按实际字节校正（旧任务 key 无扩展名、或模型返回 jpg/webp）：部分渠道按 URL 扩展名校验素材类型
       const sniffed = sniffImage(result.buffer);
       const imageKey = withImageExtension(request.storageKey, imageExtensionFor(result));
       try {
@@ -506,7 +521,7 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
         );
         await t.query(
           `UPDATE gen_tasks SET status = 'succeeded', result = $2, updated_at = now() WHERE id = $1`,
-          [version.gen_task_id, JSON.stringify({ imageKey })],
+          [version.gen_task_id, JSON.stringify({ imageKey, ...(result.attempts ? { attempts: result.attempts } : {}) })],
         );
         if (request.amountFen > 0) {
           await settleReserved(t, { userId: version.user_id, versionId, amountFen: request.amountFen });

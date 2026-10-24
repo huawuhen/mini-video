@@ -2,6 +2,7 @@
 // 规划 → 持久化 story/cast/segments → story_review。LLM 通过注入的 storyAgent 调用；
 // 引擎自带修复重试与确定性兜底，处理器只在重试耗尽的意外错误把项目置为 failed。
 import { classifyInput } from '../engine/story/index.js';
+import { createStoryAgent } from '../engine/story/index.js';
 import { createSkillRegistry } from '../engine/skills/index.js';
 import { PermanentJobError } from '../queue/index.js';
 import { newId } from '../db/ids.js';
@@ -32,16 +33,33 @@ async function styleHint(db, styleId) {
   return rows[0] ?? null;
 }
 
-/** 档位锁定映射 → 当前生效视频 SKU：allowedDurations 与 Skill 选择都以此为准。 */
+/** 档位锁定映射 → 当前生效逻辑视频 SKU：allowedDurations 以此为准（用户价，与渠道解耦）。 */
 export async function videoSkuForMapping(db, tierMappingId) {
   const { rows } = await db.query(
-    `SELECT s.model, s.durations FROM tier_mappings tm
+    `SELECT s.sku_code, s.durations, s.resolution FROM tier_mappings tm
        JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
       WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`,
     [tierMappingId],
   );
   if (!rows.length) throw new PermanentJobError('档位映射没有生效的视频 SKU');
-  return { model: rows[0].model, durations: rows[0].durations ?? [] };
+  return { skuCode: rows[0].sku_code, durations: rows[0].durations ?? [], resolution: rows[0].resolution };
+}
+
+/**
+ * M2-BE-03（SKU 与渠道解耦）：Skill 选型用「当前生效视频渠道的 model_map.video」，
+ * 不再依赖 SKU 行的 model（逻辑 SKU 的 model 恒为空）。channelRouter 为空（mock 链路）
+ * 或渠道未配模型时返回 null——skillRegistry.forModel(null) 回退 generic Skill
+ * （与 M2-BE-01 起渠道模型未注册 Skill 时的实际行为一致）；Skill 注册表匹配上新模型
+ * （如 wan-3.0）后自动切换，业务层不写厂商分支。
+ */
+export async function videoModelForSkill(db, channelRouter) {
+  if (!channelRouter) return null; // mock 链路：generic Skill
+  try {
+    const { channel } = await channelRouter.pick('video');
+    return channel.model_map?.video ?? null;
+  } catch {
+    return null; // 无生效渠道：generic（提交阶段会有明确报错）
+  }
 }
 
 /** 已勾选数字人在作品风格下的现有形象：understand 后回填 look_version_id（BE-02 约定）。 */
@@ -58,7 +76,7 @@ async function existingLookVersion(t, characterId, styleId) {
 // 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径，复审建议 7）
 const skillRegistry = createSkillRegistry();
 
-export function createUnderstandHandler({ db, logger, storyAgent, config }) {
+export function createUnderstandHandler({ db, logger, storyAgent, config, channelRouter = null }) {
   const maxAttempts = config.worker.maxAttempts ?? 5;
   return async function projectUnderstand(payload, ctx) {
     const projectId = payload.projectId;
@@ -70,8 +88,16 @@ export function createUnderstandHandler({ db, logger, storyAgent, config }) {
       return; // 已取消/重分析中：幂等空转
     }
     const userId = current[0].user_id;
+    // M2-BE-03：LLM 渠道路由——每次执行按「当前生效 LLM 渠道」构造 agent（切换只影响之后的调用）；
+    // mock 链路（无 channelRouter）沿用注入的 storyAgent。
+    let agent = storyAgent;
+    if (channelRouter) {
+      const picked = await channelRouter.pick('llm');
+      agent = createStoryAgent({ llm: picked.instance, logger: ctx.logger });
+    }
     try {
-      await runUnderstand({ db, logger: ctx.logger, storyAgent, config, projectId, userId });
+      await runUnderstand({ db, logger: ctx.logger, storyAgent: agent, config, projectId, userId,
+        channelRouter });
     } catch (error) {
       if (ctx.job.attempts >= maxAttempts) {
         // 重试耗尽：进入 failed，用户可重试（retry 重新入队本 job）
@@ -88,12 +114,13 @@ export function createUnderstandHandler({ db, logger, storyAgent, config }) {
   };
 }
 
-async function runUnderstand({ db, logger, storyAgent, config, projectId, userId }) {
+async function runUnderstand({ db, logger, storyAgent, config, projectId, userId, channelRouter }) {
   const project = (await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId])).rows[0];
   const [characters, voices, style, sku] = await Promise.all([
     selectedCharacters(db, userId, project.selected_character_ids ?? []),
     activeVoices(db), styleHint(db, project.style_id), videoSkuForMapping(db, project.tier_mapping_id),
   ]);
+  const videoModel = await videoModelForSkill(db, channelRouter);
   const maxSeconds = config.projects.maxSeconds;
   const allowedDurations = sku.durations;
 
@@ -110,7 +137,7 @@ async function runUnderstand({ db, logger, storyAgent, config, projectId, userId
     expandedUsage = expandedResult.usage;
     logger.info('project_idea_expanded', { projectId, degraded: expandedResult.degraded });
   }
-  const skillId = skillRegistry.forModel(sku.model).id;
+  const skillId = skillRegistry.forModel(videoModel).id;
   const result = await storyAgent.understand({
     storyText: scriptText, inputKind, expanded, style, maxSeconds, allowedDurations, characters, voices,
     skillId,

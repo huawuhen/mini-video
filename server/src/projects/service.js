@@ -152,7 +152,10 @@ async function requireOwnCharacters(t, userId, characterIds) {
  * 创建作品（API §6.1）：校验 → 消耗 1 次免费次数 → 插入 understanding → 入队 project.understand。
  * 同幂等键并发先取 advisory 锁再查重放；重放不消耗次数。
  */
-export async function createProject(db, { userId, input, config }) {
+export async function createProject(db, { userId, input, config, channelRouter = null }) {
+  // M2-BE-03：用户侧门禁——无生效 LLM 渠道时创建即报 NO_ACTIVE_CHANNEL（503，明确中文文案）；
+  // mock 链路（无 router）不拦截。放在事务外：pickRow 只读渠道表，无上游调用。
+  if (channelRouter) await channelRouter.pick('llm');
   const storyText = assertStoryText(input.storyText);
   if (!['text', 'file'].includes(input.sourceType)) {
     throw appError('VALIDATION_FAILED', undefined, { fields: { sourceType: '取值不正确' } });
@@ -293,7 +296,8 @@ async function createCharactersForNewCast(t, { userId, projectId }) {
  * 确认故事（API §6.3）：未匹配角色自动新建数字人 → 缺形象的角色按 cast_looks 报价扣形象费并
  * 预占 → 为每个缺口建 look_versions/gen_tasks 并入队 look.generate；缺口为 0 直接 cast_review。
  */
-export async function confirmStory(db, { userId, projectId, quoteId, idempotencyKey, config, urlFor }) {
+export async function confirmStory(db, { userId, projectId, quoteId, idempotencyKey, config, urlFor, channelRouter = null }) {
+  if (channelRouter) await channelRouter.pick('image'); // 缺口形象将生成：无生效图片渠道提前明确报错
   return db.tx(async (t) => {
     const project = await requireProject(t, { userId, projectId });
     await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`project:confirm:${projectId}`]);
@@ -445,7 +449,8 @@ export async function updateCast(db, { userId, projectId, castId, lookVersionId,
 
 /** 确认角色（API §6.4）：校验形象/音色齐备 → consumeQuote(project_render) + 预占视频费 →
  * 锁定 cast → rendering，入队 project.bind_prompts。 */
-export async function confirmCast(db, { userId, projectId, quoteId, idempotencyKey, config }) {
+export async function confirmCast(db, { userId, projectId, quoteId, idempotencyKey, config, channelRouter = null }) {
+  if (channelRouter) await channelRouter.pick('video'); // 视频费预占前：无生效视频渠道明确报错（不预占）
   return db.tx(async (t) => {
     const project = await requireProject(t, { userId, projectId });
     await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`project:confirm:${projectId}`]);
@@ -780,7 +785,8 @@ export async function updateSegmentPlot(db, { userId, projectId, segmentId, plot
 
 /** 交付后重新生成片段（API §6.6 POST takes）：新增候选 take（永不覆盖旧版本），
  * segment_take 报价扣费预占；成功后 gen.poll 自动切换选中并按新 render 重新拼接。 */
-export async function createSegmentTake(db, { userId, projectId, segmentId, quoteId, idempotencyKey, config }) {
+export async function createSegmentTake(db, { userId, projectId, segmentId, quoteId, idempotencyKey, config, channelRouter = null }) {
+  if (channelRouter) await channelRouter.pick('video'); // re-take 同样需要生效视频渠道
   return db.tx(async (t) => {
     const project = await requireProject(t, { userId, projectId });
     if (project.status === 'expired') throw appError('PROJECT_EXPIRED');
