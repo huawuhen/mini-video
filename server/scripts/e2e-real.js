@@ -2,9 +2,10 @@
 //   node --env-file=.env scripts/e2e-real.js "一句话故事"          # 全程：剧本→形象→确认→视频→拼接
 //   node --env-file=.env scripts/e2e-real.js --resume prj_xxxx     # 断点续跑（渠道排队可能超过单次终端会话时长；
 //                                                                  # 视频任务在上游继续，续跑只接结果，不重复提交）
-// 用最小成本走完 想法→剧本(LLM)→形象(图模型)→确认点B→提示词绑定(LLM)→2×5 秒 480p 视频(aiide)→拼接→交付。
-// 连接 config.databaseUrl（本地隔离测试库 compose miv-test），不触碰生产；费用记入成本账本。
-// 预估成本：形象 1×36 分 + 视频 2×5s×68 分 = 716 分 ≈ 7.2 元（LLM 为 Coding Plan 套餐内；渠道按 token 计费，实际以 usage 为准）。
+// 用最小成本走完 想法→剧本(LLM)→形象(图模型)→确认点B→提示词绑定(LLM)→2×5 秒 720p 视频→拼接→交付。
+// 上游经渠道路由层（数据库渠道，先 npm run channel:seed 写库）；提交绑定 gen_tasks.channel_id，轮询回绑定渠道。
+// 连接 config.databaseUrl（本地隔离测试库 compose miv-test），不触碰生产；费用记入成本账本（停止线 40 元）。
+// 预估成本：形象 1×36 分 + 视频 2×5s×143 分 = 716+500 分 ≈ 12.2 元（LLM 为 Coding Plan 套餐内；渠道按 token 计费，实际以 usage 为准）。
 // 开发机代理为 fake-IP DNS：渠道 API 直连可用；七牛 CDN 下载走 DoH 绕行（仅本脚本，产品代码不改）。
 import { appendFile, mkdir } from 'node:fs/promises';
 import dns from 'node:dns/promises';
@@ -42,7 +43,7 @@ const POLL_MAX_MINUTES = 100;
 const IMAGE_COST_FEN = 36;
 const COST = {
   imageFen: () => IMAGE_COST_FEN,
-  videoPerSecond: 68, // 与 skus.cost_fen 同步（price_audit 调价对账会校验）
+  videoPerSecond: 143, // 720p 渠道成本（迁移 008 公式推算 142.8 取 143）——本轮端到端实测校准对象
 };
 
 // 开发机代理 fake-IP DNS 绕行（与 modelhub-smoke.js 同款，仅本脚本使用）
@@ -104,6 +105,25 @@ const devSafeFetch = createSafeFetch({ resolver: async (hostname, options) => {
 async function recordCost(entry) {
   await mkdir(path.dirname(ledgerPath), { recursive: true });
   await appendFile(ledgerPath, `${JSON.stringify({ at: new Date().toISOString(), ...entry })}\n`);
+}
+
+// 用户授权（CODEX_HANDOFF §3 2026-10-24）：累计费用上限 50 元（5000 分），停止线 40 元（4000 分）；
+// 每笔调用前对照账本累计估算（summary 行是汇总不计入），达线停止并汇报。
+const LEDGER_STOP_FEN = 4000;
+async function spentFen() {
+  const { readFile } = await import('node:fs/promises');
+  let text = '';
+  try { text = await readFile(ledgerPath, 'utf8'); } catch { return 0; }
+  return text.split('\n').filter(Boolean)
+    .map((line) => { try { return JSON.parse(line); } catch { return null; } })
+    .filter((entry) => entry && entry.kind !== 'summary')
+    .reduce((sum, entry) => sum + (entry.estimatedFen ?? 0), 0);
+}
+async function assertBudget(label, nextFen = 0) {
+  const spent = await spentFen();
+  if (spent + nextFen > LEDGER_STOP_FEN) {
+    throw new Error(`成本账本已累计 ${spent} 分，加「${label}」${nextFen} 分将超过停止线 ${LEDGER_STOP_FEN} 分（40 元），停止并汇报。`);
+  }
 }
 
 const isTransient = (error) => error?.retryable === true
@@ -179,33 +199,19 @@ async function main() {
     ...(await downloadBytes(await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds }))),
     name: key.split('/').pop(),
   });
-  // M2-BE-03：上游改为「数据库渠道 + 驱动」装配（与生产同路径）。脚本自建一条指向 aiide 的渠道
-  // 记录（driver: aiide-ark / openai-images / openai-compatible），凭证用 CHANNEL_SECRET_KEY 加密存库。
+  // M2-BE-03：上游 = 数据库渠道 + 驱动（与生产 worker 同路径）。渠道先 `npm run channel:seed` 写库、
+  // `channel:list` 核对；本脚本经渠道路由层装配：提交 pick 绑定 gen_tasks.channel_id，轮询 forTask
+  // 回绑定渠道（channel:use 切换只影响新提交，在途任务仍回原渠道——本轮要验证的行为）。
   if (!config.channels.secretKey) throw new Error('需要 CHANNEL_SECRET_KEY（渠道凭证主密钥）');
   const registry = await loadDriverRegistry({ logger });
   const service = createChannelService({ db, secretKey: config.channels.secretKey, registry, logger });
-  const { encryptCredential } = await import('../src/channels/crypto.js');
-  const mkRow = (kind, driver, modelMap, params = {}, baseUrl, credential) => ({
-    id: `pch_e2e${kind}0000001`, kind, name: 'aiide-e2e', driver,
-    base_url: baseUrl ?? config.providers.aiideBaseUrl,
-    credential_enc: encryptCredential(config.channels.secretKey, credential ?? config.providers.aiideApiKey),
-    model_map: modelMap, params: { ...params, requestTimeoutMs: 180_000 }, status: 'active',
-    created_at: new Date(), updated_at: new Date(),
-  });
-  const videoRow = mkRow('video', 'aiide-ark', { video: config.providers.videoModel },
-    { generateAudio: config.providers.videoGenerateAudio });
-  const imageRow = mkRow('image', 'openai-images', { image: config.providers.imageModel },
-    { resolution: config.providers.imageResolution, ratio: config.providers.imageRatio,
-      quality: config.providers.imageQuality, maxReferences: config.providers.imageMaxReferences });
-  const llmRow = mkRow('llm', 'openai-compatible', { llm: config.providers.llmModel }, {},
-    config.providers.llmBaseUrl, config.providers.llmApiKey);
-  // 脚本直连驱动实例（fetch 走本脚本的网络环境）+ 渠道路由（门禁/事件统计路径与生产一致）
-  const deps = { fetchImpl: dohFallbackFetch, loadReference, downloadImage: (url, headers) => downloadBytes(url) };
-  const videoProvider = service.instanceForRow(videoRow, deps);
-  const imageProvider = service.instanceForRow(imageRow, deps);
-  const llm = service.instanceForRow(llmRow, deps);
-  const storyAgent = createStoryAgent({ llm, logger });
-  logger.info(`上游就绪（M2-BE-03 驱动装配）：视频 ${config.providers.videoModel}/480p、图片 ${config.providers.imageModel}/${config.providers.imageResolution}、LLM ${config.providers.llmModel}、存储 ${config.storage.qiniu.bucket}`);
+  if (!(await service.listChannels({})).length) {
+    throw new Error('渠道表为空：先 `npm run channel:seed` 写入种子渠道并 `npm run channel:list` 核对，再跑本脚本');
+  }
+  const router = createChannelRouter({ db, service, registry, logger,
+    deps: { fetchImpl: dohFallbackFetch, loadReference, downloadImage: (url) => downloadBytes(url) } });
+  const routeDriver = async (kind) => (await router.pick(kind)).channel.driver; // 日志只打驱动名（业务层不见渠道名）
+  logger.info(`渠道路由就绪：video=${await routeDriver('video')}、image=${await routeDriver('image')}、llm=${await routeDriver('llm')}、存储 ${config.storage.qiniu.bucket}`);
 
   const userId = 'usr_e2ereal000001';
   await db.tx(async (t) => {
@@ -281,14 +287,15 @@ async function main() {
     logger.info(`续跑 ${projectId}（当前状态 ${rows[0].status}）`);
   } else {
     const created = await createProject(db, { userId,
-      input: { storyText, sourceType: 'text', styleId: 'picture_book', qualityTierId: 'standard',
-        ratio: '9:16', characterIds: [], idempotencyKey: `e2e-${Date.now()}` }, config });
+      input: { storyText, sourceType: 'text', styleId: 'picture_book', qualityTierId: 'hd',
+        ratio: '9:16', characterIds: [], idempotencyKey: `e2e-${Date.now()}` }, config, channelRouter: router });
     projectId = created.projectId;
-    logger.info(`作品已创建 ${projectId}，真实故事理解中（allowedDurations=[5]、maxSeconds=10，控制成本 2×5s）…`);
+    logger.info(`作品已创建 ${projectId}，真实故事理解中（allowedDurations=[5]、maxSeconds=10，控制成本 2×5s 720p）…`);
 
-    // ── 故事理解：直接调 storyAgent（allowedDurations 4 秒档控成本），按 handler 同款口径持久化 ──
-    const projectRow = (await db.query(`SELECT tier_mapping_id FROM projects WHERE id = $1`, [projectId])).rows[0];
-    const videoModel = await videoModelForSkill(db, null); // e2e：aiide 生效模型
+    // ── 故事理解：LLM 经渠道路由 pick('llm')（与 understand handler 同口径），按 handler 口径持久化 ──
+    const llmPicked = await router.pick('llm');
+    const storyAgent = createStoryAgent({ llm: llmPicked.instance, logger });
+    const videoModel = await videoModelForSkill(db, router); // 生效视频渠道的模型决定 Skill
     const skillId = createSkillRegistry().forModel(videoModel).id;
     const understandStartedAt = Date.now();
     const plan = await storyAgent.understand({ storyText, inputKind: 'idea', expanded: false,
@@ -298,8 +305,8 @@ async function main() {
         WHERE status = 'active' ORDER BY sort, id`)).rows, skillId });
     await recordCost({ kind: 'llm', model: config.providers.llmModel, phase: 'understand',
       estimatedFen: 0, note: 'Coding Plan 套餐内', usage: plan.usage, elapsedMs: Date.now() - understandStartedAt });
-    logger.info(`剧本理解完成 degraded=${plan.degraded} segments=${plan.segmentCount}（预算 2×4s）`);
-    if (plan.segmentCount !== 2 || plan.segments.some((s) => s.durationSeconds !== 4)) {
+    logger.info(`剧本理解完成 degraded=${plan.degraded} segments=${plan.segmentCount}（预算 2×5s）`);
+    if (plan.segmentCount !== 2 || plan.segments.some((s) => s.durationSeconds !== 5)) {
       logger.warn(`LLM 规划偏离预期（${JSON.stringify(plan.segments.map((s) => s.durationSeconds))}），继续执行，成本相应变化`);
     }
     await db.tx(async (t) => {
@@ -341,11 +348,14 @@ async function main() {
     });
 
     // ── 确认点 A：新角色自动建数字人 + 真实形象生成 ──
+    await assertBudget('形象生成', IMAGE_COST_FEN);
     const { quoteId: looksQuote } = await db.tx((t) => createQuote(t, { userId,
       request: { kind: 'cast_looks', projectId } }));
-    await confirmStory(db, { userId, projectId, quoteId: looksQuote, idempotencyKey: `e2e-cs-${Date.now()}`, config });
-    logger.info('已确认故事，进入形象生成（真实图片模型）…');
-    const lookHandlers = { 'look.generate': createLookGenerateHandler({ db, logger, storage, imageProvider }) };
+    await confirmStory(db, { userId, projectId, quoteId: looksQuote, idempotencyKey: `e2e-cs-${Date.now()}`, config,
+      channelRouter: router });
+    logger.info('已确认故事，进入形象生成（真实图片模型，经渠道路由）…');
+    const lookHandlers = { 'look.generate': createLookGenerateHandler({ db, logger, storage,
+      imageProvider: null, channelRouter: router }) };
     for (;;) {
       const ran = await pumpJobs(['look.generate'], lookHandlers);
       const state = await project(projectId);
@@ -372,20 +382,22 @@ async function main() {
       estimatedFen: COST.imageFen(config), note: '1 张 1k' });
   }
 
-  // ── 确认点 B（cast_review 时）：预占视频费（真实 SKU 480p = 80 分/秒）→ rendering ──
+  // ── 确认点 B（cast_review 时）：预占视频费（720p 渠道成本 143 分/秒，售价 200 分/秒）→ rendering ──
   if ((await project(projectId)).status === 'cast_review') {
+    await assertBudget('视频预占', 10 * COST.videoPerSecond);
     const { quoteId: renderQuote } = await db.tx((t) => createQuote(t, { userId,
       request: { kind: 'project_render', projectId } }));
-    await confirmCast(db, { userId, projectId, quoteId: renderQuote, idempotencyKey: `e2e-cc-${Date.now()}`, config });
-    logger.info('已确认角色，视频费按 480p 预占，进入制作');
+    await confirmCast(db, { userId, projectId, quoteId: renderQuote, idempotencyKey: `e2e-cc-${Date.now()}`, config,
+      channelRouter: router });
+    logger.info('已确认角色，视频费按 720p 预占，进入制作');
   }
 
-  // ── 制作：bind_prompts / segment.generate 走 jobs 表；gen.poll 由脚本按 next_poll_at 重排 ──
+  // ── 制作：bind_prompts / segment.generate 走 jobs 表（全部经渠道路由）；gen.poll 回绑定渠道 ──
   const render = createRender({ logger });
   const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes });
   const fetchLocal = createLocalFetcher({ storage, maxBytes: config.projects.maxVideoBytes });
-  const handlers = createProjectHandlers({ db, logger, config, storyAgent, videoProvider, storage,
-    render, downloadToTempFile, fetchLocal });
+  const handlers = createProjectHandlers({ db, logger, config, storyAgent: null, videoProvider: null, storage,
+    render, downloadToTempFile, fetchLocal, channelRouter: router });
   let retriedOnce = false;
   const deadline = Date.now() + POLL_MAX_MINUTES * 60_000;
   let videoCostRecorded = false;
@@ -422,7 +434,7 @@ async function main() {
         const { rows: seg } = await db.query(
           `SELECT COALESCE(SUM(duration_seconds), 0)::int AS seconds FROM segments WHERE project_id = $1`, [projectId]);
         await recordCost({ kind: 'video', model: config.providers.videoModel, phase: 'project_render',
-          estimatedFen: seg[0].seconds * COST.videoPerSecond, note: `${seg[0].seconds} 秒 @480p` });
+          estimatedFen: seg[0].seconds * COST.videoPerSecond, note: `${seg[0].seconds} 秒 @720p` });
         videoCostRecorded = true;
       }
       process.stdout.write(`\r排队生成中… 状态 ${state.status} · ${state.progress?.message ?? ''}   `);
@@ -454,8 +466,8 @@ async function main() {
   logger.info(`成片：${renderRow?.video_key ?? '（尚未就绪）'} ${renderRow?.duration_seconds ?? '?'} 秒`);
   if (state.status === 'delivered') {
     await recordCost({ kind: 'summary', projectId, status: state.status,
-      estimatedFen: COST.imageFen(config) + 10 * COST.videoPerSecond, note: '预估合计（1 形象 + 2×5s 480p）' });
-    logger.info(`成本账本：${path.relative(repoRoot, ledgerPath)}`);
+      estimatedFen: COST.imageFen(config) + 10 * COST.videoPerSecond, note: '预估合计（1 形象 + 2×5s 720p）' });
+    logger.info(`成本账本：${path.relative(repoRoot, ledgerPath)}，累计估算（不含汇总行）${await spentFen()} 分`);
   } else {
     logger.info(`未完成（${state.status}）——稍后用 --resume ${projectId} 续跑`);
   }
