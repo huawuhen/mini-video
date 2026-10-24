@@ -488,7 +488,8 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
         );
         if (!claimed.rows.length) return false; // 输掉竞争：不动钱
         await t.query(`UPDATE gen_tasks SET status = 'succeeded', result = $2, updated_at = now() WHERE id = $1`,
-          [take.gen_task_id, JSON.stringify({ videoKey: request.videoKey })]);
+          [take.gen_task_id, JSON.stringify({ videoKey: request.videoKey,
+            ...(result.usage ? { usage: result.usage } : {}) })]); // usage 透传落库（渠道按 token 计费，对账/校准依据）
         await settleSegment(t, { userId: take.user_id, projectId, takeId, amountFen });
         if (redelivery) {
           // 交付后重生成：新增候选成功 → 直接切换选中（旧 take 保留），按新 render 重新拼接

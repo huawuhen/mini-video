@@ -39,10 +39,12 @@ export function parseBaseUrl(baseUrl) {
  * 只因网络层故障抛 ProviderError：
  *   - 连接类失败（拒绝/DNS）→ { submitted:false, retryable:true }
  *   - 超时 / 中断 / 读取失败 → { submitted: method==='POST' }（结果不确定，绝不自动重试）
+ * maxBytes：响应体有界读取上限（缺省 1MB）；同步返回大负载（如图片 b64_json）的驱动要放大。
  * @returns {{ request(path: string, opts?: {method?: string, body?: object, form?: FormData,
  *            headers?: object, timeoutMs?: number}): Promise<{status: number, ok: boolean, data: object|null, rawText?: string}> }}
  */
-export function createChannelHttp({ baseUrl, credential, fetchImpl = globalThis.fetch, timeoutMs = 180_000 } = {}) {
+export function createChannelHttp({ baseUrl, credential, fetchImpl = globalThis.fetch, timeoutMs = 180_000,
+  maxBytes = MAX_RESPONSE_BYTES } = {}) {
   const origin = parseBaseUrl(baseUrl);
   if (!credential || typeof credential !== 'string') {
     throw new ProviderError('渠道凭证未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
@@ -81,7 +83,7 @@ export function createChannelHttp({ baseUrl, credential, fetchImpl = globalThis.
             const { done, value } = await reader.read();
             if (done) break;
             length += value.byteLength;
-            if (length > MAX_RESPONSE_BYTES) {
+            if (length > maxBytes) {
               throw new ProviderError('渠道响应超出大小限制。', { code: 'SUBMISSION_UNKNOWN', submitted: post });
             }
             chunks.push(value);

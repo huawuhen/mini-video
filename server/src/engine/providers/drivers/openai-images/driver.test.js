@@ -144,3 +144,15 @@ test('openai-images：catalog() 模型目录', async () => {
   const catalog = await instance.catalog();
   assert.deepEqual(catalog.models.map((m) => m.name), ['gpt-image-2', 'dreamina-seedance-2-5-hc']);
 });
+
+test('openai-images：b64_json 大响应（>1MB）正常解析为成功（responseMaxBytes 放宽传输层上限）', async () => {
+  // 真实 PNG 头 + 零填充到 1.2MB：保证 sniff 通过且 base64 无中部 padding
+  const bigB64 = Buffer.concat([TINY_PNG, Buffer.alloc(1.2 * 1024 * 1024)]).toString('base64');
+  assert.ok(Buffer.from(bigB64, 'base64').byteLength > 1024 * 1024);
+  const fetchImpl = async () => new Response(
+    JSON.stringify({ created: 1, data: [{ b64_json: bigB64 }] }),
+    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  const instance = build({ fetchImpl, logger: consoleCapture() });
+  const result = await instance.generate({ promptHint: 'cute', description: '', referenceKeys: [] });
+  assert.equal(result.status, 'succeeded');
+});

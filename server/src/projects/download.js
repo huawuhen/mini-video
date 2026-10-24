@@ -3,9 +3,9 @@ import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
 import { safeFetch } from '../engine/net/index.js';
 
-export function createDownloader({ maxBytes, timeoutMs = 300_000 }) {
+export function createDownloader({ maxBytes, timeoutMs = 300_000, safeFetchImpl = safeFetch }) {
   return async function downloadToTempFile(url, localPath, { timeoutMs: override } = {}) {
-    const response = await safeFetch(url, { maxBytes, timeoutMs: override ?? timeoutMs });
+    const response = await safeFetchImpl(url, { maxBytes, timeoutMs: override ?? timeoutMs });
     await pipeline(response.stream, createWriteStream(localPath));
     return localPath;
   };

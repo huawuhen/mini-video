@@ -31,7 +31,7 @@
 - `model_map`：`{ "video": "dreamina-seedance-2-5-hc" }`
 - `params`（均可省略）：`generateAudio`(true)、`watermark`(false)、`requestTimeoutMs`(180000)、
   `materialsPollIntervalMs`(2000)、`materialsPollTimeoutMs`(180000)、`materialsPurpose`
-- `cost_fen`：`{ "video.480p": 68, "video.720p": 143 }`（分/秒；实扣口径见迁移 008 注释）
+- `cost_fen`：`{ "video.480p": 68, "video.720p": 151 }`（分/秒；480p 实扣口径见迁移 008 注释；720p **实测，2026-10-24**：108,900 tokens/5 秒段 ×2 一致 → 21,780 tok/s ≈151 分/秒，取代公式推算 143，见迁移 010）
 
 ## 测试
 

@@ -611,7 +611,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const sample = await makeVideo('chain-30s.mp4', { duration: 30 });
     const projectId = await driveToRendering('c5-0001');
     const videoProvider = fakeVideoProvider({ pollResults: {
-      up_1: [{ status: 'running' }, { status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
+      up_1: [{ status: 'running' }, { status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }], usage: { total_tokens: 108900 } }],
       up_2: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v2.mp4', kind: 'video' }] }],
     } });
     const storage = httpMemoryStorage();
@@ -640,6 +640,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const stored = typeof storedRequest === 'string' ? JSON.parse(storedRequest) : storedRequest;
     assert.ok(stored.imageRefs.every((key) => !/^https?:\/\//.test(key) && key.includes('looks/')),
       'gen_tasks.request 保存存储 key');
+
     await poll({ takeId: (await ctx.db.query(
       `SELECT id FROM segment_takes WHERE segment_id = (SELECT id FROM segments WHERE project_id = $1 AND idx = 0)`,
       [projectId])).rows[0].id }, ctxOf());
@@ -671,6 +672,13 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.ok(detail.render.durationSeconds >= 59 && detail.render.durationSeconds <= 61, `拼接时长约 60 秒，实际 ${detail.render.durationSeconds}`);
     const { rows: wallet } = await ctx.db.query(`SELECT frozen_fen, available_fen FROM wallets WHERE user_id = $1`, [userId]);
     assert.equal(wallet[0].frozen_fen, 0, '两段全部结算');
+    // usage 透传落库（渠道按 token 计费的对账依据）：提交成功时驱动返回的 usage 要写进 gen_tasks.result
+    const usageRow = (await ctx.db.query(
+      `SELECT gt.result -> 'usage' ->> 'total_tokens' AS tokens FROM gen_tasks gt
+        JOIN segment_takes t ON t.gen_task_id = gt.id
+        JOIN segments s ON s.id = t.segment_id
+       WHERE s.project_id = $1 AND s.idx = 0`, [projectId])).rows[0];
+    assert.equal(usageRow.tokens, '108900', 'usage 透传落库');
     const { rows: takes } = await ctx.db.query(
       `SELECT t.status, t.video_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
         WHERE s.project_id = $1 ORDER BY s.idx`, [projectId]);

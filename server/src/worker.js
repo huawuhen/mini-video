@@ -78,7 +78,7 @@ export async function seedChannels({ config, db, service, logger }) {
         baseUrl: p.aiideBaseUrl, credential: p.aiideApiKey,
         modelMap: { video: p.videoModel },
         params: { generateAudio: p.videoGenerateAudio },
-        costFen: { 'video.480p': 68, 'video.720p': 143 },
+        costFen: { 'video.480p': 68, 'video.720p': 151 }, // 720p 实测 21,780 tok/s（2026-10-24，迁移 010），非公式推算
         remark: '种子渠道（env 引导）：火山方舟视频协议 + 素材库过审', activate: true,
       },
       {

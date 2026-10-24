@@ -170,7 +170,7 @@ async function main() {
   // M2-BE-03：改用驱动装配（与生产同路径；素材库过审由 aiide-ark 驱动内部处理）
   const channel = (kind, driver, modelMap, params = {}) => ({
     id: `pch_smoke${kind}0001`, kind, name: 'aiide-smoke', driver,
-    base_url: config.providers.aiideBaseUrl, credential: config.providers.aiideApiKey,
+    baseUrl: config.providers.aiideBaseUrl, credential: config.providers.aiideApiKey,
     model_map: modelMap, params: { requestTimeoutMs: 180_000, ...params },
   });
   const videoProvider = arkDriver.create(
