@@ -286,7 +286,7 @@ describe('assets（M1-BE-04）', () => {
     assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM gen_tasks WHERE idempotency_key LIKE 'look.create:%look-key-0001'`)).rows[0].n, 1);
     assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM look_versions`)).rows[0].n, 1);
     let wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
-    assert.deepEqual(wallet, { available_fen: 950, frozen_fen: 50 }, '只预占一次');
+    assert.deepEqual(wallet, { available_fen: 940, frozen_fen: 60 }, '只预占一次（迁移 008：形象 60 分）');
 
     // Worker 执行（成功 provider）：转存、自动选中、结算
     const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: provider });
@@ -294,12 +294,12 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(await worker.runOne(), true);
     const done = (await ctx.db.query(`SELECT status, image_key FROM look_versions WHERE id = $1`, [version.id])).rows[0];
     assert.equal(done.status, 'succeeded');
-    assert.equal(done.image_key, `users/${A.userId}/looks/${version.id}`);
-    assert.deepEqual(storage.puts.at(-1)?.key, `users/${A.userId}/looks/${version.id}`);
+    assert.equal(done.image_key, `users/${A.userId}/looks/${version.id}.png`, '形象 key 带扩展名（aiide 素材库按扩展名校验）');
+    assert.deepEqual(storage.puts.at(-1)?.key, `users/${A.userId}/looks/${version.id}.png`);
     const look = (await ctx.db.query(`SELECT selected_version_id FROM character_looks WHERE character_id = $1`, [chr.id])).rows[0];
     assert.equal(look.selected_version_id, version.id, '成功后自动选中新版本');
     wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
-    assert.deepEqual(wallet, { available_fen: 950, frozen_fen: 0 }, '冻结结算，对账正确');
+    assert.deepEqual(wallet, { available_fen: 940, frozen_fen: 0 }, '冻结结算，对账正确');
     const ledger = await ctx.db.query(`SELECT kind, idempotency_key FROM ledger WHERE ref_id = $1 AND user_id = $2`, [version.id, A.userId]);
     assert.ok(ledger.rows.some((r) => r.kind === 'reserve' && r.idempotency_key === `look:${version.id}:reserve`));
     assert.ok(ledger.rows.some((r) => r.kind === 'settle' && r.idempotency_key === `look:${version.id}:settle`));
@@ -366,7 +366,7 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(row.status, 'pending', 'unknown 保持 pending');
     assert.equal((await ctx.db.query(`SELECT status FROM gen_tasks WHERE idempotency_key LIKE '%look-unk-0001'`)).rows[0].status, 'unknown');
     wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
-    assert.deepEqual(wallet, { available_fen: 450, frozen_fen: 50 }, '金额保持冻结');
+    assert.deepEqual(wallet, { available_fen: 440, frozen_fen: 60 }, '金额保持冻结');
     assert.equal((await ctx.db.query(`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key = $1 AND status = 'done'`, [`look:${version2.id}`])).rows[0].n, 1, '任务完成、不自动重提');
     assert.equal(provider.calls.length, callsBefore, '成功 provider 未被误用');
   });
@@ -398,7 +398,7 @@ describe('assets（M1-BE-04）', () => {
       assert.equal(job.status, retryable ? 'queued' : 'done');
     }
     const wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
-    assert.deepEqual(wallet, { available_fen: 100, frozen_fen: 100 });
+    assert.deepEqual(wallet, { available_fen: 80, frozen_fen: 120 });
   });
 
   test('selection：只能选本数字人本风格的 succeeded 版本（要点 f）', async () => {
@@ -508,7 +508,7 @@ describe('assets（M1-BE-04）', () => {
     assert.equal((await ctx.db.query(`SELECT status FROM gen_tasks WHERE idempotency_key = $1`, [taskKey])).rows[0].status, 'unknown');
     assert.equal((await ctx.db.query(`SELECT status FROM look_versions WHERE id = $1`, [version.id])).rows[0].status, 'pending', '版本保持 pending');
     const wallet = (await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [A.userId])).rows[0];
-    assert.deepEqual(wallet, { available_fen: 450, frozen_fen: 50 }, '金额保持冻结，等 M2 对账');
+    assert.deepEqual(wallet, { available_fen: 440, frozen_fen: 60 }, '金额保持冻结，等 M2 对账');
     assert.equal(spy.calls.length, 0, '全程未调用 provider');
     job = (await ctx.db.query(`SELECT status FROM jobs WHERE dedupe_key = $1`, [`look:${version.id}`])).rows[0];
     assert.equal(job.status, 'done', '任务正常完成，不自动重提');
@@ -529,6 +529,22 @@ describe('assets（M1-BE-04）', () => {
     assert.equal(local.calls[0].promptHint, 'children picture book, watercolor texture, gentle palette');
     const task = (await ctx.db.query(`SELECT provider FROM gen_tasks WHERE idempotency_key LIKE '%look-input-001'`)).rows[0];
     assert.equal(task.provider, 'mock-image', 'provider 记录真实注入实现的 id');
+  });
+
+  test('M2-BE-01：gen_tasks.request 带 skuCode，look.generate 按它解析分辨率传给 provider', async () => {
+    await ctx.db.query(`UPDATE wallets SET available_fen = 200, frozen_fen = 0 WHERE user_id = $1`, [A.userId]);
+    const chr = await (await post(base, '/characters', { name: 'SKU 解析', description: '6 岁女孩，短发' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    const quote = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: chr.id, styleId: 'picture_book' }, { cookie: A.cookie, csrf: A.csrf })).json();
+    await post(base, `/characters/${chr.id}/looks/picture_book/versions`, { quoteId: quote.quoteId, idempotencyKey: 'look-sku-001' }, { cookie: A.cookie, csrf: A.csrf });
+    const request = (await ctx.db.query(
+      `SELECT request FROM gen_tasks WHERE idempotency_key LIKE '%look-sku-001'`)).rows[0].request;
+    assert.equal(request.skuCode, 'image.gptimage2.1k', '下单时把 sku_code 写进 request（M2-BE-01，迁移 007）');
+    const local = mockImageProvider();
+    const handlers = buildHandlers({ config: loadConfig({ NODE_ENV: 'test' }), db: ctx.db, logger: silentLogger, storage, imageProvider: local });
+    await createWorker({ db: ctx.db, logger: silentLogger, handlers, workerId: 'worker-sku', concurrency: 1 }).runOne();
+    assert.equal(local.calls.length, 1);
+    assert.deepEqual(local.calls[0].sku, { resolution: '1k' },
+      'look.generate 按 request.skuCode 解析分辨率传给 provider（迁移 007：image.gptimage2.1k）');
   });
 
   test('生产配置：未注入 storage 或 imageProvider 时启动报错', () => {

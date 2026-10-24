@@ -1,4 +1,4 @@
-# M0 渠道实测笔记：Modelhub（seedance-2.5 视频 / gpt-image-2.5-flare 图片）
+# M0 渠道实测笔记：Modelhub（seedance-2.5 视频 / gpt-image-2 图片，原 flare 已更换）
 
 > 2026-10-21，开发 Agent（Engine 角色）。M0-02 渠道接入部分的真实调用记录与结论。
 > 授权与费用规则见 CODEX_HANDOFF §3 2026-10-20（上限 300 元，账本 `cost-ledger.json`，270 元停止线）。
@@ -11,7 +11,7 @@
 | 渠道连通性 | `https://api.modelhub.cc` 正常；`GET /v1/models?include_capabilities=1` 返回 16 个模型的完整能力与实时单价（免费） |
 | 视频 `seedance-2.5` | 提交→轮询→下载全链路通过（4s/480p/9:16 文生视频，h264+aac 60fps，内容与提示词一致）；**上游实际路由到字节系 CDN**（结果域名 `v16-cc.capcut.com`） |
 | 图片 `gpt-image-2.5-flare` | 文生图与参考图合成（multipart `images`）均通过；**上游实际路由到 PixVerse**（结果域名 `media.pixverse.ai`） |
-| 图片请求形态 | flare 与 `gpt-image-2` 不同：分辨率走独立 `resolution` 字段（`1k/2k/4k`，兼容 `1080p` 等旧写法），`quality` 与 `detail_level` 是 `low→max` 档位（适配器已按模型区分，单测覆盖） |
+| 图片请求形态 | `gpt-image-2` 与 `gpt-image-2.5-flare` 同形态（2026-10-22 官网参数页复核）：分辨率走独立 `resolution` 字段（`1k/2k/4k`，兼容 `1080p` 等旧写法），`quality` 与 `detail_level` 是档位（gpt-image-2 上限 high，flare 到 max）；适配器按模型登记，单测覆盖 |
 | 人物一致性 | compositions 用 1 张参考图换视角，脸型/发型/服装/背景保持良好（BE-04 形象生成路径可用） |
 | 单价变化 | `seedance-2.5` 实时价 **480p=39 / 720p=47 / 1080p=280 分/秒**；源项目 2026-10-08 快照（38/85/114）已过期，**SKU 报价必须按实时目录** |
 
@@ -52,3 +52,10 @@
 ## 6. 本地凭据存放
 
 `server/.env`（gitignore）含 `MODELHUB_BASE_URL` / `MODELHUB_API_KEY`，取自超搭云项目同款渠道密钥（用户 2026-10-21 指定）。运行方式：`cd server && node --env-file=.env scripts/modelhub-smoke.js <models|image|video> [参数]`。
+
+## 7. 2026-10-22 补充：图片模型更换为 gpt-image-2（用户指示）
+
+- **决策**：图片模型由 `gpt-image-2.5-flare` 更换为 `gpt-image-2`（SKU `image.flare.1k` → `image.gpt2.1k`，迁移 005；成本 23→**21 分/张**，售价维持 50 分）。flare 适配器保留可随时切回。
+- **参数核对（ego-browser 打开 modelhub.cc/models 官网参数页，与 `GET /v1/models` 一致）**：`ratio` 默认 auto（auto/1:1/16:9/9:16/4:3/3:4），`image_count` 1-4（默认 1，产品固定 1 张不发送），`quality`/`detail_level` low/medium/high（默认 medium），`resolution` 1k/2k/4k（默认 1k，兼容 1080p 旧写法），参考图走 compositions（`images` 字段）。
+- **单价（2026-10-22 实时目录，分/张）**：1k {low 9, medium 21, high 30}、2k {15/28/40}、4k {20/35/55}；官网另标 VIP 会员价（2k/high ¥0.40→0.39 等，记账按目录原价）。
+- **实测（账本 2×9 分）**：1k/low 文生图 ✅（约 20s，1024×1024）；compositions 参考图合成 ✅（约 20s，换姿势后人物一致性良好）。上游仍路由 PixVerse（`media.pixverse.ai`）。当日渠道堆积（flare 任务挂起）已恢复，本机代理已退出、下载未再触发 fake-IP 绕行。

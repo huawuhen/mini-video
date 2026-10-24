@@ -17,6 +17,16 @@ import { videoSkuForMapping } from './understand.js';
 
 const SUBMIT_STALE_MS = 10 * 60 * 1000;
 
+/** 上游明确失败写入 take/项目 error 的口径：message 用适配器的中文业务原因（如素材审核不通过），
+ * 上游原始信息只进技术详情（providerMessage/providerCode），不展示为业务文案。 */
+function upstreamFailure(result) {
+  return {
+    message: result.error ?? '视频生成失败，请稍后重试',
+    ...(result.providerMessage ? { providerMessage: result.providerMessage } : {}),
+    ...(result.providerCode ? { providerCode: result.providerCode } : {}),
+  };
+}
+
 // 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径）
 const skillRegistry = createSkillRegistry();
 
@@ -178,7 +188,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     if (submitted.status === 'failed') {
       await failSegment(db, ctx, { takeId: takeIdResolved, projectId, userId, genTaskId: take.gen_task_id,
         keepDelivered: request.redelivery === true, amountFen: request.amountFen,
-        error: { message: '视频生成失败，请稍后重试' }, logger });
+        error: upstreamFailure(submitted), logger });
       return;
     }
     if (submitted.status === 'unknown' || !submitted.upstreamId) {
@@ -351,11 +361,23 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
 
     // 复审必改 4：轮询超时（从提交时刻起算，默认 7200 秒 = 120 分钟，用户 2026-10-20 指定）。
     // 超时按结果未知处理：金额保持冻结、不重提、项目 failed(TAKE_UNKNOWN)，等 M2 对账。
-    const { rows: ageRows } = await db.query(
+    const elapsed = Number((await db.query(
       `SELECT extract(epoch FROM (now() - created_at))::int AS seconds FROM gen_tasks WHERE id = $1`,
-      [take.gen_task_id]);
-    if (Number(ageRows[0]?.seconds ?? 0) > config.projects.genPollTimeoutSeconds) {
-      logger.error('gen_poll_timeout', { takeId, seconds: ageRows[0]?.seconds });
+      [take.gen_task_id],
+    )).rows[0]?.seconds ?? 0);
+    const timeoutSeconds = config.projects.genPollTimeoutSeconds;
+    // M2-BE-01：到上限 80% 记一次预警（M0 实测渠道排队可达 44 分钟，高峰可能触线）；
+    // result.warnedNearTimeout 原子置位，避免每次轮询重复报警（成功覆写 result 时标记随之消失，无影响）
+    if (elapsed > timeoutSeconds * 0.8 && elapsed <= timeoutSeconds) {
+      const { rowCount } = await db.query(
+        `UPDATE gen_tasks SET result = COALESCE(result, '{}'::jsonb) || '{"warnedNearTimeout":true}'::jsonb
+          WHERE id = $1 AND COALESCE(result ->> 'warnedNearTimeout', 'false')::boolean IS NOT TRUE`,
+        [take.gen_task_id],
+      );
+      if (rowCount) logger.warn('gen_poll_near_timeout', { takeId, elapsedSeconds: elapsed, timeoutSeconds });
+    }
+    if (elapsed > timeoutSeconds) {
+      logger.error('gen_poll_timeout', { takeId, seconds: elapsed });
       await markTakeUnknown(db, ctx, { take: takeId, projectId, userId: take.user_id,
         genTaskId: take.gen_task_id, logger });
       return;
@@ -391,7 +413,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
     if (result.status === 'failed') {
       await failSegment(db, ctx, { takeId, projectId, userId: take.user_id, genTaskId: take.gen_task_id,
         keepDelivered: request.redelivery === true, amountFen,
-        error: { message: '视频生成失败，请稍后重试' }, logger });
+        error: upstreamFailure(result), logger });
       return;
     }
 
@@ -405,7 +427,7 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
           genTaskId: take.gen_task_id, logger });
         return; // 成功状态拿不到地址：结果未知
       }
-      await downloadToTempFile(output.url, localPath, { timeoutMs: 300_000 });
+      await downloadToTempFile(output.url, localPath, { timeoutMs: config.projects.videoDownloadTimeoutMs });
       await ctx.extendLease?.();
       const inspection = await render.inspect(localPath, {
         durationSeconds: request.durationSeconds, ratio: request.ratio,

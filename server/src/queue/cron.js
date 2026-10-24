@@ -2,6 +2,7 @@
 // 调度：每个调度循环用「cron:<任务>:<窗口起点>」去重键入队，多 Worker 同时调度也只入队一次；
 // 清理：分批执行（每批一个短事务），可重复执行；单批失败抛错交给队列重试，处理器按业务状态幂等（要点 f）。
 import { enqueue } from './index.js';
+import { cancelProject } from '../projects/service.js';
 
 /** 任务清单与各自的入队周期（窗口大小）。窗口对齐到周期起点，同窗口内重复调度被去重键挡住。 */
 export function cronTasks(config) {
@@ -9,7 +10,9 @@ export function cronTasks(config) {
     { type: 'auth.sweep', everySeconds: config.cron.sweepEverySeconds },
     { type: 'uploads.sweep', everySeconds: config.cron.sweepEverySeconds },
     { type: 'projects.expire_sweep', everySeconds: config.cron.expireSweepEverySeconds },
+    { type: 'projects.failed_sweep', everySeconds: config.cron.expireSweepEverySeconds }, // M2-BE-01：failed 超 N 天自动取消退款
     { type: 'jobs.cleanup', everySeconds: config.cron.jobsCleanupEverySeconds },
+    { type: 'providers.price_audit', everySeconds: config.cron.priceAuditEverySeconds }, // M2-BE-01：渠道调价对账（real 模式执行）
   ];
 }
 
@@ -230,4 +233,35 @@ async function removeAndClearVideoKeys(db, storage, logger, keys) {
     await t.query(`UPDATE segment_takes SET video_key = NULL WHERE video_key = ANY($1)`, [keys]);
   });
   return keys.length;
+}
+
+/**
+ * projects.failed_sweep（M2-BE-01，TASKS M2-BE-02 并入项）：failed 超过 failedCancelDays（默认 7 天）
+ * 的作品自动取消并退回未结算冻结。复用服务层的 cancelProject（同一状态守卫、同一退款口径：
+ * unknown 片段的冻结保留待对账，未冻结部分全额退回、写 canceled 事件），天然幂等——
+ * 已取消的作品再调会 PROJECT_STATE_INVALID，这里按竞争跳过。逐个短事务，分批推进。
+ */
+export async function runProjectsFailedSweep(db, { cancelDays, batchSize, logger }) {
+  let canceled = 0;
+  for (;;) {
+    const { rows } = await db.query(
+      `SELECT id, user_id FROM projects
+        WHERE status = 'failed' AND updated_at <= now() - make_interval(days => $1)
+        ORDER BY updated_at, id LIMIT $2`,
+      [cancelDays, batchSize],
+    );
+    if (!rows.length) break;
+    for (const row of rows) {
+      try {
+        await cancelProject(db, { userId: row.user_id, projectId: row.id });
+        canceled += 1;
+        logger?.info?.('failed_project_auto_canceled', { projectId: row.id, cancelDays });
+      } catch (error) {
+        if (error?.code === 'PROJECT_STATE_INVALID') continue; // 竞争：用户或并发批次已处理
+        throw error;
+      }
+    }
+    if (rows.length < batchSize) break;
+  }
+  return { canceled };
 }

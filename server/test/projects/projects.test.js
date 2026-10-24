@@ -365,7 +365,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
        WHERE pc.project_id = $1`, [projectId]);
     assert.equal(lookTasks.length, 1, '只为缺口（妈妈）建形象任务，宝宝已有形象不重建');
     const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
-    assert.equal(wallet[0].frozen_fen, 50, '一个缺口 × 50 分预占');
+    assert.equal(wallet[0].frozen_fen, 60, '一个缺口 × 60 分预占（迁移 008）');
     // 同幂等键重放：replayed，不再新增 gen_tasks
     const replay = await confirmStory(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'confirm-0001', config });
     assert.equal(replay.replayed, true);
@@ -399,7 +399,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: ledger } = await ctx.db.query(
       `SELECT kind, frozen_delta_fen FROM ledger WHERE user_id = $1
         AND idempotency_key = $2`, [userId, `look:${versionIds[0]}:settle`]);
-    assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -50),
+    assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -60),
       '形象费已结算（BE-04 结算流水的 ref 是 look/versionId）');
 
     // 余额不足：另一个项目清零钱包后确认 → 402，项目停在 story_review
@@ -477,7 +477,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: project } = await ctx.db.query(`SELECT progress FROM projects WHERE id = $1`, [projectId]);
     assert.ok(project[0].progress.percent >= 45);
     const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
-    assert.equal(wallet[0].frozen_fen, 1200, '视频费预占 = 2 段 × 30 秒 × 20 分');
+    assert.equal(wallet[0].frozen_fen, 6000, '视频费预占 = 2 段 × 30 秒 × 100 分（迁移 008）');
     const { rows: locked } = await ctx.db.query(
       `SELECT count(*)::int AS n FROM project_cast WHERE project_id = $1 AND locked_at IS NOT NULL`, [projectId]);
     assert.equal(locked[0].n, 2, '确认后锁定角色');
@@ -702,9 +702,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.equal(detail.status, 'failed');
     assert.equal(detail.error.code, 'SEGMENT_FAILED');
     assert.match(detail.error.message, /技术检查/);
-    // §5① A 口径：失败保持冻结。已结算 = 形象费 50；冻结 = 视频预占 1200（含失败段与未跑段）
-    assert.equal(detail.pricing.settledFen, 50);
-    assert.equal(detail.pricing.frozenFen, 1200);
+    // §5① A 口径：失败保持冻结。已结算 = 形象费 60；冻结 = 视频预占 6000（含失败段与未跑段，100 分/秒）
+    assert.equal(detail.pricing.settledFen, 60);
+    assert.equal(detail.pricing.frozenFen, 6000);
     // retry：免费重建失败片段（第 0 段）并走完全链
     await retryProject(ctx.db, { userId, projectId });
     detail = await getProjectDetail(ctx.db, { userId, projectId });
@@ -754,11 +754,44 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     await assert.rejects(() => retryProject(ctx.db, { userId, projectId }),
       (err) => err.code === 'PROJECT_STATE_INVALID');
     assert.equal(videoProvider.submissions.length, submissionsBefore, 'unknown 后不重提');
-    // 取消：unknown 段保持冻结，未提交的第 2 段退回（600 分）
+    // 取消：unknown 段保持冻结，未提交的第 2 段退回（30 秒 × 100 分 = 3000 分）
     const before = (await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId])).rows[0].frozen_fen;
     const cancelled = await cancelProject(ctx.db, { userId, projectId });
-    assert.equal(cancelled.refundedFen, 600);
+    assert.equal(cancelled.refundedFen, 3000);
     assert.equal(cancelled.frozenFen, before - cancelled.refundedFen);
+  });
+
+  test('提交被渠道明确拒绝（如素材审核不通过）：项目 failed 带上游中文原因，技术详情留上游信息；retry 免费重建', async () => {
+    const projectId = await driveToRendering('c7-0002');
+    const videoProvider = fakeVideoProvider({});
+    videoProvider.submit = async (prepared) => {
+      videoProvider.submissions.push(prepared);
+      return videoProvider.submissions.length === 1
+        ? { status: 'failed', error: '参考素材未通过渠道审核，请更换形象或照片后重试。',
+            providerMessage: '人脸未过审', providerCode: 'PROVIDER_REFERENCE_REJECTED' }
+        : { status: 'running', upstreamId: `up_${videoProvider.submissions.length}` };
+    };
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider,
+      storage: httpMemoryStorage() });
+    const ctxOf = () => ({ db: ctx.db, logger: silentLogger, enqueue: async () => {}, extendLease: async () => {} });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    const detail = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail.status, 'failed');
+    assert.equal(detail.error.code, 'SEGMENT_FAILED');
+    assert.match(detail.error.message, /参考素材未通过渠道审核/, '业务文案用适配器给出的中文原因');
+    const { rows: takeRows } = await ctx.db.query(
+      `SELECT t.status, t.error FROM segment_takes t JOIN segments s ON s.id = t.segment_id
+        WHERE s.project_id = $1 AND s.idx = 0`, [projectId]);
+    const takeError = takeRows[0].error; // jsonb 列，pg 已解析为对象
+    assert.equal(takeRows[0].status, 'failed');
+    assert.equal(takeError.providerMessage, '人脸未过审', '上游原始信息只进技术详情');
+    assert.equal(detail.pricing.frozenFen, 6000, 'A 口径：明确失败保持冻结，由取消/重试消化');
+    // retry：免费重建该段，渠道不再拒绝 → 提交成功回到 rendering
+    await retryProject(ctx.db, { userId, projectId });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    const detail2 = await getProjectDetail(ctx.db, { userId, projectId });
+    assert.equal(detail2.status, 'rendering');
+    assert.equal(videoProvider.submissions.length, 2, '重试后渠道收到第二次提交');
   });
 
   test('暂停/恢复：暂停后片段提交停住，恢复后续跑到交付', async () => {
@@ -1069,5 +1102,58 @@ describe('projects（M1-BE-05 复审修复）', () => {
     await assert.rejects(() => createProject(ctx.db, { userId,
       input: input({ storyText: '完全不同的另一个故事，内容不一样。', idempotencyKey: 'idem-mismatch' }), config }),
       (err) => err.code === 'IDEMPOTENCY_CONFLICT');
+  });
+});
+
+
+describe('M2-BE-01：轮询 80% 预警（gen_poll_near_timeout）', () => {
+  let ctx;
+  let config;
+  before(async () => { ctx = await createTestDb(); config = loadConfig({ NODE_ENV: 'test' }); });
+  after(async () => ctx.drop());
+
+  test('达到上限 80% 时置位 result.warnedNearTimeout 且不改变状态；未达 80% 不置位', async () => {
+    const db = ctx.db;
+    const userId = 'usr_warn00000001';
+    await db.query(`INSERT INTO users (id, phone, nickname) VALUES ($1, '15900000701', '预警测试')`, [userId]);
+    await db.query(
+      `INSERT INTO projects (id, user_id, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, status)
+       VALUES ('prj_warn000001', $1, '测试', 'text', 'realistic', 'standard', 'tm_standard00000001', 'rendering')`, [userId]);
+    await db.query(
+      `INSERT INTO segments (id, project_id, idx, duration_seconds, plot) VALUES ('seg_warn000001', 'prj_warn000001', 0, 30, '剧情')`);
+    const insertTask = (id, secondsAgo) => db.query(
+      `INSERT INTO gen_tasks (id, user_id, kind, sku_code, sku_version, provider, status, request, upstream_id, idempotency_key, created_at)
+       VALUES ($1, $2, 'video', 'video.seedance.480p', 1, 'fake', 'running', $3, $4, $1, now() - make_interval(secs => $5))`,
+      [id, userId, JSON.stringify({ projectId: 'prj_warn000001', durationSeconds: 30, amountFen: 2400,
+        videoKey: 'users/x/v.mp4', lastFrameKey: 'users/x/f.jpg', resolution: '480p', ratio: '9:16' }),
+        `up_${id}`, secondsAgo],
+    );
+    const insertTake = (id, taskId) => db.query(
+      `INSERT INTO segment_takes (id, segment_id, gen_task_id, status) VALUES ($1, 'seg_warn000001', $2, 'running')`,
+      [id, taskId],
+    );
+    await insertTask('gt_warn_early', 7200 * 0.5);   // 50%：不预警
+    await insertTake('take_warn_early', 'gt_warn_early');
+    await insertTask('gt_warn_late', 7200 * 0.85);   // 85%：预警一次
+    await insertTake('take_warn_late', 'gt_warn_late');
+
+    const videoProvider = { id: 'fake', prepare: (input) => input,
+      submit: async () => ({ status: 'running', upstreamId: 'up' }),
+      query: async () => ({ status: 'running' }), normalize: (raw) => raw };
+    const poll = createGenPollHandler({ db, logger: silentLogger, config, videoProvider,
+      storage: createMemoryStorage(), render: createRender({ logger: silentLogger }),
+      downloadToTempFile: async () => { throw new Error('不应走到下载'); } });
+    const ctxOf = () => ({ db, logger: silentLogger, enqueue: async () => {}, extendLease: async () => {} });
+    await poll({ takeId: 'take_warn_early' }, ctxOf());
+    await poll({ takeId: 'take_warn_late' }, ctxOf());
+
+    const flagOf = (id) => db.query(`SELECT result ->> 'warnedNearTimeout' AS f FROM gen_tasks WHERE id = $1`, [id]);
+    assert.equal((await flagOf('gt_warn_early')).rows[0].f, null, '未达 80% 不预警');
+    assert.equal((await flagOf('gt_warn_late')).rows[0].f, 'true', '达 80% 置预警标记');
+    const task = (await db.query(`SELECT status FROM gen_tasks WHERE id = 'gt_warn_late'`)).rows[0];
+    assert.equal(task.status, 'running', '未超时不置 unknown、金额保持冻结');
+    // 再轮询一次：标记已在，不重复置位（rowCount=0），状态不变
+    await poll({ takeId: 'take_warn_late' }, ctxOf());
+    assert.equal((await db.query(`SELECT status FROM gen_tasks WHERE id = 'gt_warn_late'`)).rows[0].status, 'running');
   });
 });

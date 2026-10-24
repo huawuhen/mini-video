@@ -353,8 +353,8 @@ describe('projects API（M1-BE-06）', () => {
       { body: { quoteId, idempotencyKey: 'api-refund-take-0001' }, cookie, csrf });
     assert.equal(takeRes.status, 200);
     const newTakeId = await latestTakeId(projectId);
-    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 600, frozen: 600 },
-      're-take 预占已冻结 600');
+    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 3000, frozen: 3000 },
+      're-take 预占已冻结 3000（30 秒 × 100 分/秒，迁移 008）');
     // 上游明确失败（提交即 failed）→ 当场退回该笔预占
     const failProvider = { id: 'fake-video-fail',
       prepare(input) { return input; },
@@ -371,7 +371,7 @@ describe('projects API（M1-BE-06）', () => {
     const refunds = (await ctx.db.query(
       `SELECT amount_fen FROM ledger WHERE idempotency_key = $1 AND kind = 'refund'`, [refundKey])).rows;
     assert.equal(refunds.length, 1);
-    assert.equal(Number(refunds[0].amount_fen), 600);
+    assert.equal(Number(refunds[0].amount_fen), 3000);
     const states = (await ctx.db.query(
       `SELECT (SELECT status FROM projects WHERE id = $1) AS project_status,
               (SELECT selected_take_id FROM segments WHERE id = $2) AS selected,
@@ -396,7 +396,7 @@ describe('projects API（M1-BE-06）', () => {
     await flow.generate({ projectId, idx: 0 }, flow.ctxOf());
     await flow.poll({ takeId: await latestTakeId(projectId) }, flow.ctxOf());
     const baseAvailable = (await walletNumbers()).available;
-    // re-take 按当时价预占（20 分/秒 × 30 秒 = 600），提交但不内联轮询
+    // re-take 按当时价预占（100 分/秒 × 30 秒 = 3000），提交但不内联轮询
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'segment_take', projectId, segmentId } }));
     const takeRes = await request('POST', `/projects/${projectId}/segments/${segmentId}/takes`,
@@ -405,26 +405,26 @@ describe('projects API（M1-BE-06）', () => {
     const newTakeId = await latestTakeId(projectId);
     await flow.generate({ projectId, idx: 0, takeId: newTakeId, redelivery: true },
       { db: ctx.db, logger: silent, enqueue: async () => {}, extendLease: async () => {} });
-    // 提交后、结算前：SKU 调价（新版本 50 分/秒生效，若按结算时查价应付 1500）
+    // 提交后、结算前：SKU 调价（新版本 150 分/秒生效，若按结算时查价应付 4500；迁移 008 已占 version 2，这里用 version 3）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_mockvideo720p02', 'video.mock.720p', 2, 'video', 'mock-video', 'mock', '720p', 'second', 50, 0, '{5,10,15,30}')`);
+       VALUES ('sku_aiide480p0000003', 'video.seedance25hc.480p', 3, 'video', 'dreamina-seedance-2-5-hc', 'aiide', '480p', 'second', 150, 68, '{5,10,15,30}')`);
     const unitNow = (await ctx.db.query(
       `SELECT s.price_fen FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
         WHERE tm.id = (SELECT tier_mapping_id FROM projects WHERE id = $1)
         ORDER BY s.version DESC LIMIT 1`, [projectId])).rows[0].price_fen;
-    assert.equal(Number(unitNow), 50, '前置：调价已生效（否则本用例没有意义）');
+    assert.equal(Number(unitNow), 150, '前置：调价已生效（否则本用例没有意义）');
     await flow.poll({ takeId: newTakeId }, flow.ctxOf());
     // settle 流水的 amount_fen 恒为 0，结算金额记在 frozen_delta_fen；若按调价后的单价结算
-    // 1500 会因冻结不足直接失败（审查必改 4 描述的「调高 → 结算失败」）
+    // 4500 会因冻结不足直接失败（审查必改 4 描述的「调高 → 结算失败」）
     const settleRow = (await ctx.db.query(
       `SELECT amount_fen, frozen_delta_fen FROM ledger WHERE idempotency_key = $1`,
       [`project:${projectId}:video:${newTakeId}:settle`])).rows[0];
-    assert.equal(Number(settleRow.frozen_delta_fen), -600, '结算按下单时的 600，不是调价后的 1500');
+    assert.equal(Number(settleRow.frozen_delta_fen), -3000, '结算按下单时的 3000，不是调价后的 4500');
     assert.equal(Number(settleRow.amount_fen), 0);
-    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 600, frozen: 0 },
-      '钱包对账：600 冻结全部转结算（可用额在预占时已扣），无残留');
+    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 3000, frozen: 0 },
+      '钱包对账：3000 冻结全部转结算（可用额在预占时已扣），无残留');
   });
 
   test('复审必改2：交付后改剧情，re-take 提交前重新绑定提示词（没改不调 LLM）', async () => {

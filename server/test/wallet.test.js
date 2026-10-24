@@ -180,15 +180,16 @@ describe('wallet（M1-BE-02）', () => {
     const estimate = (body) => post(base, '/quotes/estimate', body, { cookie, csrf });
     let res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { minFen: 600, maxFen: 1800 });
+    // 迁移 008 aiide 定价：标准 100 分/秒
+    assert.deepEqual(await res.json(), { minFen: 3000, maxFen: 9000 });
 
     res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: ['chr_a1', 'chr_a2', 'chr_a3'] });
     assert.equal(res.status, 200);
-    // 3 个勾选中 2 个缺形象：min = 20×30 + 2×50，max = 20×90 + 2×50
-    assert.deepEqual(await res.json(), { minFen: 700, maxFen: 1900 });
+    // 3 个勾选中 2 个缺形象：min = 100×30 + 2×60，max = 100×90 + 2×60
+    assert.deepEqual(await res.json(), { minFen: 3120, maxFen: 9120 });
 
     res = await estimate({ qualityTierId: 'hd', styleId: 'realistic', characterIds: [] });
-    assert.deepEqual(await res.json(), { minFen: 1200, maxFen: 3600 });
+    assert.deepEqual(await res.json(), { minFen: 6000, maxFen: 18000 }); // 高清 200 分/秒
 
     res = await estimate({ qualityTierId: 'nope', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 400);
@@ -208,8 +209,8 @@ describe('wallet（M1-BE-02）', () => {
     const quote = await res.json();
     assert.match(quote.quoteId, /^qt_/);
     assert.equal(quote.kind, 'look_regenerate');
-    assert.equal(quote.amountFen, 50);
-    assert.deepEqual(quote.breakdown, [{ label: '生成形象 · 真人写实', amountFen: 50 }]);
+    assert.equal(quote.amountFen, 60); // 迁移 008：形象 60 分/张
+    assert.deepEqual(quote.breakdown, [{ label: '生成形象 · 真人写实', amountFen: 60 }]);
     assert.match(quote.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
 
     res = await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_other1', styleId: 'realistic' }, { cookie, csrf });
@@ -234,23 +235,23 @@ describe('wallet（M1-BE-02）', () => {
     let res = await post(base, '/quotes', { kind: 'project_render', projectId: 'prj_a1' }, { cookie, csrf });
     assert.equal(res.status, 200);
     let quote = await res.json();
-    assert.equal(quote.amountFen, 800); // (10 + 30) 秒 × 0.20 元/秒
+    assert.equal(quote.amountFen, 4000); // 迁移 008：(10 + 30) 秒 × 100 分/秒
     assert.deepEqual(quote.breakdown, [
-      { label: '片段 1 · 10 秒 · 标准', amountFen: 200 },
-      { label: '片段 2 · 30 秒 · 标准', amountFen: 600 },
+      { label: '片段 1 · 10 秒 · 标准', amountFen: 1000 },
+      { label: '片段 2 · 30 秒 · 标准', amountFen: 3000 },
     ]);
 
     res = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_a1', segmentId: 'seg_a2' }, { cookie, csrf });
     quote = await res.json();
     assert.equal(res.status, 200);
-    assert.equal(quote.amountFen, 600);
-    assert.deepEqual(quote.breakdown, [{ label: '片段 2 · 30 秒 · 标准', amountFen: 600 }]);
+    assert.equal(quote.amountFen, 3000);
+    assert.deepEqual(quote.breakdown, [{ label: '片段 2 · 30 秒 · 标准', amountFen: 3000 }]);
 
     res = await post(base, '/quotes', { kind: 'cast_looks', projectId: 'prj_a1' }, { cookie, csrf });
     quote = await res.json();
     assert.equal(res.status, 200);
-    assert.equal(quote.amountFen, 100); // 2 个缺形象角色 × 0.50 元
-    assert.deepEqual(quote.breakdown, [{ label: '生成形象 × 2 · 真人写实', amountFen: 100 }]);
+    assert.equal(quote.amountFen, 120); // 2 个缺形象角色 × 0.60 元（迁移 008）
+    assert.deepEqual(quote.breakdown, [{ label: '生成形象 × 2 · 真人写实', amountFen: 120 }]);
 
     res = await post(base, '/quotes', { kind: 'project_render', projectId: 'prj_nope' }, { cookie, csrf });
     assert.equal(res.status, 404);
@@ -263,7 +264,7 @@ describe('wallet（M1-BE-02）', () => {
     const ref = { kind: 'look_regenerate', refType: 'character', refId: 'chr_a1' };
     const first = await ctx.db.tx((t) => consumeQuote(t, { userId: userA, quoteId: created.quoteId, ...ref }));
     assert.equal(first.quote.id, created.quoteId);
-    assert.equal(first.priced.amountFen, 50);
+    assert.equal(first.priced.amountFen, 60);
     const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
     assert.ok(rows[0].consumed_at);
     await assert.rejects(
@@ -300,7 +301,7 @@ describe('wallet（M1-BE-02）', () => {
     assert.equal(bad.status, 404);
     const ok = await post(base, '/quotes', { kind: 'segment_take', projectId: 'prj_b1', segmentId: 'seg_b1' }, { cookie, csrf });
     assert.equal(ok.status, 200);
-    assert.equal((await ok.json()).amountFen, 400);
+    assert.equal((await ok.json()).amountFen, 2000); // 迁移 008：20 秒 × 100 分/秒
   });
 
   test('过期报价使用返回 QUOTE_EXPIRED', async () => {
@@ -314,10 +315,10 @@ describe('wallet（M1-BE-02）', () => {
 
   test('调价后旧报价 QUOTE_MISMATCH，且占用已回滚可重新报价', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
-    // 模拟调价：新增 version 2，单价 50 → 60
+    // 模拟调价：新增 version 3，单价 60 → 70（迁移 008 已是 version 2 = 60 分）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_mockimage2k0002', 'image.mock.2k', 2, 'image', 'mock-image', 'mock', '2k', 'image', 60, 0, '{}')`,
+       VALUES ('sku_gptimage2p000003', 'image.gptimage2.1k', 3, 'image', 'gpt-image-2', 'aiide', '1k', 'image', 70, 36, '{}')`,
     );
     try {
       await assert.rejects(
@@ -327,7 +328,7 @@ describe('wallet（M1-BE-02）', () => {
       const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
       assert.equal(rows[0].consumed_at, null, '比对失败的占用应随事务回滚');
     } finally {
-      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_mockimage2k0002'`);
+      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_gptimage2p000003'`);
     }
   });
 

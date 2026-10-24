@@ -56,7 +56,7 @@ async function defaultResolver(hostname) {
   return dns.promises.lookup(hostname, { all: true, verbatim: true });
 }
 
-function requestAtAddress(current, record, signal, transport) {
+function requestAtAddress(current, record, signal, transport, extraHeaders) {
   return new Promise((resolve, reject) => {
     const req = transport.request({
       host: current.hostname,
@@ -65,7 +65,7 @@ function requestAtAddress(current, record, signal, transport) {
       method: 'GET',
       servername: current.protocol === 'https:' ? current.hostname : undefined,
       headers: { host: current.host, accept: '*/*', 'accept-encoding': 'identity',
-        'user-agent': 'mini-video-engine/1.0', connection: 'close' },
+        'user-agent': 'mini-video-engine/1.0', connection: 'close', ...(extraHeaders ?? {}) },
       signal,
       lookup: (_host, options, callback) => {
         if (options?.all) callback(null, [{ ...record }]);
@@ -78,11 +78,11 @@ function requestAtAddress(current, record, signal, transport) {
   });
 }
 
-async function defaultHttpImpl({ url, pinned, signal }, transport = url.protocol === 'https:' ? https : http) {
+async function defaultHttpImpl({ url, pinned, signal, headers }, transport = url.protocol === 'https:' ? https : http) {
   let lastError;
   for (const record of pinned) {
     if (signal.aborted) throw signal.reason;
-    try { return await requestAtAddress(url, record, signal, transport); }
+    try { return await requestAtAddress(url, record, signal, transport, headers); }
     catch (error) {
       if (signal.aborted) throw signal.reason;
       lastError = error;
@@ -126,8 +126,9 @@ function guardStream(res, { maxBytes, signal, dispose }) {
 
 export function createSafeFetch({ resolver = defaultResolver, httpImpl = defaultHttpImpl, transport } = {}) {
   const request = transport ? (options) => defaultHttpImpl(options, transport) : httpImpl;
-  return async function safeFetch(url, { maxBytes = 64 * 1024 * 1024, timeoutMs = 60_000 } = {}) {
+  return async function safeFetch(url, { maxBytes = 64 * 1024 * 1024, timeoutMs = 60_000, headers = {} } = {}) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new SafeFetchError('REMOTE_URL_INVALID', 'maxBytes 必须是正整数。');
+    if (headers && typeof headers !== 'object') throw new SafeFetchError('REMOTE_URL_INVALID', 'headers 必须是对象。');
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new SafeFetchError('REMOTE_URL_INVALID', 'timeoutMs 必须是正整数。');
     const controller = new AbortController();
     const { signal } = controller;
@@ -154,7 +155,7 @@ export function createSafeFetch({ resolver = defaultResolver, httpImpl = default
           throw new SafeFetchError('REMOTE_ADDRESS_BLOCKED', '远程地址解析到了本机、私网或保留地址。');
         }
         pinned.sort((a, b) => a.family - b.family);
-        const res = await awaitAbortable(request({ url: current.url, pinned, timeoutMs, signal }), signal,
+        const res = await awaitAbortable(request({ url: current.url, pinned, timeoutMs, signal, headers }), signal,
           (response) => response?.destroy?.());
         const status = res.statusCode ?? res.status ?? 0;
         if ([301, 302, 303, 307, 308].includes(status)) {

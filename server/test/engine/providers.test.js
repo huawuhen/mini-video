@@ -136,7 +136,8 @@ describe('engine/providers（M1-ENG-02）', () => {
       loadReference: async (key) => { refs.push(key); return { buffer: TINY_PNG, contentType: 'image/png' }; } });
     const prepared = adapter.prepare({ promptHint: '绘本', description: '女孩',
       referenceKeys: ['users/u1/first.png', 'users/u1/second.png', 'users/u1/third.png'] });
-    assert.equal(prepared.quality, '1080p');
+    assert.equal(prepared.resolution, '1k');
+    assert.equal(prepared.quality, 'medium');
     assert.equal(prepared.detail_level, 'medium');
     assert.deepEqual(prepared.referenceKeys, ['users/u1/first.png']);
     assert.equal(prepared.droppedReferences, 2);
@@ -145,10 +146,11 @@ describe('engine/providers（M1-ENG-02）', () => {
     assert.equal(result.droppedReferences, 2);
     assert.deepEqual(refs, ['users/u1/first.png']);
     const body = upstream.requests.at(-1).body.toString();
-    assert.match(body, /name="quality"\r\n\r\n1080p/);
+    assert.match(body, /name="resolution"\r\n\r\n1k/);
+    assert.match(body, /name="quality"\r\n\r\nmedium/);
     assert.match(body, /name="detail_level"\r\n\r\nmedium/);
     assert.equal((body.match(/name="images"/g) ?? []).length, 1);
-    assert.throws(() => adapter.prepare({ description: '女孩', referenceKeys: [] }, { resolution: '2k' }),
+    assert.throws(() => adapter.prepare({ description: '女孩', referenceKeys: [] }, { resolution: '512p' }),
       (error) => error.code === 'PROVIDER_INPUT_INVALID');
   });
 
@@ -195,6 +197,22 @@ describe('engine/providers（M1-ENG-02）', () => {
       promptHint: 'photo', description: '短发', referenceKeys: [] }),
     { status: 'succeeded', buffer: TINY_PNG, contentType: 'image/png' });
     assert.equal(JSON.parse(upstream.requests.at(-1).body).resolution, '1k');
+
+    // M2-BE-01：generate 入参 sku 覆盖构造默认（look.generate 按 gen_tasks.sku_code 解析分辨率传入）
+    const facadeWithDefault = createImageProvider(createRegistry([flare]), {
+      adapterId: 'modelhub-gpt-image-2.5-flare',
+      sku: { resolution: '1k', detailLevel: 'medium' },
+      downloadImage: async () => ({ buffer: TINY_PNG, contentType: 'image/png' }) });
+    await facadeWithDefault.generate({ characterId: 'chr_sku', styleId: 'realistic',
+      promptHint: 'photo', description: 'x', referenceKeys: [], sku: { resolution: '2k', detailLevel: 'low' } });
+    const overridden = JSON.parse(upstream.requests.at(-1).body);
+    assert.equal(overridden.resolution, '2k');
+    assert.equal(overridden.detail_level, 'low', '入参 sku 覆盖构造默认');
+    await facadeWithDefault.generate({ characterId: 'chr_sku', styleId: 'realistic',
+      promptHint: 'photo', description: 'x', referenceKeys: [] });
+    const defaulted = JSON.parse(upstream.requests.at(-1).body);
+    assert.equal(defaulted.resolution, '1k', '不传 sku 时用构造默认');
+    assert.equal(defaulted.detail_level, 'medium');
   });
 
   test('图片无参考 JSON 生成，有参考时 multipart compositions；facade 兼容 BE-04', async () => {
@@ -247,7 +265,7 @@ describe('engine/providers（M1-ENG-02）', () => {
     assert.equal(result.providerMessage.length, 200);
     assert.ok(!result.error.includes('upstream'));
     const errors = [];
-    const facade = createImageProvider(createRegistry([image]), { sku: { resolution: '2k' },
+    const facade = createImageProvider(createRegistry([image]), { sku: { resolution: '512p' },
       downloadImage: async () => ({ buffer: TINY_PNG }), logger: { error: (...args) => errors.push(args) } });
     const invalid = await facade.generate({ characterId: 'chr_invalid', styleId: 'realistic',
       promptHint: '风格', description: '角色', referenceKeys: [] });

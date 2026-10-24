@@ -9,9 +9,16 @@ export function createImageProvider(registry, { adapterId = 'modelhub-gpt-image-
   }
   return {
     id: adapter.id,
-    async generate({ characterId, styleId, promptHint, description, referenceKeys }) {
+    // sku 入参可覆盖构造默认（M2-BE-01：look.generate 按 gen_tasks 的 sku_code 解析分辨率传入，
+    // ENG-02 审查遗留项「不要写死 SKU」）；缺省沿用构造参数。detailLevel 适配器从 input 读，这里合并进去。
+    async generate({ characterId, styleId, promptHint, description, referenceKeys, sku: skuOverride }) {
+      const effectiveSku = { ...sku, ...skuOverride };
+      const input = { characterId, styleId, promptHint, description, referenceKeys };
+      if (effectiveSku.detailLevel !== undefined && input.detailLevel === undefined) {
+        input.detailLevel = effectiveSku.detailLevel;
+      }
       let prepared;
-      try { prepared = adapter.prepare({ characterId, styleId, promptHint, description, referenceKeys }, sku); }
+      try { prepared = adapter.prepare(input, effectiveSku); }
       catch (error) {
         if (error.submitted === false && !error.retryable) {
           if (['PROVIDER_CONFIG_INVALID', 'PROVIDER_INPUT_INVALID'].includes(error.code)) {

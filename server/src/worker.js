@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { createLookGenerateHandler } from './characters/service.js';
 import { loadConfig } from './config.js';
 import { createDb } from './db/pool.js';
+import { createOpenAiCompatLlm } from './engine/llm/openai.js';
+import { createStoryAgent } from './engine/story/index.js';
+import { safeFetch } from './engine/net/index.js';
+import { createRegistry, createAiideMaterials, createAiideVideoAdapter, createAiideImageProvider } from './engine/providers/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { createLogger } from './logger.js';
 import { createDownloader, createLocalFetcher } from './projects/download.js';
@@ -13,7 +17,9 @@ import { createProjectHandlers } from './projects/handlers.js';
 import { createDevStoryAgent } from './projects/dev-stub.js';
 import { createDevVideoProvider } from './projects/dev-stub.js';
 import { createRender } from './render/index.js';
-import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runUploadsSweep } from './queue/cron.js';
+import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runProjectsFailedSweep,
+  runUploadsSweep } from './queue/cron.js';
+import { createPriceAuditHandler } from './queue/price-audit.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
 // 开发/测试缺省图片模型：返回 1x1 PNG（生产必须注入真实 provider，见 buildHandlers 守卫）
@@ -23,6 +29,57 @@ function createDevImageProvider() {
     id: 'dev-mock',
     async generate() { return { status: 'succeeded', buffer: DEV_PNG, contentType: 'image/png' }; },
   };
+}
+
+/** 经 net.safeFetch 的受控下载（SSRF/大小/超时防护），给图片 provider 的参考图与结果下载用。 */
+async function downloadViaNet(url, { maxBytes, timeoutMs = 120_000, headers } = {}) {
+  const response = await safeFetch(url, { maxBytes, timeoutMs, headers });
+  const chunks = [];
+  for await (const chunk of response.stream) chunks.push(chunk);
+  return { buffer: Buffer.concat(chunks), contentType: response.contentType };
+}
+
+/**
+ * M2-BE-01：真实上游装配（GEN_UPSTREAMS=real）——视频/图片 aiide 渠道（dreamina-seedance-2-5-hc 火山方舟协议 +
+ * 素材库过审 / gpt-image-2 OpenAI Images）、文本 LLM 智谱（OpenAI Compatible）、存储必须七牛（参考素材要上游可访问）。
+ * 缺省（GEN_UPSTREAMS 缺省/mock）走确定性桩：测试与开发不产生任何真实费用（AGENTS.md §6）。
+ */
+function createRealUpstreams({ config, logger, storage }) {
+  const { providers } = config;
+  const missing = [
+    ['AIIDE_API_KEY', providers.aiideApiKey],
+    ['STORY_LLM_BASE_URL', providers.llmBaseUrl],
+    ['STORY_LLM_API_KEY', providers.llmApiKey],
+    ['STORY_LLM_MODEL', providers.llmModel],
+  ].filter(([, value]) => !value).map(([name]) => name);
+  if (missing.length) throw new Error(`GEN_UPSTREAMS=real 缺少环境变量：${missing.join('、')}`);
+  if (config.storage.driver !== 'qiniu') {
+    throw new Error('GEN_UPSTREAMS=real 要求 STORAGE_DRIVER=qiniu（参考素材必须能生成上游可访问的签名链接）');
+  }
+  // 参考照片：存储 key → 签名链接 → 受控下载（gen_tasks 里仍存 key；图片 edits 以文件字节上传）
+  const loadReference = async (key) => {
+    const url = await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds });
+    const { buffer, contentType } = await downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 });
+    return { buffer, contentType, name: key.split('/').pop() };
+  };
+  const fetchImpl = (url, init) => fetch(url, init);
+  const aiide = { baseUrl: providers.aiideBaseUrl, apiKey: providers.aiideApiKey, fetchImpl, logger };
+  const materials = createAiideMaterials({ ...aiide, requestTimeoutMs: providers.requestTimeoutMs,
+    pollIntervalMs: providers.aiideMaterialsPollIntervalMs, pollTimeoutMs: providers.aiideMaterialsPollTimeoutMs,
+    purpose: providers.aiideMaterialsPurpose });
+  const videoProvider = createAiideVideoAdapter({ ...aiide, model: providers.videoModel, materials,
+    timeoutMs: providers.requestTimeoutMs, generateAudio: providers.videoGenerateAudio });
+  const imageProvider = createAiideImageProvider({ ...aiide, model: providers.imageModel,
+    resolution: providers.imageResolution, ratio: providers.imageRatio, quality: providers.imageQuality,
+    maxReferences: providers.imageMaxReferences, requestTimeoutMs: providers.requestTimeoutMs, loadReference,
+    // 结果缺省 b64_json 内联；渠道改返回 url 时经 safeFetch 受控下载
+    downloadImage: (url) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024 }) });
+  const llm = createOpenAiCompatLlm({ baseUrl: providers.llmBaseUrl, apiKey: providers.llmApiKey,
+    model: providers.llmModel, logger });
+  const storyAgent = createStoryAgent({ llm, logger });
+  return { videoProvider, imageProvider, storyAgent,
+    summary: { video: providers.videoModel, image: providers.imageModel, llm: providers.llmModel,
+      storage: config.storage.driver } };
 }
 
 /**
@@ -39,23 +96,37 @@ function createDevImageProvider() {
 export function buildHandlers({ config, db, logger, storage, imageProvider, storyAgent, videoProvider }) {
   // §6 审查 3（BE-03）：生产环境不允许缺省内存存储；未注入时按 config.storage.driver 解析
   const objectStorage = storage ?? createStorageFromConfig(config);
+  // M2-BE-01：GEN_UPSTREAMS=real 时装配真实上游（视频/图片 Modelhub、LLM 智谱、存储 qiniu）；
+  // 显式注入的（测试）优先。缺省 mock：确定性桩，零真实费用。
+  let upstreamSummary = { video: 'dev-stub', image: 'dev-mock', llm: 'dev-stub', storage: config.storage.driver };
   let imageModel = imageProvider;
+  let story = storyAgent;
+  let video = videoProvider;
+  if (config.providers.real && !config.production) {
+    const real = createRealUpstreams({ config, logger, storage: objectStorage });
+    imageModel ??= real.imageProvider;
+    story ??= real.storyAgent;
+    video ??= real.videoProvider;
+    upstreamSummary = real.summary;
+  } else if (config.providers.real) {
+    // 生产环境：与既有守卫一致，必须显式注入（配置组合由部署层负责）
+    if (!imageModel || !story || !video) {
+      throw new Error('生产环境 GEN_UPSTREAMS=real 必须注入 imageProvider / storyAgent / videoProvider');
+    }
+  }
   if (!imageModel) {
     if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
     imageModel = createDevImageProvider();
   }
-  // M1-BE-05：storyAgent（engine.story，含真实 LLM）与视频 provider 生产必须注入；
-  // 开发缺省确定性桩（视频桩永远返回失败，真实渠道属 M0/M2）
-  let story = storyAgent;
   if (!story) {
     if (config.production) throw new Error('生产环境必须注入真实 storyAgent（engine/story + LLM 配置）');
     story = createDevStoryAgent();
   }
-  let video = videoProvider;
   if (!video) {
     if (config.production) throw new Error('生产环境必须注入真实视频渠道 provider（engine/providers）');
     video = createDevVideoProvider();
   }
+  logger.info('worker_upstreams', upstreamSummary);
   const render = createRender({ logger });
   const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes });
   const fetchLocal = createLocalFetcher({ storage: objectStorage, maxBytes: config.projects.maxVideoBytes });
@@ -68,7 +139,17 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
     'auth.sweep': withLog('cron_auth_swept', (sdb) => runAuthSweep(sdb, cronOpts)),
     'uploads.sweep': withLog('cron_uploads_swept', (sdb, ctx) => runUploadsSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
     'projects.expire_sweep': withLog('cron_projects_expired', (sdb, ctx) => runProjectsExpireSweep(sdb, { ...cronOpts, storage: objectStorage, logger: ctx.logger })),
+    'projects.failed_sweep': withLog('cron_projects_failed_canceled', (sdb, ctx) => runProjectsFailedSweep(sdb,
+      { ...cronOpts, cancelDays: config.projects.failedCancelDays, logger: ctx.logger })),
     'jobs.cleanup': withLog('cron_jobs_cleaned', (sdb) => runJobsCleanup(sdb, { ...cronOpts, retentionDays: config.cron.jobsDoneRetentionDays })),
+    'providers.price_audit': createPriceAuditHandler({ db, logger, config,
+      fetchCatalog: async () => {
+        if (!config.providers.real) return { data: [] };
+        const response = await fetch(`${config.providers.aiideBaseUrl}/v1/models`,
+          { headers: { Authorization: `Bearer ${config.providers.aiideApiKey}` } });
+        if (!response.ok) throw new Error(`aiide 模型目录返回 ${response.status}`);
+        return response.json();
+      } }),
     'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage, imageProvider: imageModel }), // M1-BE-04
     ...createProjectHandlers({ db, logger, config, storyAgent: story, videoProvider: video, storage: objectStorage, render, downloadToTempFile, fetchLocal }), // M1-BE-05
   };
