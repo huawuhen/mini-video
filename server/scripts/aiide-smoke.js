@@ -18,7 +18,8 @@ import dns from 'node:dns';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from '../src/config.js';
-import { createAiideMaterials, createAiideVideoAdapter, createAiideImageProvider } from '../src/engine/providers/index.js';
+import arkDriver from '../src/engine/providers/drivers/aiide-ark/index.js';
+import imagesDriver from '../src/engine/providers/drivers/openai-images/index.js';
 import { createQiniuStorage } from '../src/engine/storage/qiniu.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 
@@ -166,16 +167,23 @@ async function main() {
     for await (const chunk of response.stream) chunks.push(chunk);
     return { buffer: Buffer.concat(chunks), contentType: response.contentType };
   };
-  const aiideArgs = { baseUrl: config.providers.aiideBaseUrl, apiKey: config.providers.aiideApiKey, fetchImpl, logger };
-  const materials = createAiideMaterials({ ...aiideArgs, requestTimeoutMs: config.providers.requestTimeoutMs,
-    pollIntervalMs: config.providers.aiideMaterialsPollIntervalMs, pollTimeoutMs: config.providers.aiideMaterialsPollTimeoutMs,
-    purpose: config.providers.aiideMaterialsPurpose });
-  const videoProvider = createAiideVideoAdapter({ ...aiideArgs, model: config.providers.videoModel, materials,
-    timeoutMs: config.providers.requestTimeoutMs, generateAudio: config.providers.videoGenerateAudio });
-  const imageProvider = createAiideImageProvider({ ...aiideArgs, model: config.providers.imageModel,
-    resolution: config.providers.imageResolution, ratio: config.providers.imageRatio, quality: config.providers.imageQuality,
-    maxReferences: config.providers.imageMaxReferences, requestTimeoutMs: config.providers.requestTimeoutMs,
-    loadReference: async (file) => ({ buffer: await readFile(path.resolve(file)) }), downloadImage: downloadBytes });
+  // M2-BE-03：改用驱动装配（与生产同路径；素材库过审由 aiide-ark 驱动内部处理）
+  const channel = (kind, driver, modelMap, params = {}) => ({
+    id: `pch_smoke${kind}0001`, kind, name: 'aiide-smoke', driver,
+    base_url: config.providers.aiideBaseUrl, credential: config.providers.aiideApiKey,
+    model_map: modelMap, params: { requestTimeoutMs: 180_000, ...params },
+  });
+  const videoProvider = arkDriver.create(
+    channel('video', 'aiide-ark', { video: config.providers.videoModel },
+      { generateAudio: config.providers.videoGenerateAudio }),
+    { logger, deps: { fetchImpl } });
+  const imageProvider = imagesDriver.create(
+    channel('image', 'openai-images', { image: config.providers.imageModel },
+      { resolution: config.providers.imageResolution, ratio: config.providers.imageRatio,
+        quality: config.providers.imageQuality, maxReferences: config.providers.imageMaxReferences }),
+    { logger, deps: { fetchImpl,
+      loadReference: async (file) => ({ buffer: await readFile(path.resolve(file)) }),
+      downloadImage: downloadBytes } });
 
   if (command === 'models') {
     const response = await fetchImpl(`${config.providers.aiideBaseUrl}/v1/models`,

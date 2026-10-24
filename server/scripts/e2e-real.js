@@ -15,8 +15,9 @@ import { createLookGenerateHandler } from '../src/characters/service.js';
 import { loadConfig } from '../src/config.js';
 import { createDb } from '../src/db/pool.js';
 import { createStoryAgent } from '../src/engine/story/index.js';
-import { createOpenAiCompatLlm } from '../src/engine/llm/openai.js';
-import { createAiideMaterials, createAiideVideoAdapter, createAiideImageProvider } from '../src/engine/providers/index.js';
+import { loadDriverRegistry } from '../src/engine/providers/index.js';
+import { createChannelService } from '../src/channels/service.js';
+import { createChannelRouter } from '../src/channels/router.js';
 import { createStorageFromConfig } from '../src/engine/storage/index.js';
 import { createSafeFetch } from '../src/engine/net/index.js';
 import { createLogger } from '../src/logger.js';
@@ -26,7 +27,7 @@ import { createRender } from '../src/render/index.js';
 import { newId } from '../src/db/ids.js';
 import { confirmCast, confirmStory, createProject, retryProject } from '../src/projects/service.js';
 import { createQuote } from '../src/wallet/pricing.js';
-import { videoSkuForMapping } from '../src/projects/understand.js';
+import { videoModelForSkill } from '../src/projects/understand.js';
 import { createSkillRegistry } from '../src/engine/skills/index.js';
 
 const argv = process.argv.slice(2);
@@ -178,21 +179,33 @@ async function main() {
     ...(await downloadBytes(await storage.signedUrl(key, { ttlSeconds: config.storage.signedUrlTtlSeconds }))),
     name: key.split('/').pop(),
   });
-  const aiideArgs = { baseUrl: config.providers.aiideBaseUrl, apiKey: config.providers.aiideApiKey,
-    fetchImpl: dohFallbackFetch, logger };
-  const materials = createAiideMaterials({ ...aiideArgs, requestTimeoutMs: config.providers.requestTimeoutMs,
-    pollIntervalMs: config.providers.aiideMaterialsPollIntervalMs, pollTimeoutMs: config.providers.aiideMaterialsPollTimeoutMs,
-    purpose: config.providers.aiideMaterialsPurpose });
-  const videoProvider = createAiideVideoAdapter({ ...aiideArgs, model: config.providers.videoModel, materials,
-    timeoutMs: config.providers.requestTimeoutMs, generateAudio: config.providers.videoGenerateAudio });
-  const imageProvider = createAiideImageProvider({ ...aiideArgs, model: config.providers.imageModel,
-    resolution: config.providers.imageResolution, ratio: config.providers.imageRatio,
-    quality: config.providers.imageQuality, maxReferences: config.providers.imageMaxReferences,
-    requestTimeoutMs: config.providers.requestTimeoutMs, loadReference, downloadImage: downloadBytes });
-  const llm = createOpenAiCompatLlm({ baseUrl: config.providers.llmBaseUrl, apiKey: config.providers.llmApiKey,
-    model: config.providers.llmModel, logger });
+  // M2-BE-03：上游改为「数据库渠道 + 驱动」装配（与生产同路径）。脚本自建一条指向 aiide 的渠道
+  // 记录（driver: aiide-ark / openai-images / openai-compatible），凭证用 CHANNEL_SECRET_KEY 加密存库。
+  if (!config.channels.secretKey) throw new Error('需要 CHANNEL_SECRET_KEY（渠道凭证主密钥）');
+  const registry = await loadDriverRegistry({ logger });
+  const service = createChannelService({ db, secretKey: config.channels.secretKey, registry, logger });
+  const { encryptCredential } = await import('../src/channels/crypto.js');
+  const mkRow = (kind, driver, modelMap, params = {}, baseUrl, credential) => ({
+    id: `pch_e2e${kind}0000001`, kind, name: 'aiide-e2e', driver,
+    base_url: baseUrl ?? config.providers.aiideBaseUrl,
+    credential_enc: encryptCredential(config.channels.secretKey, credential ?? config.providers.aiideApiKey),
+    model_map: modelMap, params: { ...params, requestTimeoutMs: 180_000 }, status: 'active',
+    created_at: new Date(), updated_at: new Date(),
+  });
+  const videoRow = mkRow('video', 'aiide-ark', { video: config.providers.videoModel },
+    { generateAudio: config.providers.videoGenerateAudio });
+  const imageRow = mkRow('image', 'openai-images', { image: config.providers.imageModel },
+    { resolution: config.providers.imageResolution, ratio: config.providers.imageRatio,
+      quality: config.providers.imageQuality, maxReferences: config.providers.imageMaxReferences });
+  const llmRow = mkRow('llm', 'openai-compatible', { llm: config.providers.llmModel }, {},
+    config.providers.llmBaseUrl, config.providers.llmApiKey);
+  // 脚本直连驱动实例（fetch 走本脚本的网络环境）+ 渠道路由（门禁/事件统计路径与生产一致）
+  const deps = { fetchImpl: dohFallbackFetch, loadReference, downloadImage: (url, headers) => downloadBytes(url) };
+  const videoProvider = service.instanceForRow(videoRow, deps);
+  const imageProvider = service.instanceForRow(imageRow, deps);
+  const llm = service.instanceForRow(llmRow, deps);
   const storyAgent = createStoryAgent({ llm, logger });
-  logger.info(`上游就绪：视频 ${config.providers.videoModel}/480p、图片 ${config.providers.imageModel}/${config.providers.imageResolution}、LLM ${config.providers.llmModel}、存储 ${config.storage.qiniu.bucket}`);
+  logger.info(`上游就绪（M2-BE-03 驱动装配）：视频 ${config.providers.videoModel}/480p、图片 ${config.providers.imageModel}/${config.providers.imageResolution}、LLM ${config.providers.llmModel}、存储 ${config.storage.qiniu.bucket}`);
 
   const userId = 'usr_e2ereal000001';
   await db.tx(async (t) => {
@@ -275,8 +288,8 @@ async function main() {
 
     // ── 故事理解：直接调 storyAgent（allowedDurations 4 秒档控成本），按 handler 同款口径持久化 ──
     const projectRow = (await db.query(`SELECT tier_mapping_id FROM projects WHERE id = $1`, [projectId])).rows[0];
-    const sku = await videoSkuForMapping(db, projectRow.tier_mapping_id);
-    const skillId = createSkillRegistry().forModel(sku.model).id;
+    const videoModel = await videoModelForSkill(db, null); // e2e：aiide 生效模型
+    const skillId = createSkillRegistry().forModel(videoModel).id;
     const understandStartedAt = Date.now();
     const plan = await storyAgent.understand({ storyText, inputKind: 'idea', expanded: false,
       style: { name: '绘本水彩', promptHint: 'children picture book, watercolor texture, gentle palette' },

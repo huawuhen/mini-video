@@ -405,10 +405,11 @@ describe('projects API（M1-BE-06）', () => {
     const newTakeId = await latestTakeId(projectId);
     await flow.generate({ projectId, idx: 0, takeId: newTakeId, redelivery: true },
       { db: ctx.db, logger: silent, enqueue: async () => {}, extendLease: async () => {} });
-    // 提交后、结算前：SKU 调价（新版本 150 分/秒生效，若按结算时查价应付 4500；迁移 008 已占 version 2，这里用 version 3）
+    // 提交后、结算前：逻辑 SKU 调价（M2-BE-03 解耦后 video.480p 加 version 2 = 150 分/秒；
+    // 若按结算时查价应付 4500）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_aiide480p0000003', 'video.seedance25hc.480p', 3, 'video', 'dreamina-seedance-2-5-hc', 'aiide', '480p', 'second', 150, 68, '{5,10,15,30}')`);
+       VALUES ('sku_logical480p00002', 'video.480p', 2, 'video', '', 'logical', '480p', 'second', 150, 0, '{5,10,15,30}')`);
     const unitNow = (await ctx.db.query(
       `SELECT s.price_fen FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'

@@ -315,10 +315,10 @@ describe('wallet（M1-BE-02）', () => {
 
   test('调价后旧报价 QUOTE_MISMATCH，且占用已回滚可重新报价', async () => {
     const created = await (await post(base, '/quotes', { kind: 'look_regenerate', characterId: 'chr_a1', styleId: 'realistic' }, { cookie, csrf })).json();
-    // 模拟调价：新增 version 3，单价 60 → 70（迁移 008 已是 version 2 = 60 分）
+    // 模拟调价：逻辑 SKU image.look 新增 version 2，单价 60 → 70（M2-BE-03 解耦后调价只动逻辑 SKU）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_gptimage2p000003', 'image.gptimage2.1k', 3, 'image', 'gpt-image-2', 'aiide', '1k', 'image', 70, 36, '{}')`,
+       VALUES ('sku_logicallook00002', 'image.look', 2, 'image', '', 'logical', '1k', 'image', 70, 0, '{}')`,
     );
     try {
       await assert.rejects(
@@ -328,7 +328,7 @@ describe('wallet（M1-BE-02）', () => {
       const { rows } = await ctx.db.query(`SELECT consumed_at FROM quotes WHERE id = $1`, [created.quoteId]);
       assert.equal(rows[0].consumed_at, null, '比对失败的占用应随事务回滚');
     } finally {
-      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_gptimage2p000003'`);
+      await ctx.db.query(`DELETE FROM skus WHERE id = 'sku_logicallook00002'`);
     }
   });
 

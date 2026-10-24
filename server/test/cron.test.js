@@ -61,6 +61,7 @@ describe('cron（M1-BE-03）', () => {
     );
     assert.deepEqual(rows.map((r) => [r.type, r.n]), [
       ['auth.sweep', 1],
+      ['channels.retired_sweep', 1],  // M2-BE-03
       ['jobs.cleanup', 1],
       ['projects.expire_sweep', 1],
       ['projects.failed_sweep', 1],   // M2-BE-01
@@ -70,7 +71,7 @@ describe('cron（M1-BE-03）', () => {
     // 同窗口内再次调度（含另一个调度器）不再新增
     await s2.tick();
     const again = await ctx.db.query(`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key LIKE 'cron:%'`);
-    assert.equal(again.rows[0].n, 6);
+    assert.equal(again.rows[0].n, 7);
   });
 
   test('auth.sweep：清理过期限流窗口、作废/过期超 1 天的验证码、过期会话；可重复执行（要点 c）', async () => {
@@ -249,7 +250,7 @@ describe('cron（M1-BE-03）', () => {
     // 非生产环境缺省内存实现可用；M1-BE-05 起注册 project.understand（开发用确定性 story 桩）
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
     assert.deepEqual(Object.keys(dev).sort(),
-      ['auth.sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'projects.failed_sweep', 'providers.price_audit', 'segment.generate', 'uploads.sweep']);
+      ['auth.sweep', 'channels.retired_sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'projects.failed_sweep', 'providers.price_audit', 'segment.generate', 'uploads.sweep']);
   });
 
   test('projects.failed_sweep：failed 超 7 天自动取消并退款（M2-BE-01），未到期不动、重复执行幂等', async () => {
@@ -291,38 +292,44 @@ describe('cron（M1-BE-03）', () => {
     await db.query(`DELETE FROM projects WHERE id IN ('prj_f1', 'prj_f2')`);
   });
 
-  test('providers.price_audit：mock 跳过；real 模式目录一致不报、漂移报警（M2-BE-01）', async () => {
+  test('providers.price_audit：mock 跳过；real 模式按生效渠道目录校验、模型缺失报警（M2-BE-03 渠道层）', async () => {
     const events = [];
     const logger = { info: (msg, meta) => events.push(['info', msg, meta]),
       warn: (msg, meta) => events.push(['warn', msg, meta]), error: (msg, meta) => events.push(['error', msg, meta]),
       child: () => logger };
     let fetches = 0;
     const mockConfig = loadConfig({ NODE_ENV: 'test' });
-    const mockHandler = createPriceAuditHandler({ db: ctx.db, logger, config: mockConfig,
-      fetchCatalog: async () => { fetches += 1; return { data: [] }; } });
+    const mockHandler = createPriceAuditHandler({ db: ctx.db, logger, config: mockConfig });
     await mockHandler();
     assert.equal(fetches, 0, 'mock 模式不拉目录');
     assert.ok(events.some(([, msg]) => msg === 'price_audit_skip_mock'));
 
-    // 真实 SKU（迁移 007）的模型都在渠道目录 → price_audit_ok（aiide 目录无价格字段，只校验存在性）
-    const catalog = { data: [{ id: 'dreamina-seedance-2-5-hc' }, { id: 'gpt-image-2' }] };
+    // 假渠道层：生效渠道的 model_map 模型在目录 → price_audit_ok；模型缺失 → provider_model_missing
+    const mkLayer = (catalogNames) => ({
+      router: {
+        async pick(kind) {
+          return { channelId: `pch_audit_${kind}`, channel: { model_map: { [kind]:
+            kind === 'llm' ? 'glm-4.6' : kind === 'image' ? 'gpt-image-2' : 'dreamina-seedance-2-5-hc' } },
+            instance: { async catalog() { fetches += 1; return { models: catalogNames.map((name) => ({ name })) }; } } };
+        },
+      },
+    });
     const realConfig = loadConfig({ NODE_ENV: 'test', GEN_UPSTREAMS: 'real' });
-    const realHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
-      fetchCatalog: async () => { fetches += 1; return catalog; } });
-    await realHandler();
-    assert.equal(fetches, 1);
-    assert.ok(events.some(([, msg]) => msg === 'price_audit_ok'), '成本与目录一致时不报警');
+    const okHandler = createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
+      channelLayer: mkLayer(['dreamina-seedance-2-5-hc', 'gpt-image-2', 'glm-4.6']) });
+    await okHandler();
+    assert.equal(fetches, 3, '三类生效渠道各拉一次目录');
+    assert.ok(events.some(([, msg]) => msg === 'price_audit_ok'), '模型都在目录时不报警');
 
-    // 渠道下架：dreamina-seedance-2-5-hc 从目录消失 → provider_model_missing
-    const missingCatalog = { data: [{ id: 'gpt-image-2' }] };
+    // 渠道下架：视频模型从目录消失 → provider_model_missing
     await createPriceAuditHandler({ db: ctx.db, logger, config: realConfig,
-      fetchCatalog: async () => missingCatalog })();
+      channelLayer: mkLayer(['gpt-image-2', 'glm-4.6']) })();
     const missing = events.find(([, msg]) => msg === 'provider_model_missing');
     assert.ok(missing, '模型缺失记 error 日志');
-    assert.ok(JSON.stringify(missing[2]).includes('video.seedance25hc.480p'), '报警指明 SKU');
+    assert.ok(JSON.stringify(missing[2]).includes('dreamina-seedance-2-5-hc'), '报警指明模型');
 
     // 纯函数：模型缺失
-    assert.equal(expectedModelPresence({ model: 'ghost' }, new Map()).ok, false);
+    assert.equal(expectedModelPresence(['ghost'], new Map()).ok, false);
   });
 
   test('jobs.cleanup：只清理超过保留期的 done 行（要点 f/g）', async () => {
