@@ -393,9 +393,11 @@ async function main() {
   }
 
   // ── 制作：bind_prompts / segment.generate 走 jobs 表（全部经渠道路由）；gen.poll 回绑定渠道 ──
+  // 成片下载走 DoH 版 safeFetch：本机代理 fake-IP 下，裸 safeFetch 会在结果 CDN 域名上挂满 300s 超时
+  // （2026-10-24 实测：query 已 succeeded、下载卡死、轮询无限失败直到 120 分钟 unknown）。
   const render = createRender({ logger });
-  const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes });
-  const fetchLocal = createLocalFetcher({ storage, maxBytes: config.projects.maxVideoBytes });
+  const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes, safeFetchImpl: devSafeFetch });
+  const fetchLocal = createLocalFetcher({ storage, maxBytes: config.projects.maxVideoBytes, safeFetchImpl: devSafeFetch });
   const handlers = createProjectHandlers({ db, logger, config, storyAgent: null, videoProvider: null, storage,
     render, downloadToTempFile, fetchLocal, channelRouter: router });
   let retriedOnce = false;
