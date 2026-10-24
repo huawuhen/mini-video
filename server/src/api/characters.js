@@ -14,7 +14,7 @@ async function maxPhotos(db) {
   return settings.max_character_photos ?? 5;
 }
 
-export function characterRoutes({ db, urlFor }) {
+export function characterRoutes({ db, urlFor, channelRouter = null }) {
   const router = Router();
 
   router.get('/characters', requireAuth, asyncHandler(async (req, res) => {
@@ -75,7 +75,7 @@ export function characterRoutes({ db, urlFor }) {
     const quoteId = f.string('quoteId', { required: true, max: 64 });
     const idempotencyKey = f.string('idempotencyKey', { required: true, min: 8, max: 64 });
     f.done();
-    const { version } = await createLookVersion(db, {
+    const { version } = await createLookVersion(db, { channelRouter,
       userId: req.user.id, characterId: req.params.id, styleId: req.params.styleId,
       quoteId, idempotencyKey, urlFor,
     });

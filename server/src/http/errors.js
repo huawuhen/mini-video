@@ -33,6 +33,11 @@ export const ERROR_CODES = {
   SMS_COOLDOWN: [429, '验证码发送太频繁，请稍后再试'],
   FREE_QUOTA_EXHAUSTED: [429, '今天的免费整理次数已用完，明天再来'],
   INTERNAL: [500, '服务器开小差了，请稍后再试'],
+  NO_ACTIVE_CHANNEL: [503, '生成服务暂时不可用，请稍后再试'],
+  ADMIN_AUTH_REQUIRED: [401, '请先登录管理后台'],
+  CHANNEL_NOT_FOUND: [404, '渠道不存在'],
+  DRIVER_NOT_FOUND: [400, '指定的协议驱动不存在'],
+  CHANNEL_TEST_FAILED: [400, '渠道连接测试失败'],
   UPSTREAM_FAILED: [502, '生成服务暂时不可用，请稍后再试'],
   SUBMISSION_UNKNOWN: [502, '生成结果确认中，费用已冻结，请稍后查看'],
 };

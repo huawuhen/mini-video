@@ -30,7 +30,7 @@ function upstreamFailure(result) {
 // 按视频 SKU 的 model 选 Skill（与 bind_prompts 同口径）
 const skillRegistry = createSkillRegistry();
 
-export function createSegmentGenerateHandler({ db, logger, config, videoProvider, storage, storyAgent }) {
+export function createSegmentGenerateHandler({ db, logger, config, videoProvider, storage, storyAgent, channelRouter = null }) {
   return async function segmentGenerate(payload, ctx) {
     const { projectId, idx, takeId } = payload;
     const { rows: current } = await db.query(`SELECT * FROM projects WHERE id = $1`, [projectId]);
@@ -126,12 +126,21 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
         genTaskId: take.gen_task_id });
     }
 
+    // M2-BE-03：经渠道路由层选生效渠道（无生效渠道 → 明确失败文案，不冻结）；channel_id 写进
+    // gen_tasks（轮询/取消/对账回该渠道，切换只影响新提交）。mock 模式沿用注入 provider。
+    let routed = null;
+    let provider = videoProvider;
+    if (channelRouter) {
+      routed = await channelRouter.pick('video');
+      provider = routed.instance;
+    }
     // 提交守卫（同 BE-04）：只有 created → submitting；停滞的 submitting 置 unknown 绝不重提
     const claim = await db.tx(async (t) => {
       const created = await t.query(
-        `UPDATE gen_tasks SET status = 'submitting', provider = $2, updated_at = now()
+        `UPDATE gen_tasks SET status = 'submitting', provider = $2,
+           channel_id = COALESCE($3, channel_id), updated_at = now()
           WHERE id = $1 AND status = 'created' RETURNING id`,
-        [take.gen_task_id, videoProvider.id],
+        [take.gen_task_id, provider.id, routed?.channelId ?? null],
       );
       if (created.rows.length) return { claimed: true };
       const { rows: cur } = await t.query(`SELECT status, updated_at FROM gen_tasks WHERE id = $1`,
@@ -163,13 +172,22 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
       const submitImageRefs = request.redelivery === true && tailRef
         ? [tailRef, ...(request.imageRefs ?? []).filter((key) => key !== tailRef)]
         : request.imageRefs;
-      const prepared = videoProvider.prepare({
+      const prepared = provider.prepare({
         prompt: request.prompt,
         imageRefs: await toUrls(submitImageRefs),
         audioRefs: await toUrls(request.audioRefs),
         durationSeconds: request.durationSeconds, ratio: request.ratio, resolution: request.resolution,
       }, { durations: request.allowedDurations });
-      submitted = await videoProvider.submit(prepared, { idempotencyKey: takeIdResolved });
+      const submittedAt = Date.now();
+      try {
+        submitted = await provider.submit(prepared, { idempotencyKey: takeIdResolved });
+      } finally {
+        // M2-BE-03：真实请求结果统计（失败/未知也记；中断由上抛分支处理）
+        if (routed && submitted !== undefined) {
+          await channelRouter.recordSubmission({ channelId: routed.channelId, genTaskId: take.gen_task_id,
+            status: submitted.status, latencyMs: Date.now() - submittedAt });
+        }
+      }
     } catch (error) {
       if (error.retryable === true) {
         await db.tx(async (t) => t.query(
@@ -338,12 +356,12 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
 /** 轮询上游（gen.poll）：running → 退避重排；成功 → 下载 → inspect → 转存 → 尾帧 → 结算 → 下一段；
  * 失败 → 首次生成保持冻结待重试（§5①）、交付后 re-take 当场退回该笔预占；unknown → 冻结待对账（§5②）。
  * 网络类异常直接抛出交队列退避。 */
-export function createGenPollHandler({ db, logger, config, videoProvider, storage, render, downloadToTempFile }) {
+export function createGenPollHandler({ db, logger, config, videoProvider, storage, render, downloadToTempFile, channelRouter = null }) {
   return async function genPoll(payload, ctx) {
     const { takeId } = payload;
     const { rows } = await db.query(
       `SELECT t.id AS take_id, t.status AS take_status, t.segment_id, gt.user_id, gt.status AS task_status,
-              gt.upstream_id, gt.id AS gen_task_id, gt.request
+              gt.upstream_id, gt.id AS gen_task_id, gt.request, gt.channel_id
          FROM segment_takes t JOIN gen_tasks gt ON gt.id = t.gen_task_id
         WHERE t.id = $1`, [takeId]);
     const take = rows[0];
@@ -383,11 +401,27 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       return;
     }
 
+    // M2-BE-03：轮询回到任务提交时绑定的渠道（切换只影响新提交；停用/软删除渠道仍可轮询）。
+    // 旧任务无 channel_id 或渠道不可用（驱动缺失）时回退注入 provider（mock 链路）。
+    let provider = videoProvider;
+    let pollChannelId = take.channel_id ?? null;
+    if (channelRouter && take.channel_id) {
+      const bound = await channelRouter.forTask(take.channel_id);
+      pollChannelId = bound.channelId;
+      if (bound.instance) provider = bound.instance;
+      else {
+        ctx.logger.error('gen_poll_channel_unavailable', { takeId, channelId: take.channel_id,
+          driver: bound.channel.driver, note: '渠道被跳过，任务保持原状（不退款不重提）' });
+        return;
+      }
+    }
     await ctx.extendLease?.();
     let result;
     try {
-      result = await videoProvider.query(take.upstream_id);
+      result = await provider.query(take.upstream_id);
     } catch (error) {
+      if (pollChannelId) await channelRouter.recordQueryFailure({ channelId: pollChannelId,
+        genTaskId: take.gen_task_id, errorCode: error?.code });
       throw error; // 网络类：交队列按退避重试（上游状态未知不重提，仅继续轮询）
     }
     if (result.status === 'running') {

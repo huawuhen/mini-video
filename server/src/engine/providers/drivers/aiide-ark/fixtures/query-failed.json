@@ -1,0 +1,10 @@
+{
+  "code": "success",
+  "message": "",
+  "data": {
+    "task_id": "cgt-202610231530005678",
+    "status": "FAILURE",
+    "fail_reason": "content moderation rejected",
+    "data": { "status": "failed" }
+  }
+}

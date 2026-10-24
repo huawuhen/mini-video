@@ -2,14 +2,15 @@
 // engine.story.bindPrompts 逐段生成镜头时间线，最终提示词由 Skill 代码拼装并写入
 // segments.final_prompt；完成后入队第一个 segment.generate（片段严格串行，用户 2026-10-19 决定）。
 import { PermanentJobError } from '../queue/index.js';
+import { createStoryAgent } from '../engine/story/index.js';
 import { createSkillRegistry } from '../engine/skills/index.js';
-import { videoSkuForMapping } from './understand.js';
+import { videoSkuForMapping, videoModelForSkill } from './understand.js';
 
 // 按视频 SKU 的 model 选 Skill（docs/skills/wan-3.0.md §10）；未知模型回退 generic
 const skillRegistry = createSkillRegistry();
 import { updateProgress } from './state.js';
 
-export function createBindPromptsHandler({ db, logger, storyAgent }) {
+export function createBindPromptsHandler({ db, logger, storyAgent, channelRouter = null }) {
   return async function projectBindPrompts(payload, ctx) {
     const projectId = payload.projectId;
     const { rows: current } = await db.query(`SELECT user_id, status, style_id, ratio, tier_mapping_id
@@ -21,6 +22,12 @@ export function createBindPromptsHandler({ db, logger, storyAgent }) {
       return; // 已取消/暂停恢复中：幂等空转
     }
     const userId = project.user_id;
+    // M2-BE-03：LLM 渠道路由——bind 时按当前生效 LLM 渠道构造 agent；mock 链路沿用注入的 storyAgent
+    let agent = storyAgent;
+    if (channelRouter) {
+      const picked = await channelRouter.pick('llm');
+      agent = createStoryAgent({ llm: picked.instance, logger: ctx.logger });
+    }
     const { rows: storyRows } = await db.query(`SELECT story FROM projects WHERE id = $1`, [projectId]);
     const story = storyRows[0]?.story;
     if (!story?.raw) throw new PermanentJobError('作品缺少故事理解结果，无法绑定提示词');
@@ -45,11 +52,12 @@ export function createBindPromptsHandler({ db, logger, storyAgent }) {
 
     const { rows: styleRows } = await db.query(
       `SELECT name, prompt_hint AS "promptHint" FROM styles WHERE id = $1`, [project.style_id]);
-    const sku = await videoSkuForMapping(db, project.tier_mapping_id);
-    const skillId = skillRegistry.forModel(sku.model).id;
+    await videoSkuForMapping(db, project.tier_mapping_id); // 校验档位映射仍有效（durations 在 understand 已用）
+    const videoModel = await videoModelForSkill(db, channelRouter);
+    const skillId = skillRegistry.forModel(videoModel).id;
     const voicesEnabled = segmentRows.length >= 2;
 
-    const bound = await storyAgent.bindPrompts({
+    const bound = await agent.bindPrompts({
       style: styleRows[0] ?? {}, ratio: project.ratio, segments, cast,
       bible: story.raw.bible, voicesEnabled, skillId,
     });

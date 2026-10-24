@@ -19,7 +19,7 @@ import {
 const SSE_POLL_MS = 1000;
 const SSE_HEARTBEAT_MS = 15_000;
 
-export function projectRoutes({ db, logger, config, storage, urlFor }) {
+export function projectRoutes({ db, logger, config, storage, urlFor, channelRouter = null }) {
   const router = Router();
   const detail = (req, projectId) => getProjectDetail(db, {
     userId: req.user.id, projectId: projectId ?? req.params.id, urlFor,
@@ -47,7 +47,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor }) {
     const characterIds = f.stringArray('characterIds', { maxItems: 20, maxLength: 64 }) ?? [];
     const idempotencyKey = f.string('idempotencyKey', { required: true, max: 64 });
     f.done();
-    const { replayed, projectId } = await createProject(db, {
+    const { replayed, projectId } = await createProject(db, { channelRouter,
       userId: req.user.id,
       input: { storyText, sourceType, title, styleId, qualityTierId, ratio, characterIds, idempotencyKey },
       config,
@@ -179,7 +179,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor }) {
     const quoteId = f.string('quoteId', { max: 64 });
     const idempotencyKey = f.string('idempotencyKey', { required: true, max: 64 });
     f.done();
-    await confirmStory(db, { userId: req.user.id, projectId: req.params.id,
+    await confirmStory(db, { channelRouter, userId: req.user.id, projectId: req.params.id,
       quoteId: quoteId ?? undefined, idempotencyKey, config });
     res.json(await detail(req));
   }));
@@ -212,7 +212,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor }) {
     const quoteId = f.string('quoteId', { required: true, max: 64 });
     const idempotencyKey = f.string('idempotencyKey', { required: true, max: 64 });
     f.done();
-    await confirmCast(db, { userId: req.user.id, projectId: req.params.id, quoteId, idempotencyKey, config });
+    await confirmCast(db, { channelRouter, userId: req.user.id, projectId: req.params.id, quoteId, idempotencyKey, config });
     res.json(await detail(req));
   }));
 
@@ -243,7 +243,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor }) {
     const quoteId = f.string('quoteId', { required: true, max: 64 });
     const idempotencyKey = f.string('idempotencyKey', { required: true, max: 64 });
     f.done();
-    await createSegmentTake(db, { userId: req.user.id, projectId: req.params.id,
+    await createSegmentTake(db, { channelRouter, userId: req.user.id, projectId: req.params.id,
       segmentId: req.params.segmentId, quoteId, idempotencyKey, config });
     res.json(await detail(req));
   }));

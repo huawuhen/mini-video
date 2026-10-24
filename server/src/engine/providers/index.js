@@ -1,33 +1,7 @@
-// Adapter registry for video/image providers (docs/ARCHITECTURE.md §5).
-import { ProviderError } from './transport.js';
-
-export function createRegistry(adapters) {
-  const byId = new Map();
-  for (const adapter of adapters) {
-    if (!adapter?.id || !['video', 'image'].includes(adapter.kind)
-      || ['prepare', 'submit', 'query', 'normalize'].some((name) => typeof adapter[name] !== 'function')
-      || byId.has(adapter.id)) {
-      throw new ProviderError('渠道适配器登记无效或重复。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
-    }
-    byId.set(adapter.id, adapter);
-  }
-  return Object.freeze({
-    get(id) {
-      const adapter = byId.get(id);
-      if (!adapter) throw new ProviderError('渠道适配器不存在。', { code: 'PROVIDER_NOT_FOUND', submitted: false });
-      return adapter;
-    },
-    list(kind) { return [...byId.values()].filter((adapter) => !kind || adapter.kind === kind); },
-  });
-}
-
-export { createModelhubTransport, ProviderError } from './transport.js';
-export { createModelhubVideoAdapter, createWan30Adapter, createSeedance25Adapter } from './modelhub-video.js';
-export { createModelhubImageAdapter, createFlare25ImageAdapter } from './modelhub-image.js';
-export { createImageProvider } from './image.js';
-export { createMiaowuaiVideoAdapter } from './miaowuai-video.js';
-export { createMiaowuaiImageProvider } from './miaowuai-image.js';
-export { createAiideMaterials, assertMaterialUrl, materialCacheKey, MATERIAL_EXTENSIONS } from './aiide-materials.js';
-export { createAiideVideoAdapter, pickVideoUrl } from './aiide-video.js';
-export { createAiideImageProvider, sizeFor as aiideImageSizeFor } from './aiide-image.js';
+// 驱动框架入口（docs/ARCHITECTURE.md §5.5）：契约、共用 HTTP 层、注册表。
+// 具体协议实现在 drivers/<协议>/ 目录（自带夹具、契约测试与 README）；
+// 业务代码只经渠道路由层（server/src/channels/）使用驱动实例，不直接 import 任何驱动。
+export { ProviderError, assertDriverExport, assertDriverInstance, CHANNEL_KINDS } from './contract.js';
+export { createChannelHttp, parseBaseUrl } from './transport.js';
+export { loadDriverRegistry, createDriverRegistry, DRIVERS_DIR } from './registry.js';
 export { sniffImage, imageExtensionFor, withImageExtension } from './image-bytes.js';

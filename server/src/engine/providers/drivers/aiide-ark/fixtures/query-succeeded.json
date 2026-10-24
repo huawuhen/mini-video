@@ -1,0 +1,14 @@
+{
+  "code": "success",
+  "message": "",
+  "data": {
+    "task_id": "cgt-202610231530001234",
+    "status": "SUCCESS",
+    "fail_reason": "",
+    "data": {
+      "status": "succeeded",
+      "content": { "video_url": "https://tos-ark.example-cn.test/obj/demo.mp4?X-Tos-Expires=86400&Signature=test" },
+      "usage": { "total_tokens": 48437, "completion_tokens": 48437 }
+    }
+  }
+}

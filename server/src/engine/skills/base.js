@@ -148,7 +148,7 @@ export function dialogueSentence(handle, line, delivery = '') {
   return `${capitalized} says in Mandarin Chinese${style}: “${line}”`;
 }
 
-/** Official reference markers. Submission order is `[tailRef, ...imageRefs]` (modelhub-video
+/** Official reference markers. Submission order is `[tailRef, ...imageRefs]` (video drivers
  * puts the tail frame first), so with a tail frame it takes 图1 and looks follow from 图2;
  * without one, looks start at 图1. Audio is numbered separately (音色参考音频M). */
 export function refLabels({ imageCount = 0, audioCount = 0, usePrevTail = false } = {}) {

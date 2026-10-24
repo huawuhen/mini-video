@@ -1,0 +1,10 @@
+{
+  "code": "success",
+  "message": "",
+  "data": {
+    "task_id": "cgt-202610231530001234",
+    "status": "IN_PROGRESS",
+    "progress": "50%",
+    "data": { "status": "running" }
+  }
+}

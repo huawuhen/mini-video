@@ -1,114 +1,115 @@
-// Source: chaodayun@2926b42 backend/providers.js
-// Modelhub HTTP transport; never retry a POST whose acceptance is uncertain.
-export class ProviderError extends Error {
-  constructor(message, { code = 'PROVIDER_FAILED', submitted, retryable = false, status, providerMessage, providerCode, retryAfter } = {}) {
-    super(message);
-    this.name = 'ProviderError';
-    this.code = code;
-    this.retryable = retryable;
-    if (submitted !== undefined) this.submitted = submitted;
-    if (status !== undefined) this.status = status;
-    if (providerMessage !== undefined) this.providerMessage = providerMessage;
-    if (providerCode !== undefined) this.providerCode = providerCode;
-    if (retryAfter !== undefined) this.retryAfter = retryAfter;
-  }
-}
+// 共用 HTTP 层（docs/ARCHITECTURE.md §5.5 驱动规范 1）：所有驱动一律经这里发请求，
+// 不引入厂商 SDK；需要签名/HMAC 写在驱动内部（先经本层校验 URL 再自行加头）。
+// 统一职责：超时中断、响应体大小上限、Bearer 鉴权、JSON/FormData 编码、
+// 网络层错误的统一分类（连接类 → 确定未提交可重试；超时/断连 → 结果不确定）。
+// 渠道 base_url 是管理员录入的受信配置（审计留痕），SSRF 防护对象是「用户可控 URL」
+// （参考素材、上游成片下载走 engine/net.safeFetch，与本层无关）。
+import { ProviderError } from './contract.js';
+
+export { ProviderError };
 
 const MAX_RESPONSE_BYTES = 1024 * 1024;
-const short = (value) => typeof value === 'string' ? value.slice(0, 200) : undefined;
-const definitelyNotSubmitted = (error) => {
-  const code = error?.cause?.code ?? error?.code;
-  return ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT', 'UND_ERR_CONNECT_TIMEOUT'].includes(code);
+const NOT_SUBMITTED_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT', 'UND_ERR_CONNECT_TIMEOUT',
+]);
+
+const short = (value) => {
+  if (value === undefined || value === null) return undefined;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  return text.slice(0, 200);
 };
 
-async function boundedJson(response) {
-  if (!response.body) return null;
-  const reader = response.body.getReader();
-  const chunks = [];
-  let length = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      length += value.byteLength;
-      if (length > MAX_RESPONSE_BYTES) throw new ProviderError('渠道响应超出大小限制。', {
-        code: 'SUBMISSION_UNKNOWN', submitted: true,
-      });
-      chunks.push(value);
-    }
-  } finally { reader.releaseLock(); }
-  try { return JSON.parse(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), length).toString('utf8')); }
-  catch { throw new ProviderError('渠道响应无法解析。', { code: 'SUBMISSION_UNKNOWN', submitted: true }); }
-}
-
-function providerDetails(data) {
-  const error = data?.error;
-  return {
-    providerMessage: short(error?.message ?? (typeof error === 'string' ? error : data?.message)),
-    providerCode: short(String(error?.code ?? data?.code ?? '')) || undefined,
-  };
-}
-
-export function createModelhubTransport({ baseUrl, apiKey, fetchImpl = globalThis.fetch, timeoutMs = 30_000, logger } = {}) {
-  if (!baseUrl || !apiKey) throw new ProviderError('渠道地址或凭证未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
-  const origin = new URL(baseUrl);
+/** 解析渠道地址：仅 http(s)、不带用户名密码（防头注入与凭证泄漏）。 */
+export function parseBaseUrl(baseUrl) {
+  if (!baseUrl || typeof baseUrl !== 'string') {
+    throw new ProviderError('渠道地址未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
+  }
+  let origin;
+  try { origin = new URL(baseUrl); } catch {
+    throw new ProviderError('渠道地址不是合法 URL。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
+  }
   if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password) {
     throw new ProviderError('渠道地址无效。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
   }
-  async function request(path, { method = 'GET', body, idempotencyKey, headers = {} } = {}) {
-    const url = new URL(path, `${origin.href.replace(/\/$/, '')}/`);
-    if (url.origin !== origin.origin) throw new ProviderError('渠道路径无效。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const post = method.toUpperCase() === 'POST';
-    try {
-      const response = await fetchImpl(url, {
-        method, signal: controller.signal, redirect: 'manual',
-        headers: { Authorization: `Bearer ${apiKey}`, ...(body && !(body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
-          ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}), ...headers },
-        ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }),
-      });
-      if (response.status === 429) throw new ProviderError('渠道请求过于频繁，请稍后重试。', {
-        code: 'PROVIDER_RATE_LIMITED', submitted: false, retryable: true, status: 429,
-        retryAfter: short(response.headers.get('retry-after')),
-      });
-      if (response.status >= 300 && response.status < 400) {
-        throw new ProviderError('渠道重定向结果不确定。', { code: 'SUBMISSION_UNKNOWN', submitted: post, status: response.status });
-      }
-      if (response.status >= 400 && response.status < 500 && response.status !== 408) {
-        let details = {};
-        try { details = providerDetails(await boundedJson(response)); } catch { /* bounded response unavailable */ }
-        const error = new ProviderError('渠道明确拒绝了请求。', {
-          code: 'PROVIDER_REJECTED', submitted: false, status: response.status, ...details,
-        });
-        if ([401, 403].includes(response.status)) logger?.error?.('provider_auth_rejected', {
-          status: response.status, providerCode: error.providerCode, providerMessage: error.providerMessage,
-        });
-        throw error;
-      }
-      if (!response.ok) throw new ProviderError('渠道受理结果不确定。', {
-        code: 'SUBMISSION_UNKNOWN', submitted: post, status: response.status,
-      });
-      const length = response.headers.get('content-length');
-      if (length && /^\d+$/.test(length) && BigInt(length) > BigInt(MAX_RESPONSE_BYTES)) {
-        throw new ProviderError('渠道响应超出大小限制。', { code: 'SUBMISSION_UNKNOWN', submitted: post });
-      }
-      return await boundedJson(response);
-    } catch (error) {
-      if (error instanceof ProviderError) throw error;
-      if (definitelyNotSubmitted(error)) throw new ProviderError('无法连接生成渠道。', {
-        code: 'PROVIDER_NOT_SUBMITTED', submitted: false, retryable: true,
-      });
-      throw new ProviderError('渠道受理结果不确定。', { code: 'SUBMISSION_UNKNOWN', submitted: post });
-    } finally { clearTimeout(timer); }
-  }
-  return { request };
+  return origin;
 }
 
-export async function submitSafely(transport, path, options) {
-  try { return await transport.request(path, options); }
-  catch (error) {
-    if (error.submitted === false) throw error;
-    return { status: 'unknown' };
+/**
+ * 建一个渠道 HTTP 客户端。request() 永不因「HTTP 状态码」抛错（状态分类是驱动的职责），
+ * 只因网络层故障抛 ProviderError：
+ *   - 连接类失败（拒绝/DNS）→ { submitted:false, retryable:true }
+ *   - 超时 / 中断 / 读取失败 → { submitted: method==='POST' }（结果不确定，绝不自动重试）
+ * @returns {{ request(path: string, opts?: {method?: string, body?: object, form?: FormData,
+ *            headers?: object, timeoutMs?: number}): Promise<{status: number, ok: boolean, data: object|null, rawText?: string}> }}
+ */
+export function createChannelHttp({ baseUrl, credential, fetchImpl = globalThis.fetch, timeoutMs = 180_000 } = {}) {
+  const origin = parseBaseUrl(baseUrl);
+  if (!credential || typeof credential !== 'string') {
+    throw new ProviderError('渠道凭证未配置。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
   }
+  const root = origin.href.replace(/\/+$/, '');
+
+  async function request(path, { method = 'GET', body, form, headers = {}, timeoutMs: perCallTimeout } = {}) {
+    let url;
+    try { url = new URL(String(path), `${root}/`); } catch {
+      throw new ProviderError('渠道路径无效。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
+    }
+    if (url.origin !== origin.origin) {
+      throw new ProviderError('渠道路径越出渠道地址。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
+    }
+    const post = method.toUpperCase() === 'POST';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), perCallTimeout ?? timeoutMs);
+    try {
+      const response = await fetchImpl(url, {
+        method, signal: controller.signal,
+        headers: {
+          Authorization: `Bearer ${credential}`,
+          // multipart 由 fetch 自动带 boundary，不能手写 Content-Type
+          ...(form ? {} : body === undefined ? {} : { 'Content-Type': 'application/json' }),
+          ...headers,
+        },
+        ...(body === undefined && form === undefined ? {} : { body: form ?? JSON.stringify(body) }),
+      });
+      // 有界读取：超限直接按「结果不确定」处理（响应可能已受理）
+      const reader = response.body?.getReader?.();
+      if (reader) {
+        const chunks = [];
+        let length = 0;
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            length += value.byteLength;
+            if (length > MAX_RESPONSE_BYTES) {
+              throw new ProviderError('渠道响应超出大小限制。', { code: 'SUBMISSION_UNKNOWN', submitted: post });
+            }
+            chunks.push(value);
+          }
+          const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), length).toString('utf8');
+          let data = null;
+          try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+          return { status: response.status, ok: response.ok, data, rawText: short(text) };
+        } finally { reader.releaseLock(); }
+      }
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = null; }
+      return { status: response.status, ok: response.ok, data, rawText: short(text) };
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      if (controller.signal.aborted) {
+        throw new ProviderError('渠道请求超时。', { code: 'SUBMISSION_UNKNOWN', submitted: post });
+      }
+      const code = error?.cause?.code ?? error?.code;
+      if (NOT_SUBMITTED_CODES.has(code)) {
+        throw new ProviderError('无法连接生成渠道。', { code: 'PROVIDER_NOT_SUBMITTED', submitted: false, retryable: true });
+      }
+      throw new ProviderError('渠道请求失败，结果不确定。', {
+        code: 'SUBMISSION_UNKNOWN', submitted: post, providerMessage: short(error?.message),
+      });
+    } finally { clearTimeout(timer); }
+  }
+
+  return { request, root };
 }

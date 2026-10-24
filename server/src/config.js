@@ -75,7 +75,7 @@ export function loadConfig(env = process.env) {
       jobsCleanupEverySeconds: int(env.CRON_JOBS_CLEANUP_EVERY_SECONDS, 86_400),
       jobsDoneRetentionDays: int(env.JOBS_DONE_RETENTION_DAYS, 30),
       sweepBatchSize: int(env.CRON_SWEEP_BATCH_SIZE, 500),
-      // 渠道调价对账：拉实时目录与 skus.cost_fen 比对，漂移记 error 日志（real 模式才执行）
+      // 渠道调价对账：拉实时目录校验生效渠道的模型是否在售（real 模式才执行）
       priceAuditEverySeconds: int(env.CRON_PRICE_AUDIT_EVERY_SECONDS, 21_600),
     },
     // 对象存储（七牛 Kodo），由 Engine 角色在 engine/storage 中使用
@@ -90,37 +90,39 @@ export function loadConfig(env = process.env) {
       },
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
-    // 生成渠道（aiide，用户 2026-10-23 指定，替代喵呜；文档 https://aiide.apifox.cn/chinese）：
-    //   视频走火山方舟协议 POST /v1/video/generations + GET /v1/video/generations/{task_id}（参考图先经素材库过审）；
-    //   图片走 OpenAI Images POST /v1/images/generations | /v1/images/edits（同步，b64_json）。
-    // GEN_UPSTREAMS=real 时 Worker 接入真实上游，缺省 mock 走确定性桩——测试与开发零真实费用。
+    // 管理端（M2-BE-03 审查必改）：管理员登录按 IP 限流——失败窗口内满 N 次即封禁该 IP；
+    // 被拒期间正确密码也拒绝。复用 PG rate_counters（不引入 Redis）。
+    admin: {
+      loginMaxFailures: int(env.ADMIN_LOGIN_MAX_FAILURES, 5),
+      loginFailWindowSeconds: int(env.ADMIN_LOGIN_FAIL_WINDOW_SECONDS, 600),
+      loginBanSeconds: int(env.ADMIN_LOGIN_BAN_SECONDS, 7200),
+    },
+    // 渠道层（M2-BE-03，ARCHITECTURE §5.5）：GEN_UPSTREAMS=real 时上游全部经数据库渠道 + 驱动路由；
+    // 缺省 mock 走确定性桩——测试与开发零真实费用。以下 providers.* 仅用于「首次部署的种子渠道引导」
+    // （表空时写入 provider_channels），此后以数据库为准（后台 / CLI 管理）。
+    channels: {
+      secretKey: env.CHANNEL_SECRET_KEY || '', // 渠道凭证 AES-256-GCM 主密钥（≥32 字节；real 模式必填）
+      autoSeed: bool(env.CHANNEL_AUTO_SEED, true), // 启动时表空则按 env 种子引导
+    },
     providers: {
       real: env.GEN_UPSTREAMS === 'real',
-      channel: 'aiide', // skus.channel 过滤与装配口径；换渠道时随适配器一起改
+      // ── 种子渠道配置（仅首次部署写库用） ──
       aiideBaseUrl: (env.AIIDE_BASE_URL || 'https://www.aiide.com').replace(/\/+$/, ''),
       aiideApiKey: env.AIIDE_API_KEY || '',
-      // 素材库过审轮询（视频参考图：人脸/虚拟人必须过审）；超时按「未提交、可重试」交队列退避
-      aiideMaterialsPollIntervalMs: int(env.AIIDE_ASSET_POLL_INTERVAL_MS, 2_000),
-      aiideMaterialsPollTimeoutMs: int(env.AIIDE_ASSET_POLL_TIMEOUT_MS, 180_000),
-      aiideMaterialsPurpose: env.AIIDE_ASSET_PURPOSE || 'Mini AI Video 参考素材',
-      // 喵呜（2026-10-22 临时渠道）配置保留给仍在仓库里的适配器/脚本，不再装配、不再必填
-      miaowuaiBaseUrl: (env.MIAOWU_BASE_URL || 'https://api.miaowuai.store').replace(/\/+$/, ''),
-      miaowuaiApiKey: env.MIAOWU_API_KEY || '',
-      // 图片同步生成实测 20~110 秒，默认 3 分钟留足余量
-      requestTimeoutMs: int(env.PROVIDERS_REQUEST_TIMEOUT_MS, 180_000),
-      // 视频 dreamina-seedance-2-5-hc、图片 gpt-image-2（用户 2026-10-23 指定）
       videoModel: env.GENERATION_VIDEO_MODEL || 'dreamina-seedance-2-5-hc',
-      videoResolution: env.GENERATION_VIDEO_RESOLUTION || '480p',
       videoGenerateAudio: bool(env.GENERATION_VIDEO_GENERATE_AUDIO, true), // 原生音频（对白口型同步依赖）
       imageModel: env.GENERATION_IMAGE_MODEL || 'gpt-image-2',
-      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k', // 1k/2k/4k → OpenAI size（见 aiide-image.js）
+      imageResolution: env.GENERATION_IMAGE_RESOLUTION || '1k',
       imageRatio: env.GENERATION_IMAGE_RATIO || '1:1',
-      imageQuality: env.GENERATION_IMAGE_QUALITY || '', // 缺省不传，由渠道按模型默认
-      imageMaxReferences: int(env.GENERATION_IMAGE_MAX_REFERENCES, 1), // 用户 2026-10-17：先只用第一张；edits 支持 1~4
-      imagePollIntervalMs: int(env.PROVIDERS_IMAGE_POLL_INTERVAL_MS, 5_000), // （喵呜异步任务遗留）
+      imageQuality: env.GENERATION_IMAGE_QUALITY || '',
+      imageMaxReferences: int(env.GENERATION_IMAGE_MAX_REFERENCES, 1),
+      miaowuaiBaseUrl: (env.MIAOWU_BASE_URL || 'https://api.miaowuai.store').replace(/\/+$/, ''),
+      miaowuaiApiKey: env.MIAOWU_API_KEY || '',
+      miaowuaiVideoModel: env.MIAOWU_VIDEO_MODEL || 'seedance-2.5-deal',
+      miaowuaiImageModel: env.MIAOWU_IMAGE_MODEL || 'GPT-image-2',
+      imagePollIntervalMs: int(env.PROVIDERS_IMAGE_POLL_INTERVAL_MS, 5_000),
       imagePollTimeoutMs: int(env.PROVIDERS_IMAGE_POLL_TIMEOUT_MS, 600_000),
-      // 文本 LLM（用户 2026-10-21 选型：智谱中国区 Coding Plan，OpenAI Compatible）。
-      // real 模式下三项都必填；密钥只在服务端 env，禁止写入仓库。
+      // 文本 LLM（用户 2026-10-21 选型：智谱，OpenAI Compatible）；种子引导用
       llmBaseUrl: env.STORY_LLM_BASE_URL || '',
       llmApiKey: env.STORY_LLM_API_KEY || '',
       llmModel: env.STORY_LLM_MODEL || '',

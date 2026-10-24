@@ -78,6 +78,7 @@
 | M2-OPS-02（七牛真实桶联调） | Engine（本机开发 Agent，代 Ops 联调） | `agent/eng/M2-OPS-02-qiniu` | `server/src/engine/storage/**` `server/src/engine/README.md` `server/scripts/qiniu-smoke.js` | ✅ 完成（Lead 审查通过并合并）（私有桶 `redith-h5` 上 10/10 全通过；桶选型已决，见 §4 第 7 条） | 2026-10-21 |
 | M1-WEB-01 | Web（本机开发 Agent） | `agent/web/M1-WEB-01-views`（worktree `~/Documents/mini-video-web01`） | `apps/web/src/api/types.ts` `apps/web/src/api/mock/index.ts` `apps/web/src/utils/status.ts` `apps/web/src/pages/**` | ✅ 完成（Lead 审查通过并合并）（视图打磨完成，check/build 过，375/1280 走查过） | 2026-10-21 |
 | M2-BE-01 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-01-real-upstreams` | `server/src/worker.js` `server/src/config.js` `server/src/engine/{llm,providers}/**` `server/src/queue/{cron.js,price-audit.js}` `server/src/projects/{segment.js,service.js}` `server/src/characters/service.js` `server/migrations/00{4,5,6,7}*.sql` `server/scripts/{e2e-real.js,modelhub-smoke.js,aiide-smoke.js}` `server/.env.example` `server/test/**`（金额口径与新增用例） | 待审查（真实上游完成；渠道已按用户指示切换 aiide（2026-10-23），喵呜适配器保留未删；端到端待 AIIDE_API_KEY + 冒烟授权后跑，见 §7） | 2026-10-23 |
+| M2-BE-03 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-03-channels`（worktree `~/Documents/mini-video-be03`） | `server/src/engine/providers/**`（驱动框架 + drivers/） `server/src/channels/**`（新增） `server/src/{config.js,worker.js,app.js}` `server/src/api/admin.js`（新增） `server/src/projects/**` `server/src/characters/service.js` `server/src/queue/price-audit.js` `server/migrations/009*.sql` `server/scripts/**` `server/.env.example` `server/test/**` `docs/m0/channel-modelhub.md`（删除） | 待复审（必改「管理员登录 IP 限流」已修复：341/341、check/build 过，见 §7 当日修复条目；@ 4cdc7af） | 2026-10-24 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -191,6 +192,32 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-24 · BE-Core · M2-BE-03 复审必改修复：管理员登录 IP 限流
+
+- **背景**：Lead 复审（§6 2026-10-24 用户裁决修订条）唯一必改；其余建议（改地址重提密钥 / https / 私网拒绝、时序差、试生成、事件清理、主密钥轮换）用户决定忽略，未处理。
+- **改动**：`channels/admin-auth.js` 登录限流——失败计数 `admin:login:fail:<ip>`（rate_counters 固定窗口对齐整窗，窗口外失败不累计），达阈值（默认 5 次 / 600s）写封禁行 `admin:login:ban:<ip>`（从封禁时刻起算 7200s），封禁期间任何登录（含正确密码）429 且不再累计；触发时记 `auth.login_banned` 审计。参数 `ADMIN_LOGIN_MAX_FAILURES / ADMIN_LOGIN_FAIL_WINDOW_SECONDS / ADMIN_LOGIN_BAN_SECONDS` 配置化（默认 5 / 600 / 7200）。复用 PG rate_counters，未引入 Redis。
+- **顺带修正**：`server/.env.example`——首轮对该文件的渠道层段替换**静默失败**（anchor 不匹配），文件一直停留在 M2-BE-01 口径；本提交补齐渠道层段（CHANNEL_SECRET_KEY / CHANNEL_AUTO_SEED / 种子配置）与管理端限流段，并移除已删除的 AIIDE_ASSET_* 等旧变量（config.js 与脚本均无残留引用，已 grep 确认）。
+- **测试**：新增 `test/channels/admin-login-rate-limit.test.js` 8 例——失败 4 次仍可登录、第 5 次失败进入封禁、封禁期间正确密码 429 且计数不再增长、封禁到期恢复、不同 IP 互不影响、窗口外失败不累计、login_banned 审计、HTTP 层封禁 429 / 到期 200；`admin-api.test.js` 测试 config 补 admin 组。
+- **验证**：`npm run test:server` **341/341**（334 + 新增 8）、`npm run check`、`npm run build` 通过；已合并 origin/main `3172cdd`。零真实费用。分支已推送（`4cdc7af`），待 Lead 复审。
+
+### 2026-10-24 · BE-Core · M2-BE-03 上游渠道层与驱动框架（待审查）
+
+- **背景**：ARCHITECTURE §5.5 / TASKS M2-BE-03；用户 2026-10-23/24 决策与 Lead 2026-10-24 裁决（§3）。分支 `agent/be/M2-BE-03-channels`（基于 main `05eacc9`，worktree `~/Documents/mini-video-be03`），认领 + 5 个实现提交。
+- **驱动框架**（`server/src/engine/providers/`）：`contract.js`（ProviderError 分类，关键字段 `submitted: true|false|缺省=不确定`；实例形状按 kind：video `{capabilities/prepare/submit/query/normalize}`、image `{capabilities/generate}`、llm `{capabilities/complete}`）、`transport.js`（共用 HTTP：Bearer、有界读取 1MB、超时中断、连接类错误→未提交可重试 / 其余→结果不确定；路径不得越出渠道 origin）、`registry.js`（扫描 `drivers/*/index.js` 自动注册+形状校验，id=目录名；单驱动损坏跳过并记日志）、`contract-test.js`（共用契约套件：提交成功/明确拒绝/连接失败/超时/轮询三态/能力声明/凭证不泄漏，样本回放零费用，scripted fetch 响应 AbortSignal 防挂起）、`npm run driver:new -- <协议>` 脚手架。
+- **驱动**（各目录自带 fixtures（provenance 注明来源）+ driver.test.js + README）：
+  - `aiide-ark`（视频，自 M2-BE-01 平移：素材库过审 asset://、双层状态映射、fail_reason 字段错位兜底、usage.total_tokens 透传、catalog()）；
+  - `openai-images`（图片：generations/edits 分支、参考照片 loadReference 字节上传、**网关 524/504 自动重试 ≤2 硬上限**（Lead 裁决②，非网关 5xx 不重试，attempts 逐次返回并写入 gen_tasks.result））；
+  - `openai-videos` / `openai-image-tasks`（喵呜备用平移；平移时修正：4xx 明确拒绝从「抛非 retryable→上层判 unknown 冻结」改为返回 failed 该段退回，图片轮询网络异常一律继续轮询不判 unknown）；
+  - `openai-compatible`（智谱 LLM 平移：complete 最小接口 + usage 映射 + catalog）。
+- **Modelhub 删除**（用户确定弃用）：适配器/冒烟脚本/测试/夹具/`docs/m0/channel-modelhub.md` 现行说明；历史任务记录、旧 SKU 行、M0 报告与账本保留；删除前确认本地可达库无在途 Modelhub 任务（gen_tasks 空）。`engine/llm/openai.js` 并入 openai-compatible 驱动后删除。
+- **迁移 009**：`provider_channels`（credential_enc AES-256-GCM、model_map/params/cost_fen、retired 软删除、UNIQUE(kind,name)）、`channel_routes`、`channel_events`、`admin_audit_logs`、`admin_users`/`admin_sessions`、`gen_tasks.channel_id`（submitting/running 部分索引）；**SKU 解耦**：逻辑 SKU `video.480p`/`video.720p`/`image.look`（售 100/200/60 分，008 定价沿用），tier_mappings v5 指向逻辑 SKU，旧渠道 SKU 全下线——此后换渠道不再写迁移。
+- **channels 层**（`server/src/channels/`）：`crypto.js`（AES-GCM 往返/掩码后 4 位/scrypt 口令）、`admin-auth.js`（独立会话 Cookie `miv_admin` + CSRF + 审计）、`service.js`（CRUD、路由、生效渠道解析（**驱动缺失→跳过+告警**）、健康度（只记真实请求）、成本高于用户价标记、种子引导仅表空幂等、软删除渠道在途清空前凭证保留→`channels.retired_sweep` 清除）、`router.js`（`pick` 无生效渠道→503 NO_ACTIVE_CHANNEL 中文文案；`forTask` 轮询回绑定渠道，停用/软删除仍可轮询、凭证清除后 instance=null 任务保持原状）。
+- **接线**：worker/app real 模式装配渠道层 + env 种子引导（aiide 生效、喵呜备用、智谱 LLM；`CHANNEL_SECRET_KEY` 必填）；`segment.generate`/`gen.poll`/`look.generate`/understand/bind 全部经路由层并绑定 channel_id；用户侧门禁（createProject/confirmStory/confirmCast/createSegmentTake/createLookVersion 五入口，无生效渠道 503 不预占）；Skill 选型改用生效渠道 `model_map.video`（**业务层 grep 不到厂商名**，已扫描验证）；price-audit 改对三类生效渠道 catalog() 校验。
+- **管理端与 CLI**：`/api/v1/admin/*`（API.md §8 全路由，无自动转移参数；凭证只写不读只回掩码；写操作全审计且无明文）；`npm run admin:create`（--reset 改密）；`npm run channel:list|use|test|seed`（list 显示生效路由/健康度/在途/成本高于用户价标记/驱动缺失告警；use 只影响新提交；test 免费 catalog；seed 仅表空幂等）。CLI 已在隔离库冒烟：seed 写 3 渠道、二次 seed 跳过、list 掩码正确、use 切换成功、test 对不可达渠道正确报「HTTP 401」、admin:create 落审计。
+- **验证**：`npm run test:server` **334/334**（新增：驱动契约 67（5 驱动各自跑通用套件+特有场景）、providers-framework 10、channels 9、admin-api 10、router-flow 5；既有测试 SKU/price_audit/编号跨模块用例随迁）；`npm run check`、`npm run build` 通过。**未发起任何真实渠道调用（零真实费用，无需记账本）**；CLI channel:test 的 401 是对 example 假域名的预期失败。
+- **已用真实渠道验证**：无（本轮全部样本回放与假驱动）；真实链路沿用 M2-BE-01 的冒烟与端到端结论（协议行为平移未改），**建议合并后用 `channel:test` + 一次授权冒烟复核驱动路径**。
+- **未完成 / 风险**：① 生产首次部署需设 `CHANNEL_SECRET_KEY`（≥32 字节；丢失=渠道凭证不可解）并跑 `npm run migrate` + `channel:seed`（或 CHANNEL_AUTO_SEED=true 随启动写入）；② 试生成接口只登记审计，真实试生成用渠道冒烟脚本（后台 M3-ADM-01 上线时再补接口化）；③ 凭证轮换/清算凭证为空串（非 NULL）以区分「已清除」；④ e2e-real.js 已改驱动装配但未真实跑（沿用 M2-BE-01 的授权流程）；⑤ skill 选型在渠道模型未注册 Skill 时回退 generic（与 M2-BE-01 起实际行为一致，wan-3.0 需在 Skill 注册表登记模型名后生效）。
 
 ### 2026-10-23 · BE-Core · M2-BE-01 渠道切换：aiide（seedance-2.5-hc 火山方舟协议 + gpt-image-2 OpenAI Images）
 

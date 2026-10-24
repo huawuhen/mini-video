@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "InvalidParameter",
+    "message": "resolution only supports 480p/720p/1080p"
+  }
+}
