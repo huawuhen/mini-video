@@ -396,7 +396,8 @@ async function main() {
   // 成片下载走 DoH 版 safeFetch：本机代理 fake-IP 下，裸 safeFetch 会在结果 CDN 域名上挂满 300s 超时
   // （2026-10-24 实测：query 已 succeeded、下载卡死、轮询无限失败直到 120 分钟 unknown）。
   const render = createRender({ logger });
-  const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes, safeFetchImpl: devSafeFetch });
+  // 实测结果 URL（火山 TOS 跨境）仅 ~9KB/s：720p 5s 片要 5~7 分钟，超时给足 20 分钟（租约 30 分钟内）
+  const downloadToTempFile = createDownloader({ maxBytes: config.projects.maxVideoBytes, timeoutMs: 1_200_000, safeFetchImpl: devSafeFetch });
   const fetchLocal = createLocalFetcher({ storage, maxBytes: config.projects.maxVideoBytes, safeFetchImpl: devSafeFetch });
   const handlers = createProjectHandlers({ db, logger, config, storyAgent: null, videoProvider: null, storage,
     render, downloadToTempFile, fetchLocal, channelRouter: router });
