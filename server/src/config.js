@@ -90,6 +90,13 @@ export function loadConfig(env = process.env) {
       },
       signedUrlTtlSeconds: int(env.SIGNED_URL_TTL_SECONDS, 3600),
     },
+    // 管理端（M2-BE-03 审查必改）：管理员登录按 IP 限流——失败窗口内满 N 次即封禁该 IP；
+    // 被拒期间正确密码也拒绝。复用 PG rate_counters（不引入 Redis）。
+    admin: {
+      loginMaxFailures: int(env.ADMIN_LOGIN_MAX_FAILURES, 5),
+      loginFailWindowSeconds: int(env.ADMIN_LOGIN_FAIL_WINDOW_SECONDS, 600),
+      loginBanSeconds: int(env.ADMIN_LOGIN_BAN_SECONDS, 7200),
+    },
     // 渠道层（M2-BE-03，ARCHITECTURE §5.5）：GEN_UPSTREAMS=real 时上游全部经数据库渠道 + 驱动路由；
     // 缺省 mock 走确定性桩——测试与开发零真实费用。以下 providers.* 仅用于「首次部署的种子渠道引导」
     // （表空时写入 provider_channels），此后以数据库为准（后台 / CLI 管理）。

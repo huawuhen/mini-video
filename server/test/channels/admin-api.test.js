@@ -52,7 +52,8 @@ describe('管理端 API（M2-BE-03）', () => {
       [newId('adm'), hashAdminPassword('admin-password-123')]);
     const registry = await loadDriverRegistry({ logger: silentLogger });
     const service = createChannelService({ db, secretKey: SECRET, registry, logger: silentLogger });
-    const config = { cookieSecure: false, sessionTtlDays: 1, allowedOrigins: [] };
+    const config = { cookieSecure: false, sessionTtlDays: 1, allowedOrigins: [],
+      admin: { loginMaxFailures: 5, loginFailWindowSeconds: 600, loginBanSeconds: 7200 } };
     const app = express();
     app.use(express.json({ limit: '100kb' }));
     app.use('/api/v1', adminRoutes({ db, config, logger: silentLogger, service, registry, secretKey: SECRET }));

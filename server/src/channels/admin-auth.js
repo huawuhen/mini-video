@@ -68,8 +68,55 @@ export function createAdminAuth({ config, db }) {
     return next();
   };
 
-  /** 登录：校验口令、建会话、种 Cookie；连续失败不锁定（低频管理入口，靠强密码与审计）。 */
+  /**
+   * 登录限流（M2-BE-03 审查必改，用户 2026-10-24 裁决）：按 IP——失败计数窗口内满
+   * loginMaxFailures 次即封禁 loginBanSeconds；封禁期间正确密码也拒绝。
+   * 复用 PG rate_counters 固定窗口口径（不引入 Redis）：
+   *   失败计数 admin:login:fail:<ip>（窗口起点对齐整窗，窗口外失败不累计）；
+   *   封禁行 admin:login:ban:<ip>（window_start=封禁时刻，按 window_start+banSeconds 判定在押；
+   *   行由 auth.sweep 的 48h 兜底清理，不影响封禁语义）。
+   */
+  async function assertLoginAllowed(ip) {
+    if (!ip) return;
+    const { rows } = await db.query(
+      `SELECT 1 FROM rate_counters
+        WHERE key = $1 AND window_start + make_interval(secs => $2) > now()`,
+      [`admin:login:ban:${ip}`, config.admin.loginBanSeconds],
+    );
+    if (rows.length) {
+      throw appError('RATE_LIMITED', '尝试次数过多，请稍后再试', { retryAfterSeconds: config.admin.loginBanSeconds });
+    }
+  }
+
+  async function recordLoginFailure(ip) {
+    if (!ip) return false;
+    const windowSeconds = config.admin.loginFailWindowSeconds;
+    const now = Date.now();
+    const windowStart = new Date(Math.floor(now / (windowSeconds * 1000)) * windowSeconds * 1000);
+    const { rows } = await db.query(
+      `INSERT INTO rate_counters (key, window_start, count) VALUES ($1, $2, 1)
+       ON CONFLICT (key, window_start) DO UPDATE SET count = rate_counters.count + 1
+       RETURNING count`,
+      [`admin:login:fail:${ip}`, windowStart],
+    );
+    if (rows[0].count >= config.admin.loginMaxFailures) {
+      // 写封禁（从当前时刻起算；已存在未过期封禁行则不重复/不延长）
+      await db.query(
+        `INSERT INTO rate_counters (key, window_start, count)
+         SELECT $1, now(), 1
+          WHERE NOT EXISTS (
+            SELECT 1 FROM rate_counters
+             WHERE key = $1 AND window_start + make_interval(secs => $2) > now())`,
+        [`admin:login:ban:${ip}`, config.admin.loginBanSeconds],
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /** 登录：先过 IP 限流（封禁期间正确密码也拒），失败计数，满阈值封禁。 */
   async function login({ username, password, ip }) {
+    await assertLoginAllowed(ip);
     const { rows } = await db.query(
       `SELECT id, username, display_name, password_hash, status FROM admin_users WHERE username = $1`,
       [String(username ?? '').trim()],
@@ -77,7 +124,9 @@ export function createAdminAuth({ config, db }) {
     const admin = rows[0];
     const { verifyAdminPassword } = await import('./crypto.js');
     if (!admin || !verifyAdminPassword(admin.password_hash, String(password ?? '')) || admin.status !== 'active') {
-      await audit({ actor: 'admin', action: 'auth.login_failed', targetType: 'admin_user', targetId: String(username ?? ''),
+      const banned = await recordLoginFailure(ip);
+      await audit({ actor: 'admin', action: banned ? 'auth.login_banned' : 'auth.login_failed',
+        targetType: 'admin_user', targetId: String(username ?? ''),
         detail: { ip: ip ?? null } });
       return null;
     }
@@ -111,6 +160,7 @@ export function createAdminAuth({ config, db }) {
 
   return {
     sessionMiddleware, requireAdmin, writeGuard, login, logout, audit,
+    assertLoginAllowed, recordLoginFailure, // 测试与诊断用
     setCookie: (res, token) => res.cookie(ADMIN_COOKIE, token, { ...cookieOptions, maxAge: config.sessionTtlDays * 86_400_000 }),
     clearCookie: (res) => res.clearCookie(ADMIN_COOKIE, cookieOptions),
     readCookie: (req) => parseCookies(req.headers.cookie)[ADMIN_COOKIE],
