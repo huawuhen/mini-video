@@ -46,6 +46,7 @@ export const DEFAULT_PARAMS = Object.freeze({
   quality: '',           // 缺省不传，由渠道按模型默认
   maxReferences: 1,
   requestTimeoutMs: 180_000,
+  responseMaxBytes: 64 * 1024 * 1024, // b64_json 同步响应（1k≈2MB、4k 可达数十 MB），不能用传输层默认 1MB
   gatewayRetryMax: 2,    // 524/504 自动重试上限（Lead 裁决：≤2，硬上限 2）
 });
 
@@ -63,6 +64,7 @@ export default {
       quality: 'string（low/medium/high，缺省不传）',
       maxReferences: 'int（参考照片上限，缺省 1，协议上限 4）',
       requestTimeoutMs: 'int（缺省 180000；同步生成实测 20~110 秒）',
+      responseMaxBytes: 'int（缺省 67108864；b64_json 同步响应的读取上限）',
       gatewayRetryMax: 'int（网关 524/504 自动重试上限，缺省 2，硬上限 2——用户只计费一次）',
     },
   },
@@ -74,6 +76,7 @@ export default {
     const http = createChannelHttp({
       baseUrl: channel.baseUrl, credential: channel.credential,
       timeoutMs: params.requestTimeoutMs, fetchImpl: deps.fetchImpl,
+      maxBytes: params.responseMaxBytes,
     });
     const referenceLimit = Math.min(4, Math.max(0, Number(params.maxReferences) || 0));
     const gatewayRetryMax = Math.min(2, Math.max(0, Number(params.gatewayRetryMax) || 0));
