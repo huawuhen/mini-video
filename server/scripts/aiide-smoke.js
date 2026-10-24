@@ -33,7 +33,7 @@ const DIMENSIONS = {
 };
 const USD_PER_MTOKEN = 9.63; // dreamina-seedance-2-5-hc（定价页 2026-10-23，分组 9 折后仍按此值估算）
 const FX_CNY_PER_USD = 7.2;
-const IMAGE_ESTIMATE_FEN = 21; // gpt-image-2 1k 估算（约 1,056 输出 token × $27/M，9 折组）
+const IMAGE_ESTIMATE_FEN = 36; // gpt-image-2 1k（后台实扣 $0.05/张 × 7.2，迁移 008 口径）
 
 /** 与 skus.cost_fen 同口径的估算；无法确定像素规格时退回每秒 68/143 分。 */
 export function estimateVideoFen(resolution, ratio, seconds) {
