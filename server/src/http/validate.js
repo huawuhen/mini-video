@@ -53,6 +53,42 @@ export class Fields {
     return [...new Set(value)];
   }
 
+  /** 对象字段（浅校验：必须是普通对象；供渠道 modelMap/params/costFen 等管理端入参）。 */
+  object(name, { required = false } = {}) {
+    const value = this.source[name];
+    if (value === undefined || value === null) {
+      if (required) this.errors[name] = '必填';
+      return undefined;
+    }
+    if (typeof value !== 'object' || Array.isArray(value)) { this.errors[name] = '格式不正确'; return undefined; }
+    return value;
+  }
+
+  /** 布尔字段。 */
+  bool(name, { required = false } = {}) {
+    const value = this.source[name];
+    if (value === undefined || value === null) {
+      if (required) this.errors[name] = '必填';
+      return undefined;
+    }
+    if (typeof value !== 'boolean') { this.errors[name] = '需为布尔值'; return undefined; }
+    return value;
+  }
+
+  /** 字符串数组（不去重——路由顺序有意义；管理端 channelIds 用）。 */
+  array(name, { required = false, maxItems = 50 } = {}) {
+    const value = this.source[name];
+    if (value === undefined || value === null || value.length === 0) {
+      if (required) this.errors[name] = '必填';
+      return undefined;
+    }
+    if (!Array.isArray(value) || value.length > maxItems || value.some((v) => typeof v !== 'string' || !v)) {
+      this.errors[name] = '格式不正确';
+      return undefined;
+    }
+    return value;
+  }
+
   /** 有错误时抛出 400 VALIDATION_FAILED，details.fields 列出字段（只用于技术详情）。 */
   done() {
     if (Object.keys(this.errors).length) throw appError('VALIDATION_FAILED', undefined, { fields: this.errors });
