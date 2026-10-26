@@ -83,12 +83,19 @@ function onUpdated(p: ProjectDetail) { project.value = p; }
             <van-icon name="warning-o" size="28" color="var(--miv-danger)" />
             <div>
               <strong>{{ project.error?.message || '制作遇到问题' }}</strong>
-              <p class="miv-hint">已完成的部分会保留，重试不会重复扣费。</p>
+              <!-- 结果未知（TAKE_UNKNOWN/LOOK_UNKNOWN）：金额冻结待人工核对，重试会被后端拒绝，不显示重试入口 -->
+              <p class="miv-hint">{{ project.error?.code?.endsWith('UNKNOWN')
+                ? '金额已冻结，客服核对后会尽快处理，无需重复操作。'
+                : '已完成的部分会保留，重试不会重复扣费。' }}</p>
               <van-collapse v-model="techOpen" :border="false" class="tech">
                 <van-collapse-item title="技术详情" name="tech" :border="false">{{ project.error?.code }} · {{ project.id }}</van-collapse-item>
               </van-collapse>
             </div>
-            <van-button type="primary" size="small" @click="retry">重试</van-button>
+            <div class="actions">
+              <van-button v-if="!project.error?.code?.endsWith('UNKNOWN')" type="primary" size="small" @click="retry">重试</van-button>
+              <!-- 失败/结果未知均可取消：未提交与可退部分立即退回（unknown 片段冻结待客服核对） -->
+              <van-button size="small" plain @click="cancel">取消制作</van-button>
+            </div>
           </div>
           <div v-else-if="project.status === 'canceled'" class="state miv-card">
             <van-icon name="close" size="28" color="var(--miv-text-3)" />

@@ -96,7 +96,12 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       channelLayer = await createChannelLayer({ config, db, logger, storage });
       if (config.channels.autoSeed) await seedChannels({ config, db, service: channelLayer.service, logger });
     }
-    return createApp({ config, db, logger, storage, extractText, channelLayer })
+    // 媒体签名链接（M2-WEB-01 联调发现此前主入口漏传 urlFor：详情/列表的 videoUrl/coverUrl 全缺失）。
+    // 同步签名（qiniu 原生协议）；存储未就绪或驱动不支持时返回 undefined，序列化层会省略字段。
+    const urlFor = (key) => {
+      try { return storage.signedUrl?.(key, { ttlSeconds: config.storage.signedUrlTtlSeconds }); } catch { return undefined; }
+    };
+    return createApp({ config, db, logger, storage, urlFor, extractText, channelLayer })
       .listen(config.port, config.host, () => {
         logger.info('api_listening', { host: config.host, port: config.port });
       });

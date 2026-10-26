@@ -3,7 +3,7 @@
 // 以及 devOnly 生产拒绝（registry 不注册 + create 拒绝）与 seedMockChannels 生产拒绝（见 test/channels）。
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import driver, { MOCK_PLAN, MOCK_TIMELINE, MOCK_EXPAND } from './index.js';
+import driver, { MOCK_PLAN, MOCK_TIMELINES, MOCK_EXPAND } from './index.js';
 import {
   runVideoDriverContract, runImageDriverContract, runLlmDriverContract,
   contractChannel, createScriptedFetch, consoleCapture,
@@ -64,6 +64,13 @@ const channelOf = (kind, params = {}) => ({
   params: { delayMs: 20, minRunningMs: 250, ...params },
 });
 
+test('local-mock/video：prepare 必须同步返回对象（契约：调用方不 await）', () => {
+  const instance = driver.create(contractChannel({ kind: 'video', driver: 'local-mock' }), { logger: consoleCapture(), deps: {} });
+  const prepared = instance.prepare({ prompt: 'p', durationSeconds: 30, ratio: '9:16', resolution: '480p' }, {});
+  assert.ok(typeof prepared === 'object' && !(prepared instanceof Promise), '不得返回 Promise');
+  assert.equal(prepared.durationSeconds, 30);
+});
+
 test('local-mock/video：异步语义——提交 running → 排队期 running → 出片经存储签名链接（幂等上传一次）', async () => {
   const storage = fakeStorage();
   const instance = driver.create(channelOf('video'), { logger: consoleCapture(), deps: { storage } });
@@ -109,14 +116,26 @@ test('local-mock/llm：按提示词返回固定合法 JSON——规划（STORY_E
   assert.deepEqual(plan.segments.map((s) => s.durationSeconds), [30, 30]);
   assert.equal(plan.segments[1].transition, 'prev_tail');
   const expand = JSON.parse((await instance.complete({
-    system: '你是家庭影像的编剧。把用户的一句话想法扩写成中文剧本。', messages: [{ role: 'user', content: '想法' }] })).text);
+    system: '你是家庭影像的编剧。把用户的一句话想法扩写成可拍摄的中文短剧剧本，只返回 JSON。',
+    messages: [{ role: 'user', content: '想法' }] })).text);
   assert.equal(expand.title, MOCK_EXPAND.title);
   assert.ok(expand.script.length > 20);
-  const timeline = JSON.parse((await instance.complete({
-    system: '你是参考生视频的分镜导演…镜头时间线…shots…', messages: [{ role: 'user', content: '该片段时长 30 秒' }] })).text);
-  assert.equal(timeline.shots.length, MOCK_TIMELINE.shots.length);
-  assert.equal(timeline.shots.at(-1).end, 30);
-  assert.deepEqual(timeline.avoid, []);
+  // 回归：understand 的提示词可能提到「扩写」二字，但不是扩写调用——必须返回规划
+  const notExpand = JSON.parse((await instance.complete({
+    system: '你是家庭影像的编剧与导演。一句话想法会先扩写成剧本，现在请理解以下剧本并规划。',
+    messages: [{ role: 'user', content: '公园的下午剧本全文' }] })).text);
+  assert.equal(notExpand.title, MOCK_PLAN.title);
+  assert.ok(Array.isArray(notExpand.cast));
+  const timelineA = JSON.parse((await instance.complete({
+    system: '你是参考生视频的分镜导演…镜头时间线…shots…', messages: [{ role: 'user', content: '剧情对白：「慢一点，看看树叶。」该片段时长 30 秒' }] })).text);
+  assert.equal(timelineA.shots.length, 4);
+  assert.deepEqual(timelineA.shots.map((s) => [s.start, s.end]), [[0, 7], [7, 14], [14, 21], [21, 30]]);
+  assert.equal(timelineA.shots.at(-1).dialogue[0].line, '慢一点，看看树叶。'); // 逐字一致（skill 校验）
+  assert.equal(timelineA.shots.at(-1).end - timelineA.shots.at(-1).start, 9); // 9 秒镜头必须带对白（上限 10）
+  const timelineB = JSON.parse((await instance.complete({
+    system: '你是参考生视频的分镜导演…镜头时间线…', messages: [{ role: 'user', content: '剧情对白：「这个苹果真甜！」' }] })).text);
+  assert.equal(timelineB.shots.at(-1).dialogue[0].line, '这个苹果真甜！');
+  assert.deepEqual(timelineA.avoid, []);
 });
 
 test('local-mock/llm：failRate=1 → 抛错（story agent 进入修复重试/兜底）', async () => {

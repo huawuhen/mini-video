@@ -55,12 +55,22 @@ const MOCK_PLAN = {
       ambience: '轻微风声', transition: 'prev_tail', castIndexes: [0, 1] },
   ],
 };
-const MOCK_TIMELINE = { // 4 镜头 × 30 秒；对白由引擎代码嵌入（镜头不必逐字携带），与项目测试夹具同构
-  shots: [1, 2, 3, 4].map((i) => ({ start: (i - 1) * 7, end: i === 4 ? 30 : i * 7, size: 'Medium shot',
+// 4 镜头 × 30 秒（0-7/7-14/14-21/21-30）。第 4 镜头带该段对白（带对白镜头上限 10 秒，无对白仅 8 秒——
+// 21→30 共 9 秒必须带对白），对白与 MOCK_PLAN 各段逐字一致（skill 校验要求）。
+const timelineWithDialogue = (castIndex, line) => ({
+  shots: [1, 2, 3].map((i) => ({ start: (i - 1) * 7, end: i * 7, size: 'Medium shot',
     transition: 'cut', action: `Shot ${i}: the characters continue naturally on the picnic lawn.`,
-    dialogue: [], reaction: '', environment: 'Soft daylight.', camera: 'static' })),
+    dialogue: [], reaction: '', environment: 'Soft daylight.', camera: 'static' }))
+    .concat([{ start: 21, end: 30, size: 'Medium close-up', transition: 'cut',
+      action: 'The two share fruit on the picnic blanket, the child looks up happily.',
+      dialogue: [{ castIndex, line, delivery: 'warmly' }], reaction: '',
+      environment: 'Soft golden light.', camera: 'slow push-in' }]),
   avoid: [],
-};
+});
+const MOCK_TIMELINES = [ // 与 MOCK_PLAN 两段对白一一对应；按 bind 提示词里的对白原句匹配
+  { match: '慢一点，看看树叶。', timeline: timelineWithDialogue(0, '慢一点，看看树叶。') },
+  { match: '这个苹果真甜！', timeline: timelineWithDialogue(1, '这个苹果真甜！') },
+];
 const MOCK_EXPAND = { title: '公园的下午', script: '公园的下午，妈妈铺开野餐垫。宝宝追逐飘落的树叶，妈妈轻声提醒：「慢一点，看看树叶。」两人坐回垫子上分享水果，宝宝笑着说：「这个苹果真甜！」阳光正好，风把笑声吹得很远。' };
 
 // ── 模拟渠道服务器（进程内单例，仅 127.0.0.1；unref 不阻塞进程退出）──
@@ -119,8 +129,12 @@ async function sampleImageBuffer({ seed }) {
 }
 
 function llmAnswerFor(text) {
-  if (text.includes('扩写')) return MOCK_EXPAND;
-  if (text.includes('镜头时间线') || text.includes('"shots"')) return MOCK_TIMELINE;
+  // 标记取各提示词原句（understand 的系统提示也含「扩写」二字，必须用扩写提示的完整句判别）
+  if (text.includes('扩写成可拍摄的中文短剧剧本')) return MOCK_EXPAND;
+  if (text.includes('镜头时间线') || text.includes('"shots"')) {
+    const hit = MOCK_TIMELINES.find((entry) => text.includes(entry.match));
+    return hit ? hit.timeline : MOCK_TIMELINES[0].timeline;
+  }
   return MOCK_PLAN;
 }
 
@@ -278,7 +292,7 @@ export default {
     if (channel.kind === 'video') {
       Object.assign(kindImpl, {
         id: 'local-mock/video',
-        async prepare(input, sku = {}) {
+        prepare(input, sku = {}) { // 契约：prepare 必须同步返回（segment.js 不 await），async 会让所有字段变 undefined
           return { ...input, resolution: sku.resolution ?? input.resolution, ratio: input.ratio ?? '9:16' };
         },
         async submit(prepared) {
@@ -406,4 +420,4 @@ export default {
   },
 };
 
-export { MOCK_PLAN, MOCK_TIMELINE, MOCK_EXPAND }; // 供测试与文档引用
+export { MOCK_PLAN, MOCK_TIMELINES, MOCK_EXPAND }; // 供测试与文档引用

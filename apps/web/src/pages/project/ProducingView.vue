@@ -17,11 +17,11 @@ const doneCount = computed(() => segments.value.filter((s) => s.take?.status ===
     <van-progress :percentage="project.progress.percent" :show-pivot="false" stroke-width="8" />
     <p class="message"><van-loading size="14" />{{ project.progress.message }}</p>
     <template v-if="!composing">
-      <p class="miv-hint">视频正在云端的制作队列里排队生成，通常几分钟完成，高峰期可能要等一阵子。</p>
+      <p class="miv-hint">视频正在云端的制作队列里排队生成，通常几分钟完成，高峰期可能需要较长时间，可以离开页面，完成后回来查看。</p>
       <p v-if="doneCount" class="miv-hint">已完成 {{ doneCount }} 段，可以先在下方预览，不用干等。</p>
     </template>
     <p v-else class="miv-hint">所有片段已生成，正在拼接成片并合成声音，很快就好。</p>
-    <p class="miv-hint keep">您可以锁屏或关掉页面，做好了会自动存进「我的作品」，不会打断您。</p>
+    <p class="miv-hint keep">您可以锁屏或关掉页面，做好了会自动存进「我的作品」，回来时状态会自动恢复，不会打断您。</p>
   </section>
   <section class="segments">
     <div v-for="s in segments" :key="s.id" class="seg">

@@ -236,7 +236,10 @@ export function createWorker({ db, logger, handlers, workerId, concurrency = 2, 
     const job = await claim(db, { workerId, types, leaseSeconds });
     if (!job) return false;
     const log = logger.child({ jobId: job.id, type: job.type, attempt: job.attempts });
-    const ctx = { db, logger: log, job, enqueue, extendLease: (seconds) => extendLease(db, job, workerId, seconds ?? leaseSeconds) };
+    // enqueue 对处理器收口为单参 spec（queue.enqueue 是 (q, spec) 两参——直接透传会让
+    // ctx.enqueue(spec) 在运行时把 spec 当 q、undefined 当 spec 解构炸掉，M2-WEB-01 联调实测暴露）
+    const ctx = { db, logger: log, job, enqueue: (spec) => enqueue(db, spec),
+      extendLease: (seconds) => extendLease(db, job, workerId, seconds ?? leaseSeconds) };
     const startedAt = Date.now();
     try {
       const handler = handlers[job.type];
