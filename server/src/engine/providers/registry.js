@@ -35,6 +35,11 @@ export async function loadDriverRegistry({ dir = DRIVERS_DIR, logger } = {}) {
       const mod = await import(pathToFileURL(entryPath).href);
       const driver = mod.default;
       assertDriverExport(driver, name);
+      // devOnly 驱动（如 local-mock 联调模拟）只允许开发/测试环境加载，生产一律拒绝注册
+      if (driver.devOnly === true && process.env.NODE_ENV === 'production') {
+        logger?.error?.('driver_disabled_in_production', { driver: name });
+        continue;
+      }
       drivers.set(driver.id, driver);
     } catch (error) {
       logger?.error?.('driver_load_failed', { driver: name, message: error?.message });

@@ -20,7 +20,7 @@ const USAGE = `用法：
   npm run channel:list
   npm run channel:use -- <video|image|llm> <渠道名>
   npm run channel:test -- <渠道名>
-  npm run channel:seed`;
+  npm run channel:seed [-- --mock]   # --mock：写入并激活 local-mock 联调渠道（M2-WEB-01）`;
 
 async function main() {
   if (!command || !['list', 'use', 'test', 'seed'].includes(command)) {
@@ -39,6 +39,14 @@ async function main() {
     const service = createChannelService({ db, secretKey: config.channels.secretKey, registry, logger });
 
     if (command === 'seed') {
+      if (rest.includes('--mock')) {
+        // M2-WEB-01 零费用联调：写入并激活 local-mock 渠道（生产拒绝）；切回真实用 channel:use
+        const { seedMockChannels } = await import('../src/worker.js');
+        const result = await seedMockChannels({ config, db, service, logger });
+        console.log(`已写入并激活 local-mock 渠道 ${result.channels.length} 个（video/image/llm）；`
+          + '真实渠道转为待命，切回：npm run channel:use -- <kind> <渠道名>');
+        return;
+      }
       const result = await seedChannels({ config, db, service, logger });
       console.log(result.seeded ? `已写入种子渠道 ${result.channels.length} 个（此后以数据库为准）`
         : '渠道表非空：跳过种子（以数据库为准）');

@@ -12,9 +12,10 @@ describe('驱动注册表（扫描 + 形状校验）', () => {
   let registry;
   before(async () => { registry = await loadDriverRegistry(); });
 
-  test('扫描到全部 5 个驱动且形状合法', () => {
+  test('扫描到全部 6 个驱动且形状合法（含 M2-WEB-01 的 local-mock，devOnly）', () => {
     const ids = registry.list().map((driver) => driver.id).sort();
-    assert.deepEqual(ids, ['aiide-ark', 'openai-compatible', 'openai-image-tasks', 'openai-images', 'openai-videos']);
+    assert.deepEqual(ids, ['aiide-ark', 'local-mock', 'openai-compatible', 'openai-image-tasks', 'openai-images', 'openai-videos']);
+    assert.equal(registry.get('local-mock').devOnly, true); // 生产环境拒绝注册（行为见 local-mock/driver.test）
     for (const meta of registry.list()) {
       assert.ok(Array.isArray(meta.kinds) && meta.kinds.length); // list() 只给表单元数据
       const driver = registry.get(meta.id);

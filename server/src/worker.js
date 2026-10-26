@@ -62,6 +62,8 @@ export async function createChannelLayer({ config, db, logger, storage }) {
       loadReference,
       // 渠道改返回 url 时经 safeFetch 受控下载
       downloadImage: (url, headers) => downloadViaNet(url, { maxBytes: 20 * 1024 * 1024, headers }),
+      // local-mock 视频产物经存储签名链接返回（M2-WEB-01 零费用联调；回环地址过不了 safeFetch）
+      storage,
     },
   });
   return { registry, service, router };
@@ -139,6 +141,38 @@ export async function seedChannels({ config, db, service, logger }) {
  * - 不要在 db.tx 里等待上游网络调用（AGENTS.md §5）。
  * - 抛出 PermanentJobError 表示不再重试。
  */
+/**
+ * M2-WEB-01 零费用联调：写入并激活 local-mock 渠道（video/image/llm 三条，driver: local-mock）。
+ * 与 seedChannels 不同：不要求渠道表为空（可与真实渠道共存），幂等（已存在则更新 params 并重新激活路由）。
+ * 切回真实渠道用 `npm run channel:use -- <kind> <渠道名>`。**生产环境拒绝**（local-mock 为 devOnly 驱动）。
+ */
+export async function seedMockChannels({ config, db, service, logger }) {
+  if (config.production) throw new Error('生产环境禁止写入 local-mock 联调渠道（devOnly 驱动不注册）');
+  const audit = async ({ action, targetType, targetId, detail }) => {
+    await db.query(
+      `INSERT INTO admin_audit_logs (actor, action, target_type, target_id, detail)
+       VALUES ('seed-mock', $1, $2, $3, $4)`,
+      [action, targetType, String(targetId), JSON.stringify(detail ?? {})]);
+  };
+  const spec = (kind) => ({
+    kind, name: 'local-mock', driver: 'local-mock',
+    baseUrl: 'http://local-mock.invalid', credential: 'local-mock-no-secret',
+    modelMap: { [kind]: 'local-mock/sample' },
+    params: {}, remark: 'M2-WEB-01 零费用联调模拟渠道（channel:seed -- --mock 写入）', activate: true,
+  });
+  const channels = [];
+  for (const kind of ['video', 'image', 'llm']) {
+    const existing = await service.getChannelByName(kind, 'local-mock');
+    const row = existing
+      ? await (async () => { await service.setChannelStatus(existing.id, 'active', audit); return existing; })()
+      : await service.createChannel(spec(kind), audit);
+    await service.setRoutes(kind, '*', [row.id], audit); // 激活为生效路由（真实渠道转为待命）
+    channels.push(row);
+  }
+  logger?.info?.('mock_channels_seeded', { count: channels.length });
+  return { channels };
+}
+
 export function buildHandlers({ config, db, logger, storage, imageProvider, storyAgent, videoProvider, channelLayer }) {
   // §6 审查 3（BE-03）：生产环境不允许缺省内存存储；未注入时按 config.storage.driver 解析
   const objectStorage = storage ?? createStorageFromConfig(config);
