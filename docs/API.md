@@ -93,6 +93,7 @@ type Wallet = { availableFen: number; frozenFen: number };
 type LedgerEntry = {
   id: string; kind: 'recharge' | 'redeem' | 'reserve' | 'settle' | 'refund' | 'charge' | 'adjust';
   amountFen: number;      // 对可用余额的变化，扣减为负
+  frozenFen: number;      // 对冻结金额的变化（预占为正，结算/退回为负）；结算行 amountFen=0、frozenFen=-实扣（2026-10-26 新增，前端用它显示「从冻结中扣除 ¥X」）
   title: string;          // 中文说明，如「作品《春天的野餐》预占」
   createdAt: string;
 };
