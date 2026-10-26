@@ -119,8 +119,8 @@ function findProject(id: string): MockProject {
 function findCharacter(id: string): MockCharacter {
   return state.characters.find((c) => c.id === id && !c.deleted) || fail(404, 'NOT_FOUND', '数字人不存在或已被删除');
 }
-function addLedger(kind: LedgerEntry['kind'], amountFen: number, title: string) {
-  state.ledger.unshift({ id: uid('led'), kind, amountFen, title, createdAt: iso() });
+function addLedger(kind: LedgerEntry['kind'], amountFen: number, title: string, frozenFen = 0) {
+  state.ledger.unshift({ id: uid('led'), kind, amountFen, frozenFen, title, createdAt: iso() });
 }
 function charge(amountFen: number, title: string) {
   if (state.wallet.availableFen < amountFen) fail(402, 'INSUFFICIENT_BALANCE', '余额不足，请先充值');
@@ -323,6 +323,7 @@ function tick() {
     if (p.status === 'composing' && t - p.stageAt > COMPOSE_MS) {
       state.wallet.frozenFen -= p.pricing.reservedFen;
       p.pricing.settledFen += p.pricing.reservedFen;
+      addLedger('settle', 0, `作品《${p.title}》视频费结算`, -p.pricing.reservedFen);
       p.pricing.reservedFen = 0;
       setStatus(p, 'delivered', '成片已完成', 100);
       p.deliveredAt = iso();
@@ -693,7 +694,7 @@ export const mockApi: MivApi = {
     state.wallet.availableFen -= quote.amountFen;
     state.wallet.frozenFen += quote.amountFen;
     p.pricing.reservedFen = quote.amountFen;
-    addLedger('reserve', -quote.amountFen, `作品《${p.title}》视频费预占`);
+    addLedger('reserve', -quote.amountFen, `作品《${p.title}》视频费预占`, quote.amountFen);
     p.segments.forEach((s, i) => {
       const take = { id: uid('take'), status: 'running' as const, createdAt: iso() };
       s.takes.push(take);
@@ -738,7 +739,7 @@ export const mockApi: MivApi = {
     if (p.pricing.reservedFen) {
       state.wallet.frozenFen -= p.pricing.reservedFen;
       state.wallet.availableFen += p.pricing.reservedFen;
-      addLedger('refund', p.pricing.reservedFen, `作品《${p.title}》取消退回`);
+      addLedger('refund', p.pricing.reservedFen, `作品《${p.title}》取消退回`, -p.pricing.reservedFen);
       p.pricing.refundedFen += p.pricing.reservedFen;
       p.pricing.reservedFen = 0;
     }

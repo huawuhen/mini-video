@@ -65,14 +65,14 @@ function onUpdated(p: ProjectDetail) { project.value = p; }
 
       <div class="body">
         <aside v-if="isDesktop" class="side miv-card">
-          <FlowSteps :status="project.status" :paused-from="project.pausedFrom" vertical />
+          <FlowSteps :status="project.status" :paused-from="project.pausedFrom" :failed-step="project.error?.step" vertical />
           <div class="side-actions">
             <van-button v-if="canPause" size="small" plain block @click="pause">暂停</van-button>
             <van-button v-if="canCancel" size="small" plain block @click="cancel">取消制作</van-button>
           </div>
         </aside>
         <div class="main">
-          <FlowSteps v-if="!isDesktop" :status="project.status" :paused-from="project.pausedFrom" class="steps" />
+          <FlowSteps v-if="!isDesktop" :status="project.status" :paused-from="project.pausedFrom" :failed-step="project.error?.step" class="steps" />
 
           <div v-if="project.status === 'paused'" class="state miv-card">
             <van-icon name="pause-circle-o" size="28" color="var(--miv-warning)" />

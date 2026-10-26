@@ -164,7 +164,8 @@ export async function getWallet(db, userId) {
 }
 
 function serializeEntry(row) {
-  return { id: row.id, kind: row.kind, amountFen: row.amount_fen, title: row.title, createdAt: row.created_at.toISOString() };
+  return { id: row.id, kind: row.kind, amountFen: row.amount_fen, frozenFen: row.frozen_delta_fen ?? 0,
+    title: row.title, createdAt: row.created_at.toISOString() };
 }
 
 /**
@@ -184,7 +185,7 @@ export async function listLedger(db, { userId, cursor, limit }) {
     where += ' AND ((extract(epoch from created_at) * 1000000)::bigint, id) < ($3, $4)';
   }
   const { rows } = await db.query(
-    `SELECT id, kind, amount_fen, title, created_at, (extract(epoch from created_at) * 1000000)::bigint AS created_us
+    `SELECT id, kind, amount_fen, frozen_delta_fen, title, created_at, (extract(epoch from created_at) * 1000000)::bigint AS created_us
        FROM ledger WHERE ${where}
       ORDER BY created_at DESC, id DESC LIMIT $2`,
     values,

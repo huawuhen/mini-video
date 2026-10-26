@@ -25,11 +25,12 @@ export function useProjectLive(projectId: Ref<string>) {
   function schedule() {
     clearTimeout(timer);
     if (stopped) return;
-    // SSE 连接健康且无进行中任务时轮询只作慢速安全网；断开期间回到快轮询
+    // SSE 连接健康时一律 30 秒慢对账（变更靠事件推送；实测排队可达 79 分钟，2 秒轮询一个开着
+    // 的页面要打几千次详情请求）；SSE 断开期间才回到 2 秒快轮询兜底
     timer = setTimeout(async () => {
       if (!document.hidden) await refresh();
       schedule();
-    }, source?.readyState === EventSource.OPEN && !isBusy(project.value) ? 30_000 : 2000);
+    }, source?.readyState === EventSource.OPEN ? 30_000 : 2000);
   }
   function connect() {
     source?.close();
