@@ -33,7 +33,7 @@ git clone https://github.com/huawuhen/mini-video .
 ## 3. 写配置文件（唯一的编辑步骤）
 
 ```bash
-cp server/.env.example deploy/.env
+cp deploy/.env.production.example deploy/.env   # 用这份纯生产模板（根目录 server/.env.example 是开发用，别混）
 nano deploy/.env        # 或 vi；只改下面列出的行，其余保持默认
 ```
 
@@ -41,14 +41,15 @@ nano deploy/.env        # 或 vi；只改下面列出的行，其余保持默认
 
 | 配置 | 填什么 |
 |---|---|
-| `POSTGRES_PASSWORD` | 自己编的强密码①（同时把它填进 `DATABASE_URL` 里两处相同位置） |
-| `CHANNEL_SECRET_KEY` | 在服务器上跑 `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"` 的输出（没有 node 就随便一段 ≥32 位随机字符串）。**⚠️ 生成后立刻抄到密码管理器或纸上离线保存：它丢了，数据库里已保存的所有渠道密钥都无法解开，只能逐个重新录入** |
+| `POSTGRES_PASSWORD` | 自己编的强密码①。**只用字母和数字**（不要 `$ : / @ #` 等特殊字符），否则 `DATABASE_URL` 需要 URL 编码容易出错；同一个密码要填进 `DATABASE_URL` 的对应位置 |
+| `CHANNEL_SECRET_KEY` | 服务器上跑 `openssl rand -base64 32` 的输出。**⚠️ 生成后立刻抄到密码管理器或纸上离线保存：它丢了，数据库里已保存的所有渠道密钥都无法解开，只能逐个重新录入** |
 | `QINIU_ACCESS_KEY` / `QINIU_SECRET_KEY` | 七牛 AK / SK |
 | `AIIDE_API_KEY` | aiide 渠道密钥 |
 | `STORY_LLM_API_KEY` | 智谱密钥（`STORY_LLM_BASE_URL`/`MODEL` 已预填） |
 | `ALLOWED_ORIGINS` | 你的站点地址，如 `https://video.example.com`（没域名先填 `http://服务器IP:8080`） |
+| `COOKIE_SECURE` | **用 IP + HTTP 内测阶段保持 `false`**（填 true 浏览器在 http 下不回传 Cookie，会登录不上）；**启用 HTTPS 后必须改成 `true`**（见第 8 步），否则会话 Cookie 可经明文传输 |
 
-保持默认即可的重点（勿删）：`NODE_ENV=production`、`TRUST_PROXY_HOPS=1`、`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`、`PROJECTS_VIDEO_DOWNLOAD_TIMEOUT_MS=1200000`（渠道结果下载跨境较慢，5 分钟缺省不够）、`SMS_PROVIDER=log`（短信通道上线前的占位，验证码会打进日志，**正式上线前必须接入真实短信**）。
+保持默认即可的重点（勿删）：`NODE_ENV=production`、`TRUST_PROXY_HOPS=1`（前面加了一层外部代理/CDN 时要调大，见第 8 步）、`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`、`PROJECTS_VIDEO_DOWNLOAD_TIMEOUT_MS=1200000`（渠道结果下载跨境较慢，5 分钟缺省不够）、`SMS_PROVIDER=log`（短信通道上线前的占位，验证码会打进日志，**正式上线前必须接入真实短信**）。
 
 保存退出（nano：Ctrl+O 回车，Ctrl+X）。
 
@@ -106,12 +107,18 @@ docker compose down
 # 手动备份一次（文件在 deploy/backups/）
 cd /srv/mini-video/deploy && ./backup.sh
 
-# 自动每天备份：安装定时任务
-crontab -e   # 加入下面一行（每天 04:00 备份，保留 14 份）
-0 4 * * * cd /srv/mini-video/deploy && ./backup.sh >> backups/backup.log 2>&1
+# 备份并推异地副本（上传到七牛私有桶独立前缀 backups/db/，与业务数据隔离；
+# 服务器整机故障时异地仍在）
+./backup.sh --upload
+
+# 自动每天备份 + 异地副本：安装定时任务
+crontab -e   # 加入下面一行（每天 04:00，本地保留 14 份）
+0 4 * * * cd /srv/mini-video/deploy && ./backup.sh --upload >> backups/backup.log 2>&1
 ```
 
-恢复（演练过的流程，手册保持与脚本一致）：
+异地副本（七牛上的 `backups/db/` 前缀）的保留期限在七牛控制台对该前缀配「生命周期规则」即可（如 90 天自动删除）。注意备份在私有桶里同样受签名保护，但**任何备份文件都绝不提交进 git 仓库**（`.gitignore` 已全局拦截 `*.dump`）。
+
+恢复（按需选用）：
 
 ```bash
 cd /srv/mini-video/deploy
@@ -120,13 +127,32 @@ cd /srv/mini-video/deploy
 docker compose restart api worker                        # 恢复后必须重启
 ```
 
-备份文件也要异地存一份（拷到云存储/另一台机器）：`backups/` 目录整体拷走即可。
+> **恢复演练的安全规矩**：演练一律在**一次性空库**上做（例如临时改 `compose.yml` 里 postgres 的库名或起一套 `docker compose -p miv-drill` 临时栈），**绝不能拿存有真实渠道密钥/用户数据的生产库演练**，避免备份文件把真实数据带出服务器。
 
 ## 8. 正式域名与 HTTPS（上线前）
 
 1. 域名 DNS A 记录指向服务器 IP。
 2. 最简单的 HTTPS：云厂商（阿里云/腾讯云）免费 SSL 证书 + 在服务器前再加一层 nginx/caddy，或者直接用云 CDN 回源 8080。
-3. 改 `deploy/.env` 的 `ALLOWED_ORIGINS=https://你的域名`，然后 `docker compose up -d`。
+3. 改 `deploy/.env`：`ALLOWED_ORIGINS=https://你的域名`；**`COOKIE_SECURE=true`（必须改，否则会话 Cookie 走明文）**；然后 `docker compose up -d`。
+
+### 加了外层代理/CDN 后：TRUST_PROXY_HOPS 必须核对
+
+`TRUST_PROXY_HOPS` 决定后端从 `X-Forwarded-For` 里取第几跳当真实客户端 IP。填错会把**代理机器的 IP 当成所有用户的 IP**——管理员登录 5 次失败会封禁「全站」2 小时、短信/接口限流也会全站共享。
+
+| 部署形态 | 填什么 |
+|---|---|
+| 只有 Compose 自带的 web（nginx）一层代理 | `1`（默认） |
+| 外面又加了一层 nginx / caddy（共两层代理） | `2` |
+| 云 CDN（如阿里云 CDN / CloudFlare）回源 | 按该 CDN 的回源头规则：多数为 `2`（CDN → web 容器 → api），以核对结果为准 |
+
+**核对方法**：改完后用手机流量（别用服务器本机）访问站点登录一次，然后查管理端审计日志——
+
+```bash
+docker compose exec -T postgres psql -U miv -d miv -c \
+  "SELECT created_at, actor_ip, action FROM admin_audit_logs ORDER BY created_at DESC LIMIT 5;"
+```
+
+（或登录管理员后台看审计列表。）如果 `actor_ip` 显示的是你手机的公网 IP，说明配置正确；如果显示成同一个内网/代理 IP（如 `192.168.x.x` 或 CDN 节点 IP），把 `TRUST_PROXY_HOPS` 加 1 再试。普通登录失败限流的 IP 也可用同样思路在 `rate_counters` 表核对。
 
 ## 9. 常见问题
 

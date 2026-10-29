@@ -194,7 +194,7 @@ async function ensureServer() {
             return json(res, 400, { error: { message: '图片生成请求被渠道拒绝，请稍后重试。', detail: 'local-mock failRate 模拟拒绝' } });
           }
           if (roll(Number(params.unknownRate) || 0)) {
-            return json(res, 503, { error: { message: '视频生成受理结果未知，请稍后再试。', detail: 'local-mock unknownRate 模拟' } });
+            return json(res, 503, { error: { message: '图片生成受理结果未知，请稍后再试。', detail: 'local-mock unknownRate 模拟' } });
           }
           const buffer = await sampleImageBuffer({ seed: body.characterId });
           return json(res, 200, { b64_png: buffer.toString('base64') });
