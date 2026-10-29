@@ -7,3 +7,6 @@ dist/
 *.log
 .DS_Store
 coverage/
+
+# 部署演练/运维产物：备份文件绝不入库（含数据快照）
+deploy/backups/
