@@ -4,13 +4,23 @@
 # 前置：deploy/.env 已按生产口径填好（七牛等），DATABASE_URL 指向 compose 内 postgres。
 # 用法：cd deploy && docker compose -f compose.yml -f compose.mock-verify.yml up -d --build
 #       验证码看日志：docker compose logs api | grep sms:dev
+# 本机验收网络备注：开发机 TUN 代理会把一切 DNS 变成 fake-IP（198.18/16 段），容器继承宿主 DNS
+# 后 safeFetch 的 SSRF 防护会正确拦截「私网地址」下载。开发机验收用 extra_hosts 把七牛 CDN
+# 域名钉到 DoH（https://223.5.5.5/resolve）查到的真实 IP；生产服务器无此环境，不需要也
+# 不应该复制这两段（真实 IP 会轮换，仅本机联调有效）。
+x-dev-hosts: &dev-hosts
+  extra_hosts:
+    - "cdnh5.redith.cn:122.225.32.41"
+
 services:
   api:
     environment:
       - NODE_ENV=development
+    <<: *dev-hosts
   worker:
     environment:
       - NODE_ENV=development
+    <<: *dev-hosts
   seed-mock:
     build: { context: .., dockerfile: deploy/Dockerfile.api }
     env_file: .env

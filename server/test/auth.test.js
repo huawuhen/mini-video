@@ -94,11 +94,14 @@ describe('auth（M1-BE-01）', () => {
     assert.equal(bad.status, 401);
   });
 
-  test('生产环境禁止 console 短信 provider', () => {
+  test('生产环境禁止 console 短信 provider；SMS_PROVIDER=log 占位放行（M2-OPS-01，上线前必须换真实通道）', () => {
     assert.throws(
       () => loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y', ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'console' }),
       /短信/,
     );
+    const config = loadConfig({ NODE_ENV: 'production', DATABASE_URL: 'postgres://x/y',
+      ALLOWED_ORIGINS: 'https://miv.example', SMS_PROVIDER: 'log' });
+    assert.equal(config.sms.provider, 'log');
   });
 
   test('POST /auth/sms：手机号格式错误 400', async () => {

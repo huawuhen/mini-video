@@ -32,6 +32,9 @@ services:
   api:
     build: { context: .., dockerfile: deploy/Dockerfile.api }
     env_file: .env
+    environment:
+      # 容器部署必须监听 0.0.0.0（nginx 反代与健康检查从容器外访问）；HOST 只在本机裸跑时用 127.0.0.1
+      - HOST=0.0.0.0
     depends_on:
       postgres: { condition: service_healthy }
       migrate: { condition: service_completed_successfully }
