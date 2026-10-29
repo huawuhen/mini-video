@@ -17,8 +17,10 @@ const redeeming = ref(false);
 const kindLabel: Record<LedgerEntry['kind'], string> = { recharge: '充值', redeem: '兑换', reserve: '预占', settle: '结算', refund: '退回', charge: '扣费', adjust: '调整' };
 /** 结算行 amountFen=0、frozenFen=-实扣：显示为灰色「−¥X」并注明来源，避免读成「收入 0 元」（API.md §3） */
 function amountOf(item: LedgerEntry) {
+  // 负号统一用 −（U+2212）：结算「从冻结中扣除」与预占/扣费的负数字形一致（§6 复审遗留 d）
   if (item.amountFen === 0 && item.frozenFen < 0) return { text: `−${formatFen(-item.frozenFen)}`, cls: 'frozen-out' };
-  return { text: `${item.amountFen >= 0 ? '+' : ''}${formatFen(item.amountFen)}`, cls: item.amountFen >= 0 ? 'plus' : 'minus' };
+  if (item.amountFen < 0) return { text: `−${formatFen(-item.amountFen)}`, cls: 'minus' };
+  return { text: `+${formatFen(item.amountFen)}`, cls: item.amountFen > 0 ? 'plus' : 'minus' };
 }
 function labelOf(item: LedgerEntry) {
   const extra = item.amountFen === 0 && item.frozenFen < 0 ? ' · 从冻结中扣除'

@@ -44,31 +44,6 @@ describe('生产装配回归（M2-WEB-01 复审必改 1）', () => {
 });
 
 describe('buildUrlFor（媒体签名链接装配）', () => {
-  let ctx;
-  before(async () => { ctx = await createTestDb(); });
-  after(async () => { await ctx.drop(); });
-
-  test('处理器内 ctx.enqueue({type,payload,dedupeKey}) → 队列出现该任务', async () => {
-    await enqueue(ctx.db, { type: 'test.chain', payload: { n: 1 }, dedupeKey: 'wiring-chain-2' });
-    const seen = [];
-    const worker = createWorker({
-      db: ctx.db, logger: silent, workerId: 'wiring-test-2', concurrency: 1,
-      handlers: {
-        'test.chain': async (_payload, jobCtx) => {
-          await jobCtx.enqueue({ type: 'test.follow', payload: { ok: 1 }, dedupeKey: 'wiring-follow-2' });
-          seen.push('ran');
-        },
-      },
-    });
-    await worker.runOne();
-    assert.equal(seen.length, 1, '处理器已执行');
-    const { rows } = await ctx.db.query(`SELECT id, status, payload FROM jobs WHERE type = 'test.follow'`);
-    assert.equal(rows.length, 1, 'ctx.enqueue 单参调用必须把任务写进队列');
-    assert.deepEqual(typeof rows[0].payload, 'object');
-  });
-});
-
-describe('buildUrlFor（媒体签名链接装配）', () => {
   test('同步签名正常透传；async 签名/异常/缺省安全返回 undefined（契约要求同步，仅 qiniu 满足）', () => {
     const syncStorage = { signedUrl: (key, opts) => `https://media.example/${key}?ttl=${opts?.ttlSeconds}` };
     assert.equal(buildUrlFor(syncStorage, 3600)('a.mp4'), 'https://media.example/a.mp4?ttl=3600');
