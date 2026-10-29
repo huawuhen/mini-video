@@ -1,0 +1,28 @@
+# 生产 API 镜像（M2-OPS-01）：Ubuntu/Debian 系 node:22-bookworm-slim，Linux amd64 为准，
+# 开发机 arm64 亦可本地构建（docker buildx --platform）。同时充当 migrate / admin:create /
+# channel:seed 的一次性运行容器（见 deploy/compose.yml 与 deploy/README.md）。
+# 镜像不含任何密钥：.env 由 Compose env_file 在运行时注入（.dockerignore 防误拷）。
+FROM node:22-bookworm-slim
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# 先装依赖（层缓存）：生产只装 dependencies
+COPY server/package.json server/package-lock.json ./
+RUN npm ci --omit=dev
+
+# 源码与运行资产（测试/migrations/scripts）
+COPY server/src ./src
+COPY server/migrations ./migrations
+COPY server/scripts ./scripts
+
+# 构建期断言（M2-WEB-01 devOnly 契约）：生产环境绝不能注册 local-mock 联调驱动
+RUN node --input-type=module -e " \
+  const { loadDriverRegistry } = await import('./src/engine/providers/index.js'); \
+  const registry = await loadDriverRegistry(); \
+  if (registry.has('local-mock')) throw new Error('local-mock must not load in production'); \
+  console.log('driver check ok:', registry.list().map((d) => d.id).join(','));"
+
+USER node
+EXPOSE 3000
+CMD ["node", "src/app.js"]

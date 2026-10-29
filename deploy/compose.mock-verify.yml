@@ -1,0 +1,22 @@
+# 本地零费用验收 override（M2-OPS-01 验收项）：生产镜像与 compose.yml 不变，
+# 仅把 api/worker 覆盖为开发口径（NODE_ENV=development → local-mock 可注册、
+# 验证码打印到 api 日志），并用同一镜像跑一次 `channel:seed -- --mock` 激活模拟渠道。
+# 前置：deploy/.env 已按生产口径填好（七牛等），DATABASE_URL 指向 compose 内 postgres。
+# 用法：cd deploy && docker compose -f compose.yml -f compose.mock-verify.yml up -d --build
+#       验证码看日志：docker compose logs api | grep sms:dev
+services:
+  api:
+    environment:
+      - NODE_ENV=development
+  worker:
+    environment:
+      - NODE_ENV=development
+  seed-mock:
+    build: { context: .., dockerfile: deploy/Dockerfile.api }
+    env_file: .env
+    environment:
+      - NODE_ENV=development
+    command: ["node", "scripts/channel-cli.js", "seed", "--", "--mock"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: "no"

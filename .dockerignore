@@ -1,0 +1,15 @@
+# .git 不需要；密钥与本地数据绝不进镜像（.env 只经 Compose env_file 运行时注入）
+.env
+.env.*
+!.env.example
+**/.env
+**/.data
+**/node_modules
+**/dist
+docs
+*.md
+CODEX_HANDOFF.md
+.git
+.gitignore
+apps/web/server-logs
+backups
