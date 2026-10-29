@@ -212,6 +212,7 @@
 - **未在 Linux amd64 上验证**：Compose 全栈运行时（QEMU 模拟无意义，留首次生产部署按手册执行——手册第 4/5 步即核对项）；备份恢复脚本在 amd64 行为与 arm64 相同（纯 pg_dump/pg_restore）。
 - **上线前必须项（手册已写明）**：`SMS_PROVIDER=log` 换真实短信通道；`CHANNEL_SECRET_KEY` 离线备份；备份文件异地存放；正式域名改 `ALLOWED_ORIGINS`。
 - **环境收尾**：本机 Compose 栈已 `down -v`；七牛清理验收对象 11 个；`deploy/.env` 为本机联调副本（gitignore，不入库）。
+- **失误记录（已处理）**：`3fd045d` 误将备份演练产物 `deploy/backups/*.dump`（测试数据快照，虚构手机号 + 渠道凭证密文）一并提交并推送；已按「不改写历史」在 `73f4dfa` 反向提交移除并 gitignore `deploy/backups/`。该 dump 为本机演练库数据、无真实用户/明文密钥；如 Lead 认为需要，可在合并时用新提交压掉该文件的可达性（历史 blob 仍在，介意可由 Lead 决定是否联系 GitHub 清理）。
 
 ### 2026-10-26 · Web · M2-WEB-01 复审必改修复（4 必改 + 建议 5/6）
 
