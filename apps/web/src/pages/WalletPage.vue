@@ -15,6 +15,16 @@ const ledger = ref<LedgerEntry[]>([]);
 const code = ref('');
 const redeeming = ref(false);
 const kindLabel: Record<LedgerEntry['kind'], string> = { recharge: '充值', redeem: '兑换', reserve: '预占', settle: '结算', refund: '退回', charge: '扣费', adjust: '调整' };
+/** 结算行 amountFen=0、frozenFen=-实扣：显示为灰色「−¥X」并注明来源，避免读成「收入 0 元」（API.md §3） */
+function amountOf(item: LedgerEntry) {
+  if (item.amountFen === 0 && item.frozenFen < 0) return { text: `−${formatFen(-item.frozenFen)}`, cls: 'frozen-out' };
+  return { text: `${item.amountFen >= 0 ? '+' : ''}${formatFen(item.amountFen)}`, cls: item.amountFen >= 0 ? 'plus' : 'minus' };
+}
+function labelOf(item: LedgerEntry) {
+  const extra = item.amountFen === 0 && item.frozenFen < 0 ? ' · 从冻结中扣除'
+    : item.kind === 'reserve' ? ' · 冻结，完成后结算' : '';
+  return `${kindLabel[item.kind]}${extra} · ${date(item.createdAt)}`;
+}
 
 async function load() {
   await walletStore.refresh();
@@ -52,8 +62,8 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
     </section>
     <section class="miv-card">
       <div class="miv-section-title">明细</div>
-      <van-cell v-for="item in ledger" :key="item.id" :title="item.title" :label="`${kindLabel[item.kind]} · ${date(item.createdAt)}`">
-        <template #value><span :class="item.amountFen >= 0 ? 'plus' : 'minus'">{{ item.amountFen >= 0 ? '+' : '' }}{{ formatFen(item.amountFen) }}</span></template>
+      <van-cell v-for="item in ledger" :key="item.id" :title="item.title" :label="labelOf(item)">
+        <template #value><span :class="amountOf(item).cls">{{ amountOf(item).text }}</span></template>
       </van-cell>
       <van-empty v-if="!ledger.length" description="暂无记录" image-size="64" />
     </section>
@@ -67,4 +77,6 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
 .code { background: var(--miv-bg); border-radius: var(--miv-radius-md); }
 .plus { color: var(--miv-success); }
 .minus { color: var(--miv-text); }
+.frozen-out { color: var(--miv-text-3); }
+.redeem .van-button { white-space: nowrap; min-width: 88px; flex-shrink: 0; } /* PC 宽下列宽过窄会把按钮文字竖排 */
 </style>

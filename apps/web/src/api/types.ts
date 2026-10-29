@@ -31,7 +31,9 @@ export interface Voice { id: string; name: string; category: VoiceCategory; cate
 export interface Wallet { availableFen: number; frozenFen: number }
 export interface LedgerEntry {
   id: string; kind: 'recharge' | 'redeem' | 'reserve' | 'settle' | 'refund' | 'charge' | 'adjust';
-  amountFen: number; title: string; createdAt: string;
+  amountFen: number;      // 对可用余额的变化，扣减为负
+  frozenFen: number;      // 对冻结金额的变化（预占为正，结算/退回为负）；结算行 amountFen=0、frozenFen=-实扣
+  title: string; createdAt: string;
 }
 export interface EstimateRequest { qualityTierId: string; styleId: string; characterIds: string[] }
 export type QuoteRequest =

@@ -82,6 +82,21 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   return app;
 }
 
+/**
+ * 媒体签名链接装配（M2-WEB-01 联调发现主入口曾漏传 urlFor：详情/列表的 videoUrl/coverUrl 全缺失，
+ * 抽成可测函数）。同步签名（qiniu 原生协议）；存储未就绪/驱动不支持/签名异常返回 undefined，序列化层省略字段。
+ */
+export function buildUrlFor(storage, ttlSeconds) {
+  return (key) => {
+    try {
+      // 契约要求同步签名（qiniu 原生协议）；memory 存储的 signedUrl 是 async（返回 Promise），
+      // 序列化层无法 await——视为不可用返回 undefined（省略字段），避免把 Promise 泄漏进响应
+      const url = storage?.signedUrl?.(key, { ttlSeconds });
+      return typeof url === 'string' ? url : undefined;
+    } catch { return undefined; }
+  };
+}
+
 // 直接运行：npm run start:api -w server
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const config = loadConfig();
@@ -96,7 +111,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       channelLayer = await createChannelLayer({ config, db, logger, storage });
       if (config.channels.autoSeed) await seedChannels({ config, db, service: channelLayer.service, logger });
     }
-    return createApp({ config, db, logger, storage, extractText, channelLayer })
+    return createApp({ config, db, logger, storage, urlFor: buildUrlFor(storage, config.storage.signedUrlTtlSeconds),
+      extractText, channelLayer })
       .listen(config.port, config.host, () => {
         logger.info('api_listening', { host: config.host, port: config.port });
       });
