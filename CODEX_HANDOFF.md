@@ -207,6 +207,13 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-31 · Ops · LLM 剧本模型切换 glm-4.6 → glm-5.3-flash（用户指示，零代码运营变更）
+
+- **背景**：用户指示「LLM 模型修改为 glm-5.3-flash」。渠道层设计下模型存于 `provider_channels.model_map`（以数据库为准，不需要改代码）；在同分支 `agent/ops/M2-OPS-03-mac-beta` 追加记录。
+- **改动**：① **Mac 内测栈库**：zhipu LLM 渠道（`pch_vg86evny2usfx0iq`）`model_map.llm` → `glm-5.3-flash`——api 容器内走 service 层 `updateChannel`（与 `channel:use` 同机制，`admin_audit_logs` actor=cli 留痕）；渠道按次从库读取，只影响新提交、无需重启。② **种子环境同步**：`deploy/.env`、`server/.env`（均不入库）的 `STORY_LLM_MODEL=glm-5.3-flash`，未来重建/新部署种入即新模型。③ dev 库（127.0.0.1:56432/miv）渠道表为空表（此前未播种，本次顺带补齐 migrate 010），无需改库。
+- **验证**：`channel:list` 生效模型显示 `glm-5.3-flash`；`channel:test zhipu` ✅ 且该模型在供应商目录（目录共 11 个模型）；**真实最小冒烟通过**——api 容器内 `story-smoke.js` 以 glm-5.3-flash 跑通故事理解：degraded=false、规划 3 段共 75s / 2 角色，input 1534 / output 4020 tok，约 90s（智谱套餐内 0 元，OPS-03 真实渠道授权口径）。
+- **风险/未验证**：glm-5.3-flash 与 glm-4.6 的剧本规划习惯差异未做长链路对比（下一条真实成片自然验证）；视频/图片渠道未动。
+
 ### 2026-10-31 · Ops · M2-OPS-03 Mac 本机内测（生产栈 + DoH 绕行 + 兑换码 + 真实交付）
 
 - **背景**：用户授权（§3 2026-10-31：同 Wi-Fi、真实费用上限 300 元/停止线 250 元、每笔记账）。分支 `agent/ops/M2-OPS-03-mac-beta`（基于 main `8c29d72`）。
