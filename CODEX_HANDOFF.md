@@ -82,7 +82,7 @@
 | M2-BE-03-e2e（真实渠道端到端验证） | BE-Core（本机开发 Agent） | `agent/be/M2-BE-03-e2e` | `server/scripts/e2e-real.js` `server/src/engine/providers/{transport.js,drivers/openai-images/**}` `server/src/projects/{download.js,segment.js}` `server/test/projects/projects.test.js` `server/scripts/aiide-smoke.js` `server/.env.example` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并）（delivered + 三项验证全过 + 修复 3 个真实链路 bug；720p 校准 +5.6% 超 5% 待 Lead 定夺，见 §7） | 2026-10-24 |
 | M2-WEB-01（前端切换真实 API 联调） | Web（本机开发 Agent，含 BE 配合：local-mock 驱动） | `agent/web/M2-WEB-01-real-api` | `server/src/engine/providers/drivers/local-mock/**` `server/src/engine/providers/{registry,contract-test}.js` `server/src/worker.js`（seed/deps） `server/scripts/channel-cli.js` `apps/web/**`（联调修复） `server/test/**` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-26 |
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
-| M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | 进行中（授权见 §3 2026-10-31：真实费用上限 300 元/停止线 250 元/同 Wi-Fi） | 2026-10-31 |
+| M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | 待审查（生产栈真实渠道交付 1 条 90s 成片：全程 53.5 分钟/真实成本 61.11 元/账本在案；DoH 绕行 fake-IP；修 worker 渠道模式回归；375/375；手机端走查留给内测用户，见 §7） | 2026-10-31 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -207,6 +207,14 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-31 · Ops · M2-OPS-03 Mac 本机内测（生产栈 + DoH 绕行 + 兑换码 + 真实交付）
+
+- **背景**：用户授权（§3 2026-10-31：同 Wi-Fi、真实费用上限 300 元/停止线 250 元、每笔记账）。分支 `agent/ops/M2-OPS-03-mac-beta`（基于 main `8c29d72`）。
+- **交付物**：① `server/scripts/redeem-create.js` + `npm run redeem:create -- <元> <张> [有效天数]`：Crockford base32 码（可抄写）、只存 sha256 哈希、stdout 只打印一次、审计不含码；测试 2 用例（格式/落库哈希/审计/兑换哈希口径一致）；生产容器 `docker compose run --rm api node scripts/redeem-create.js` 实测生成 3 张码。② `deploy/doh-forwarder.mjs` + `compose.mac-beta.yml`：**fake-IP 解法**——实测容器内 UDP 53 全被代理 TUN 劫持（含显式 223.5.5.5）、TCP 53 超时、仅 443 干净；自写 UDP53→DoH(443) 转发容器（固定 IP 172.28.0.53、健康检查、零外部镜像依赖），api/worker `dns:` 指向它（Docker embedded DNS 仍负责服务名）；**栈内实测解析 cdnh5/aiide/open.bigmodel/七牛上传/volces 下载全部真实公网 IP，safeFetch SSRF 防护零改动、不写死 IP**。③ **修生产阻断回归**（`server/src/worker.js`）：渠道路由模式下注入式 provider 为 null 是正确状态，旧守卫误拒——**生产 worker 在渠道路由模式下此前从未真正启动过**（e2e 自驱 handler、OPS-01 验收均未覆盖）；本次首次以 `channel-router + qiniu` 生产口径启动成功。④ `deploy/MAC-BETA.md` 非程序员内测手册（启动/防休眠/验证码转告/兑换码/费用/切渠道/备份/手机连不上排查/管理员）。⑤ 环境就位：`deploy/.env`（ORIGINS 含 LAN IP 192.168.10.249、COOKIE_SECURE=false）、caffeinate 防休眠、每日 04:00 backup cron（内测本机未加 --upload）。
+- **初始化核对**：admin `mac-beta`；渠道由 worker 自动种子引导（生产首次部署链路实证）——**aiide（video/image）生效、zhipu LLM 生效、miaowuai 备用、local-mock 零加载**（`channel:list` 干净 + worker 日志 `driver_disabled_in_production`；DB 计数 0）。
+- **真实渠道验证（全流程交付 1 条 90 秒成片，Mac 浏览器 375px 驱动）**：登录（SMS_PROVIDER=log 验证码日志转告口径实测）→ 兑换码充值 ¥50+¥100 → 创建（**真实 glm-4.6 扩写**完整剧本，input 452/output 877 tok）→ 确认点 A → **真实 aiide 形象 3 张**（真实 LLM 规划了 3 角色，各 ~28s）→ 确认点 B（预占 ¥90——真实 LLM 自主规划 3×30s=90s，符合「时长 agent 决定」产品规则）→ **真实 aiide 视频 3 段** → 拼接 → 交付：播放器 90.24s 签名 URL 可播、下载 200 video/mp4 8.1MB；钱包逐笔对账一致（15000-180-9000=5820，冻结归零）；SSE/进度推进正常。**排队实测：提交 11:15:51 → 交付 12:09:18，全程 53.5 分钟**（段 1≈28min、段 2≈12min、段 3≈13min、拼接 45s——「制作中」分钟~小时级文案再获实证）。**真实成本：61.11 元**（形象 3×36 分 + 视频 3 段各 usage 288,625 tokens ≈ 2001 分/段 + LLM 0 套餐内；账本 `server/.data/ops03-cost-ledger.jsonl` 每笔在案，**累计 61.11 元 << 250 元停止线**）。截图 `docs/m2-ops03/`（兑换/确认A/确认B/制作中/交付 5 张 Mac 侧）。
+- **未验证（如实）**：**真实手机端走查留给内测用户**（栈已就位：`http://192.168.10.249:8080`，剩余兑换码 `MIV-F3TNN-PBSZW` ¥50 在 MAC-BETA.md §3 口径发放；手机截图与体验反馈待用户回传后补记）；喵呜渠道真实提交（仅登记备用，切换 CLI 就绪）；LAN IP 变更场景（手册 §7 已写处理办法）；支付（易支付 M3）；短信真实通道。
+- **测试**：`npm run test:server` **375/375**（+redeem 2）、`check`、`build` 通过。
 ### 2026-10-29 · Ops · M2-OPS-01 复审必改修复（流程预防/生产模板拆分/TRUST_PROXY 手册/异地备份）
 
 - **背景**：Lead 复审（§6 2026-10-29）🔁 3 必改 + 建议 4/5；dump 泄露事件用户已决定忽略（§3 同日），流程预防照做。同分支 `agent/ops/M2-OPS-01-docker`。
