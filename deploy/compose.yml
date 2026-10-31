@@ -1,0 +1,66 @@
+# 生产编排（M2-OPS-01，deploy/README.md 为完整手册）：
+#   首次：cp server/.env.example deploy/.env → 填好 → docker compose up -d --build
+#   迁移：migrate 一次性容器在 api/worker 之前自动执行（service_completed_successfully）
+#   首次部署后的初始化（管理员/渠道）见 README「首次部署清单」。
+# 本地零费用验收（local-mock 主流程）：docker compose -f compose.yml -f compose.mock-verify.yml up -d --build
+name: miv
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-miv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?deploy/.env 里必须设置 POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-miv}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-miv} -d ${POSTGRES_DB:-miv}"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    build: { context: .., dockerfile: deploy/Dockerfile.api }
+    env_file: .env
+    command: ["node", "src/db/migrate.js"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
+  api:
+    build: { context: .., dockerfile: deploy/Dockerfile.api }
+    env_file: .env
+    environment:
+      # 容器部署必须监听 0.0.0.0（nginx 反代与健康检查从容器外访问）；HOST 只在本机裸跑时用 127.0.0.1
+      - HOST=0.0.0.0
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/v1/catalog').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  worker:
+    build: { context: .., dockerfile: deploy/Dockerfile.worker }
+    env_file: .env
+    depends_on:
+      postgres: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: { context: .., dockerfile: deploy/Dockerfile.web }
+    depends_on:
+      api: { condition: service_healthy }
+    ports:
+      - "${WEB_PORT:-8080}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

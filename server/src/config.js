@@ -131,7 +131,8 @@ export function loadConfig(env = process.env) {
   if (production) {
     if (!env.DATABASE_URL) throw new Error('生产环境必须设置 DATABASE_URL');
     if (!config.allowedOrigins.length) throw new Error('生产环境必须设置 ALLOWED_ORIGINS');
-    if (config.sms.provider === 'console') throw new Error('生产环境必须配置真实短信 provider（SMS_PROVIDER）');
+    // console 仅开发/测试；'log' 为 M3 真实短信接入前的显式占位（M2-OPS-01，验证码进容器日志，上线前必须替换）
+    if (config.sms.provider === 'console') throw new Error('生产环境必须配置真实短信 provider（SMS_PROVIDER；接入前的占位用 SMS_PROVIDER=log）');
   }
   return Object.freeze(config);
 }

@@ -93,7 +93,8 @@ test('local-mock/video：failRate=1 → 明确失败（中文提示）；unknown
   const failing = driver.create(channelOf('video', { failRate: 1 }), { logger: consoleCapture(), deps: { storage: fakeStorage() } });
   const failed = await failing.submit(instance0Input(), {});
   assert.equal(failed.status, 'failed');
-  assert.ok(failed.error.includes('模拟'));
+  assert.ok(/被渠道拒绝/.test(failed.error), '业务中文口径（与真实驱动一致），不带模拟字样');
+  assert.ok(String(failed.providerMessage ?? '').includes('local-mock'), '模拟标记只进 providerMessage');
   const unknown = driver.create(channelOf('video', { unknownRate: 1 }), { logger: consoleCapture(), deps: { storage: fakeStorage() } });
   assert.equal((await unknown.submit(instance0Input(), {})).status, 'unknown');
 });

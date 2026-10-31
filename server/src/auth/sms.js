@@ -22,6 +22,27 @@ export function consoleSmsProvider(config) {
   };
 }
 
+/**
+ * 显式占位短信通道（M2-OPS-01）：真实短信 M3 接入（PRD §11 手机号实名与短信通道）前，
+ * 生产部署用 SMS_PROVIDER=log 启动——验证码打进容器日志（登录联调用），每次启动 warn 提醒。
+ * 与 console 的区别：id 不同（过生产守卫）且必须显式配置才启用；上线前必须替换为真实通道。
+ */
+export function logSmsProvider(config, logger) {
+  const minutes = Math.max(1, Math.ceil(config.sms.codeTtlSeconds / 60));
+  logger?.warn?.('sms_log_provider_placeholder', {
+    note: '短信通道仍是日志占位（SMS_PROVIDER=log）：验证码会打进容器日志，上线前必须接入真实通道（M3）',
+  });
+  return {
+    id: 'log',
+    async send({ phone, code }) {
+      logger?.info?.('sms_code_issued', { phone: maskPhone(phone), note: '占位通道：验证码在下行日志字段' });
+      // 验证码本身仍走 console 直读（部署联调），与结构化日志区分
+      // eslint-disable-next-line no-console
+      console.log(`[sms:log] ${maskPhone(phone)} 的验证码是 ${code}（占位通道，${minutes} 分钟内有效）`);
+    },
+  };
+}
+
 const newCode = () => String(randomInt(0, 1_000_000)).padStart(6, '0');
 // 哈希掺入手机号：验证码只有 10^6 种，不掺盐时一份库可离线碰撞所有手机号
 const codeHash = (phone, code) => createHash('sha256').update(`${phone}:${code}`).digest('hex');

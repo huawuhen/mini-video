@@ -164,10 +164,10 @@ async function ensureServer() {
           const params = body.params ?? {};
           await new Promise((r) => setTimeout(r, Math.min(10_000, Number(params.delayMs) || 0)));
           if (roll(Number(params.failRate) || 0)) {
-            return json(res, 400, { error: { message: '模拟：渠道拒绝了这次视频生成请求（local-mock failRate）' } });
+            return json(res, 400, { error: { message: '视频生成请求被渠道拒绝，请稍后重试。', detail: 'local-mock failRate 模拟拒绝' } });
           }
           if (roll(Number(params.unknownRate) || 0)) {
-            return json(res, 503, { error: { message: '模拟：受理结果未知（local-mock unknownRate）' } });
+            return json(res, 503, { error: { message: '视频生成受理结果未知，请稍后再试。', detail: 'local-mock unknownRate 模拟' } });
           }
           seq += 1;
           const id = `mocktask_${Date.now().toString(36)}_${seq}`;
@@ -178,7 +178,7 @@ async function ensureServer() {
         const videoMatch = req.method === 'GET' && url.pathname.match(/^\/v1\/video\/tasks\/([^/]+)$/);
         if (videoMatch) {
           const task = tasks.get(videoMatch[1]);
-          if (!task) return json(res, 404, { error: { message: '模拟：任务不存在或已过期（local-mock 重启后任务表清空）' } });
+          if (!task) return json(res, 404, { error: { message: '视频任务不存在或已过期。', detail: 'local-mock 任务表在进程内存，重启后清空' } });
           if (Date.now() < task.readyAt) return json(res, 200, { status: 'running' });
           const file = await sampleVideoPath(task.spec);
           const buffer = await readFile(file);
@@ -191,10 +191,10 @@ async function ensureServer() {
           const params = body.params ?? {};
           await new Promise((r) => setTimeout(r, Math.min(60_000, Number(params.delayMs) || 0)));
           if (roll(Number(params.failRate) || 0)) {
-            return json(res, 400, { error: { message: '模拟：渠道拒绝了这次图片生成请求（local-mock failRate）' } });
+            return json(res, 400, { error: { message: '图片生成请求被渠道拒绝，请稍后重试。', detail: 'local-mock failRate 模拟拒绝' } });
           }
           if (roll(Number(params.unknownRate) || 0)) {
-            return json(res, 503, { error: { message: '模拟：受理结果未知（local-mock unknownRate）' } });
+            return json(res, 503, { error: { message: '图片生成受理结果未知，请稍后再试。', detail: 'local-mock unknownRate 模拟' } });
           }
           const buffer = await sampleImageBuffer({ seed: body.characterId });
           return json(res, 200, { b64_png: buffer.toString('base64') });
@@ -204,7 +204,7 @@ async function ensureServer() {
           const params = body.params ?? {};
           await new Promise((r) => setTimeout(r, Math.min(60_000, Number(params.delayMs) || 0)));
           if (roll(Number(params.failRate) || 0)) {
-            return json(res, 500, { error: { message: '模拟：LLM 服务异常（local-mock failRate）' } });
+            return json(res, 500, { error: { message: '故事理解服务暂时不可用，请稍后再试。', detail: 'local-mock failRate 模拟' } });
           }
           const text = body.messages?.map((m) => String(m.content ?? '')).join('\n') ?? '';
           const answer = llmAnswerFor(`${body.system ?? ''}\n${text}`);
@@ -213,7 +213,7 @@ async function ensureServer() {
         }
         return json(res, 404, { error: { message: '模拟：未知接口' } });
       } catch (error) {
-        return json(res, 500, { error: { message: `模拟：样片生成失败（${String(error.message).slice(0, 120)}）` } });
+        return json(res, 500, { error: { message: '生成服务暂时不可用，请稍后重试。', detail: `local-mock 样片生成失败：${String(error.message).slice(0, 120)}` } });
       }
     })();
   });
@@ -300,7 +300,8 @@ export default {
             body: { durationSeconds: prepared.durationSeconds, resolution: prepared.resolution,
               ratio: prepared.ratio, params } });
           if (response.status === 400) {
-            return { status: 'failed', error: response.data?.error?.message ?? '模拟：视频生成请求被拒绝。' };
+            return { status: 'failed', error: response.data?.error?.message ?? '视频生成请求被渠道拒绝，请稍后重试。',
+              ...(response.data?.error?.detail ? { providerMessage: response.data.error.detail } : {}) };
           }
           if (response.status === 503) return { status: 'unknown' };
           if (!response.ok || !response.data?.task_id) {
@@ -311,17 +312,20 @@ export default {
         async query(upstreamId) {
           const response = await call(`/v1/video/tasks/${encodeURIComponent(upstreamId)}`);
           if (response.status === 404) {
-            return { status: 'failed', error: response.data?.error?.message ?? '模拟：任务不存在。' };
+            return { status: 'failed', error: response.data?.error?.message ?? '视频任务不存在或已过期。',
+              ...(response.data?.error?.detail ? { providerMessage: response.data.error.detail } : {}) };
           }
           if (response.status === 400) {
-            return { status: 'failed', error: response.data?.error?.message ?? '模拟：视频生成失败。' };
+            return { status: 'failed', error: response.data?.error?.message ?? '视频生成失败，请稍后重试。',
+              ...(response.data?.error?.detail ? { providerMessage: response.data.error.detail } : {}) };
           }
           if (!response.ok || !response.data) {
             throw new ProviderError('模拟渠道查询失败。', { code: 'PROVIDER_QUERY_FAILED', submitted: true, retryable: true });
           }
           if (response.data.status === 'running') return { status: 'running' };
           if (response.data.status === 'failed') {
-            return { status: 'failed', error: response.data.error?.message ?? '模拟：视频生成失败。' };
+            return { status: 'failed', error: response.data.error?.message ?? '视频生成失败，请稍后重试。',
+              ...(response.data.error?.detail ? { providerMessage: response.data.error.detail } : {}) };
           }
           if (response.data.status === 'succeeded') {
             const buffer = Buffer.from(response.data.video_b64 ?? '', 'base64');
@@ -358,7 +362,8 @@ export default {
           const response = await call('/v1/images/generations', { method: 'POST',
             body: { characterId: input.characterId, promptHint: input.promptHint, params } });
           if (response.status === 400) {
-            return { status: 'failed', error: response.data?.error?.message ?? '模拟：图片生成请求被拒绝。' };
+            return { status: 'failed', error: response.data?.error?.message ?? '图片生成请求被渠道拒绝，请稍后重试。',
+              ...(response.data?.error?.detail ? { providerMessage: response.data.error.detail } : {}) };
           }
           if (response.status === 503) return { status: 'unknown' };
           if (!response.ok || !response.data?.b64_png) {

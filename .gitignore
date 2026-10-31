@@ -3,7 +3,15 @@ dist/
 .env
 .env.*
 !.env.example
+!deploy/.env.production.example
 .data/
 *.log
 .DS_Store
 coverage/
+
+# 部署演练/运维产物：备份文件绝不入库（含数据快照）
+deploy/backups/
+
+# 备份产物绝不入库（M2-OPS-01 审查流程预防：全局拦截，任意目录层级）
+*.dump
+*.sql.gz
