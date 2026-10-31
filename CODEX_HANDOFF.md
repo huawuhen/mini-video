@@ -83,7 +83,7 @@
 | M2-WEB-01（前端切换真实 API 联调） | Web（本机开发 Agent，含 BE 配合：local-mock 驱动） | `agent/web/M2-WEB-01-real-api` | `server/src/engine/providers/drivers/local-mock/**` `server/src/engine/providers/{registry,contract-test}.js` `server/src/worker.js`（seed/deps） `server/scripts/channel-cli.js` `apps/web/**`（联调修复） `server/test/**` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-26 |
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
 | M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并；内测栈保留，暂停新增真实费用） | 2026-10-31 |
-| M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | 进行中（5 项：重试耗尽置 failed/开发桩 bindPrompts/looksPaidFen/钱包导航高亮/未登录 estimate；见 TASKS M2-BE-04） | 2026-11-01 |
+| M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | 复审必改已修复待复审（耗尽收口在途 take/形象版本 + 重试链路测试 + estimate watch；428/428） | 2026-11-01 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | 复审 3 必改已修复待复审（time_expire 北京时间格式+网关校验、resolveScenes 整体必填项、NOTIFY_RESOURCE_MISSING；416/416；建议 4~6 已转记 §7 待带入 PAY-02/PAY-04） | 2026-11-01 |
 
@@ -216,6 +216,21 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-01 · BE-Core · M2-BE-04 复审必改修复（耗尽收口在途 take/形象版本，重试不再卡死/重复提交）
+
+- **背景**：Lead 复审（§6 2026-11-01）🔁 1 必改 + 建议 2；同分支 `agent/be/M2-BE-04-walkthrough-fixes`，已合并 main `a4eb2df`。
+- **必改 1（耗尽兜底收口在途对象）**：`worker.js` 的 `failProjectOnExhausted` 不再只改作品状态——
+  - a) **gen.poll 耗尽**：take 仍在 `running` 且上游已提交、结果未知 → 与轮询超时同口径，调 `markTakeUnknown`（`segment.js` 改为导出）：take/gen_task 置 `unknown`、作品 `failed(TAKE_UNKNOWN)`（重试被拒、冻结待核对）。
+  - b) **segment.generate 耗尽**：新增 `settleExhaustedSegmentGenerate`（`segment.js`）按 gen_task 状态分派——`created`（从未提交）→ 复用 `failSegment`：take/gen_task 置 `failed` + 作品 `SEGMENT_FAILED`（可重试，重试建新 take 复用冻结；redelivery 预占当场退回）；`submitting`/`running`（已提交）→ `markTakeUnknown` 同 a。
+  - c) **look.generate 耗尽**：新增 `settleExhaustedLookGenerate`（`characters/service.js`）——`created` → 与正常业务失败同口径：版本/gen_task 置 `failed`、预占退回（幂等键 `look:<versionId>:refund`）、作品 `LOOK_FAILED`（casting 重试可补建新版本）；`submitting`/`running` → gen_task 置 `unknown`、版本保持 `pending`、作品 `LOOK_UNKNOWN`（重试被拒）。
+  - 收口成功即返回；`PIPELINE_FAILED` 只兜「无在途对象」（如 look 版本无 gen_task）的场景；兜底整体 try/catch 不阻塞 job 记账。
+- **测试**（`pipeline-failover.test.js` 重写扩充，11 用例）：保留原 5 个基础用例（understand/bind/compose/非流水线不误伤/幂等）；新增 6 个——a) gen.poll 耗尽 → unknown + `TAKE_UNKNOWN` + **retryProject 被拒（『该片段结果待核对』）+ 无新 segment.generate 任务（上游提交保持 1 次）**；b2) segment.generate 耗尽（running）→ unknown 同口径重试被拒；b1) segment.generate 耗尽（created）→ `SEGMENT_FAILED` 冻结保持 → **retryProject 放行 → 真实 segment.generate 执行：fake 上游恰好 1 次新提交、旧 failed take 保留、新 take running、gen.poll 入队（流程继续到下一步）**；c1) look.generate 耗尽（created）→ 版本 failed + 预占 60 分退回可用余额 + `LOOK_FAILED` → **retryProject 放行补建新版本（入队）→ 真实 look.generate（mock 图片渠道 1 次调用）→ 新版本 succeeded、作品推进 cast_review**；c2) look.generate 耗尽（running）→ 版本保持 pending + `LOOK_UNKNOWN` → 重试被拒 + 无待执行 look.generate 任务（形象上游零重提）；look 版本无 gen_task → 退回 `PIPELINE_FAILED` 兜底。
+- **建议 2**：首页 estimate 的 watch 源加入 `auth.user?.id`——登录后回到首页价格区间立即出现，不必改一次选项。
+- **验证**：`npm run test:server` **428/428**（failover +3 净增）、`check`、`build` 通过。零真实费用。
+- **实施坑（测试侧）**：jobs 队列初始状态是 `queued`（清理遗留 job 时 `IN ('pending','running')` 清不掉）；测试间共享库时 `runOne` 会领到前面用例真实入队的 job，跨用例清理须按 `status NOT IN ('done','failed')`。
+
+### 2026-11-01 · BE-Core · M3-PAY-01 复审必改修复（time_expire 格式 / scenes 必填项 / 回调 resource 防御）
 
 ### 2026-11-01 · BE-Core · M3-PAY-01 复审必改修复（time_expire 格式 / scenes 必填项 / 回调 resource 防御）
 

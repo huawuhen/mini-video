@@ -37,7 +37,9 @@ const storyLength = computed(() => draft.storyText.trim().length);
 const canSubmit = computed(() => !!catalog.value && storyLength.value >= catalog.value.limits.minStoryChars && !!draft.styleId && !!draft.qualityTierId);
 
 let estimateTimer: ReturnType<typeof setTimeout> | undefined;
-watch(() => [draft.styleId, draft.qualityTierId, draft.characterIds.join()], () => {
+// M2-BE-04 复审建议 2：把登录状态加入 watch 源——登录后回到首页，价格区间立即出现，
+// 不必等用户改一次选项
+watch(() => [auth.user?.id ?? '', draft.styleId, draft.qualityTierId, draft.characterIds.join()], () => {
   clearTimeout(estimateTimer);
   // M2-BE-04⑤：estimate 需登录——未登录访问首页时不发（此前控制台 401 报错）
   if (!auth.user || !draft.styleId || !draft.qualityTierId) return;

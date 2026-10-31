@@ -236,8 +236,11 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
   };
 }
 
-// M2-BE-04①：作品流水线任务重试耗尽（终态 failed）时把作品置 failed 的兜底表。
-// step 用任务对应的进行中状态；look.generate 的 payload 是 versionId，需反查项目。
+// M2-BE-04①：作品流水线任务重试耗尽（终态 failed）时的兜底表。
+// step 用任务对应的进行中状态；gen.poll/look.generate 的 payload 只有 takeId/versionId，需反查。
+// M2-BE-04 复审必改 1：gen.poll / segment.generate / look.generate 耗尽时先收口在途的
+// take / 形象版本（否则作品置 failed 可重试后，重试会被 running take / pending 版本卡死
+// 或重复提交上游）；三个分支收口成功即返回，PIPELINE_FAILED 只兜「无在途对象」的场景。
 const PIPELINE_FALLBACK = new Map([
   ['project.understand', { step: 'understanding', message: '故事理解遇到问题，可以重试或取消' }],
   ['project.bind_prompts', { step: 'rendering', message: '制作遇到问题，可以重试或取消' }],
@@ -250,23 +253,47 @@ const PIPELINE_FALLBACK = new Map([
 async function failProjectOnExhausted(db, job, logger) {
   const spec = PIPELINE_FALLBACK.get(job.type);
   if (!spec) return;
-  let projectId = job.payload?.projectId ?? null;
-  if (!projectId && job.type === 'gen.poll') {
-    const { rows } = await db.query(
-      `SELECT request->>'projectId' AS pid FROM gen_tasks gt
-         JOIN segment_takes t ON t.gen_task_id = gt.id WHERE t.id = $1`, [job.payload?.takeId]);
-    projectId = rows[0]?.pid ?? null;
+  try {
+    // ── 复审必改 1：在途 take / 形象版本收口（成功即返回，各分支自带作品终态）──
+    if (job.type === 'gen.poll') {
+      // 轮询任务耗尽 = 上游已提交、结果未知 → 与轮询超时同口径（unknown + TAKE_UNKNOWN）
+      const { rows } = await db.query(
+        `SELECT gt.request->>'projectId' AS pid, gt.user_id, gt.id AS gen_task_id
+           FROM segment_takes t JOIN gen_tasks gt ON gt.id = t.gen_task_id
+          WHERE t.id = $1 AND t.status = 'running'`, [job.payload?.takeId]);
+      const row = rows[0];
+      if (row) {
+        const { markTakeUnknown } = await import('./projects/segment.js');
+        await markTakeUnknown(db, null, { take: job.payload.takeId, projectId: row.pid,
+          userId: row.user_id, genTaskId: row.gen_task_id, logger });
+        return;
+      }
+      return; // take 不在 running（已被收口/已成功）：无需处理
+    }
+    if (job.type === 'segment.generate') {
+      const { settleExhaustedSegmentGenerate } = await import('./projects/segment.js');
+      if (await settleExhaustedSegmentGenerate(db, job.payload, logger)) return;
+    }
+    if (job.type === 'look.generate') {
+      const { settleExhaustedLookGenerate } = await import('./characters/service.js');
+      if (await settleExhaustedLookGenerate(db, { versionId: job.payload?.versionId }, logger)) return;
+    }
+    // ── 无在途对象（或 gen_task 已终态）→ 作品置 failed 兜底 ──
+    let projectId = job.payload?.projectId ?? null;
+    if (!projectId && job.type === 'look.generate') {
+      const { rows } = await db.query(
+        `SELECT pc.project_id FROM look_versions lv
+           JOIN project_cast pc ON pc.look_version_id = lv.id WHERE lv.id = $1`,
+        [job.payload?.versionId]);
+      projectId = rows[0]?.project_id ?? null;
+    }
+    if (!projectId) return;
+    const { markProjectPipelineFailed } = await import('./projects/state.js');
+    await markProjectPipelineFailed(db, { projectId, step: spec.step, message: spec.message, logger });
+  } catch (error) {
+    // 兜底自身失败不阻塞 job 记账（下次 cron/人工可再处理）；记日志供排查
+    logger?.error?.('pipeline_fail_fallback_error', { jobType: job.type, message: error?.message });
   }
-  if (!projectId && job.type === 'look.generate') {
-    const { rows } = await db.query(
-      `SELECT pc.project_id FROM look_versions lv
-         JOIN project_cast pc ON pc.look_version_id = lv.id WHERE lv.id = $1`,
-      [job.payload?.versionId]);
-    projectId = rows[0]?.project_id ?? null;
-  }
-  if (!projectId) return;
-  const { markProjectPipelineFailed } = await import('./projects/state.js');
-  await markProjectPipelineFailed(db, { projectId, step: spec.step, message: spec.message, logger });
 }
 
 export function createWorker({ db, logger, handlers, workerId, concurrency = 2, pollIntervalMs = 1000, leaseSeconds = 120 }) {
