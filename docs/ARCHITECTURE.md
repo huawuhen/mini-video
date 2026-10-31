@@ -36,7 +36,7 @@ mini-ai-video/
 │   │   ├─ db/           pg 连接池、事务（嵌套 savepoint）、迁移执行器
 │   │   ├─ auth/         手机号验证码、会话、CSRF、限流
 │   │   ├─ wallet/       账本、SKU 定价、报价、预占/结算/退回、兑换码
-│   │   ├─ payments/     易支付适配（签名/验签/客户端）与充值订单、回调、对账（M3）
+│   │   ├─ payments/     支付宝适配（RSA2 签名/验签/客户端）与充值订单、回调、对账（M3）
 │   │   ├─ catalog/      风格、画质档位、音色、运营配置（settings）
 │   │   ├─ characters/   数字资产库（数字人、照片、形象、版本）
 │   │   ├─ projects/     作品、角色表、片段、版本、成片、状态机、保存期
@@ -86,8 +86,8 @@ quotes(id, user_id, kind, ref_type, ref_id, params_hash, amount_fen, breakdown, 
 **支付（M3，PRD 6.4）**
 
 ```
-payment_orders(id po_, user_id, channel 'ezfp', out_trade_no UNIQUE (= id), trade_no, api_trade_no,
-               amount_fen, pay_type[alipay|wxpay], device[pc|mobile], status[created|paid|expired|failed],
+payment_orders(id po_, user_id, channel 'alipay', out_trade_no UNIQUE (= id), trade_no, buyer_id_masked,
+               amount_fen, device[pc|mobile], status[created|paid|expired|failed],
                client_ip, expires_at, paid_at, credited_ledger_id, notify_count, last_notify jsonb,
                created_at, updated_at)
   -- 索引：(user_id, created_at DESC)；(status, expires_at) WHERE status = 'created'（对账扫描）
@@ -95,7 +95,7 @@ payment_orders(id po_, user_id, channel 'ezfp', out_trade_no UNIQUE (= id), trad
 
 - 新增迁移 `NNN-payments.sql`（编号取当时最大号加 1，不改 001）；`newId` 前缀表加入 `po`。
 - 入账：事务里 `UPDATE payment_orders SET status='paid', paid_at=now() WHERE id=$1 AND status IN ('created','expired')`，影响 1 行才继续写账本 `recharge`（幂等键 `recharge:<orderId>`），同一事务内完成，重复通知命中 0 行直接返回 `success`。
-- 金额在边界转换：我方整数分 ⇄ 易支付元字符串（字符串解析 + 整数运算，不经过浮点）。
+- 金额在边界转换：我方整数分 ⇄ 支付宝元字符串（字符串解析 + 整数运算，不经过浮点）。
 
 **数字资产库**
 
@@ -332,6 +332,6 @@ export default {
 - 所有对象按 `user_id` 隔离；查询一律带 `user_id` 条件，查不到返回 404（不区分「不存在」和「无权」）。
 - 上传：类型白名单（校验文件头）、大小上限；下载与转存只经过 `engine/net`。
 - 日志脱敏：手机号、验证码、Cookie、签名链接不入日志。
-- **支付（M3）**：商户私钥、平台公钥、商户 ID 只来自环境变量（`EZFP_BASE_URL`、`EZFP_PID`、`EZFP_MERCHANT_PRIVATE_KEY`、`EZFP_PLATFORM_PUBLIC_KEY`，另需 `PUBLIC_API_BASE_URL` 与 `WEB_BASE_URL` 生成回调与跳转地址），仓库公开，不得入库；缺少任一项时支付功能关闭（`payTypes` 为空），不影响其他功能；生产环境回调地址必须是公网 HTTPS。
-- 支付适配器接口 `createEzfpClient({ baseUrl, pid, merchantPrivateKey, platformPublicKey, http, now })` → `{ create, query, close, refund, verifyNotify }`，签名与验签是纯函数；`http` 可注入，测试用**模拟易支付服务**和本地生成的 RSA 密钥对，不产生真实支付。
+- **支付（M3）**：AppID、应用私钥、支付宝公钥只来自环境变量（`ALIPAY_GATEWAY`、`ALIPAY_APP_ID`、`ALIPAY_APP_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY`、`PAYMENTS_NOTIFY_URL`、`WEB_BASE_URL`）；缺任一项时在线充值关闭（`enabled=false`），兑换码不受影响。日志不记录私钥与签名。
+- 支付适配器接口 `createAlipayClient({ gateway, appId, appPrivateKey, alipayPublicKey, http, now })` → `{ pagePayUrl, wapPayUrl, query, close, refund, verifyNotify }`；不引入官方 SDK，签名/验签自行实现并用本地生成的 RSA 密钥对测试；自动化测试用本地模拟网关，零真实费用。
 - 回调处理顺序固定：验签 → `trade_status` → `pid` → 订单存在 → 金额一致 → 主动查单核验 → 事务入账；任何一步失败都不入账并写审计日志。验签要兼容平台新增字段（以收到的全部非空参数参与）。
