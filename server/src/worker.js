@@ -188,17 +188,26 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
   } else if (config.providers.real && config.production) {
     throw new Error('生产环境 GEN_UPSTREAMS=real 必须装配渠道路由层（CHANNEL_SECRET_KEY + 种子引导）');
   }
+  // M2-OPS-03 修复：渠道路由模式下视频/图片/LLM 全部由处理器经 channelRouter pick，
+  // 注入式 provider 仅是 mock 回退——生产 + channels 模式不注入是正确状态（此前守卫会误拒，
+  // 生产 worker 在渠道路由模式下从未启动过；e2e/联调都是自驱 handler 或 development 口径）
   if (!imageModel) {
-    if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
-    imageModel = createDevImageProvider();
+    if (!useChannels) {
+      if (config.production) throw new Error('生产环境必须注入真实图片模型 provider（engine/providers）');
+      imageModel = createDevImageProvider();
+    }
   }
   if (!story) {
-    if (config.production) throw new Error('生产环境必须注入真实 storyAgent（engine/story + LLM 配置）');
-    story = createDevStoryAgent();
+    if (!useChannels) {
+      if (config.production) throw new Error('生产环境必须注入真实 storyAgent（engine/story + LLM 配置）');
+      story = createDevStoryAgent();
+    }
   }
   if (!video) {
-    if (config.production) throw new Error('生产环境必须注入真实视频渠道 provider（engine/providers）');
-    video = createDevVideoProvider();
+    if (!useChannels) {
+      if (config.production) throw new Error('生产环境必须注入真实视频渠道 provider（engine/providers）');
+      video = createDevVideoProvider();
+    }
   }
   logger.info('worker_upstreams', upstreamSummary);
   const render = createRender({ logger });
