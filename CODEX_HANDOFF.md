@@ -83,6 +83,7 @@
 | M2-WEB-01（前端切换真实 API 联调） | Web（本机开发 Agent，含 BE 配合：local-mock 驱动） | `agent/web/M2-WEB-01-real-api` | `server/src/engine/providers/drivers/local-mock/**` `server/src/engine/providers/{registry,contract-test}.js` `server/src/worker.js`（seed/deps） `server/scripts/channel-cli.js` `apps/web/**`（联调修复） `server/test/**` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-26 |
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
 | M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并；内测栈保留，暂停新增真实费用） | 2026-10-31 |
+| M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | 进行中（5 项：重试耗尽置 failed/开发桩 bindPrompts/looksPaidFen/钱包导航高亮/未登录 estimate；见 TASKS M2-BE-04） | 2026-11-01 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
