@@ -2,10 +2,8 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { createRedeemCodes, newCode, hashOf } from '../scripts/redeem-create.js';
-import { createRedeemCodes as _guard } from '../scripts/redeem-create.js'; // ESM 单例检查占位
+import { normalizeRedeemCode } from '../src/wallet/redeem-code.js';
 import { createTestDb } from './helpers/db.js';
-
-void _guard;
 
 describe('redeem:create（M2-OPS-03 兑换码生成）', () => {
   let ctx;

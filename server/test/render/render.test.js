@@ -145,6 +145,29 @@ describe('render（M1-RND-01）', () => {
     assert.ok(tinyYavg > 0, `极短样片也能提取（YAVG=${tinyYavg}）`);
   });
 
+  // M2-OPS-03 复审必改 3：片段卡缩略图海报帧——默认取 1 秒处（红0.8秒→绿2.2秒，1 秒处应为绿；
+  // 绿段起点避开采样点，防止边界帧舍入），片长不足 atSeconds 时回退首帧（仍须产出一帧）。
+  test('extractPosterFrame：取 1 秒处帧；短片回退首帧', async () => {
+    await mkdir(SAMPLE_DIR, { recursive: true });
+    const rg = join(SAMPLE_DIR, 'red-green.mp4');
+    await ffmpeg(['-y',
+      '-f', 'lavfi', '-i', 'color=c=red:size=320x480:rate=30:duration=0.8',
+      // 纯绿 0x00FF00（luma≈150）：ffmpeg 的 green 是 #008000，luma≈76 与红相同无法用 YAVG 区分
+      '-f', 'lavfi', '-i', 'color=c=0x00FF00:size=320x480:rate=30:duration=2.2',
+      '-filter_complex', '[0:v][1:v]concat=n=2:v=1:a=0',
+      '-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p', rg]);
+    const posterPath = await render.extractPosterFrame(rg);
+    await access(posterPath);
+    const posterYavg = await frameYavg(posterPath);
+    assert.ok(posterYavg > 100, `1 秒处应为绿色（YAVG=${posterYavg}，红约 76/绿约 150）——取到 0 秒红帧会挂在这里`);
+    // 极短样片（0.2 秒 < atSeconds=1）：回退首帧，仍产出一帧
+    const tiny = await makeVideo('poster-tiny.mp4', { duration: 0.2 });
+    const tinyPoster = await render.extractPosterFrame(tiny);
+    await access(tinyPoster);
+    const tinyYavg = await frameYavg(tinyPoster);
+    assert.ok(tinyYavg > 0, `短片回退首帧也能产出海报（YAVG=${tinyYavg}）`);
+  });
+
   test('inspect：分辨率放宽——720x1280 与 1088x1920 通过，360x640 与比例错判不符', async () => {
     const atTier = await render.inspect(normal, { ratio: RATIO, resolution: RESOLUTION });
     assert.ok(!atTier.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));

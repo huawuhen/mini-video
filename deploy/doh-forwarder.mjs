@@ -4,7 +4,9 @@
 // （DoH 实证可用，M0/M2-BE-03 冒烟同款结论）。本服务在容器网络内提供 UDP 53，上游走
 // 阿里 DoH JSON API（https://223.5.5.5/resolve，443 不被劫持），让 safeFetch 解析到真实
 // 公网地址——SSRF 防护零改动、不写死任何业务 IP。
-// 只支持 A/AAAA 查询（node dns.lookup 的全部需求）；其它类型回 NOTIMP（上层会退回 IPv4）。
+// 只支持 A 查询；AAAA 一律回空答案（NOERROR、0 条——容器网络本无 IPv6，且压缩写法
+// 如 2408:8000::1 去冒号展开会编出错地址，不如明确告知无 AAAA 让上层退回 IPv4）；
+// 其它类型回 NOTIMP（上层会退回 IPv4）。
 // 用法：node doh-forwarder.mjs [监听端口=53]；健康自检：启动时解析一次 cdnh5.redith.cn。
 import dgram from 'node:dgram';
 
@@ -39,7 +41,7 @@ async function dohQuery(name, type) {
       if (!response.ok) continue;
       const data = await response.json();
       const answers = (data.Answer ?? [])
-        .filter((item) => item.type === 1 || item.type === 28)
+        .filter((item) => item.type === 1)
         .map((item) => ({ type: item.type, data: item.data }));
       if (answers.length) return answers;
     } catch { /* 换下一个 DoH */ }
@@ -55,9 +57,7 @@ function buildReply(query, question, answers) {
   const questionSection = query.subarray(12, question.p_end);
   const parts = [header, questionSection];
   for (const answer of answers) {
-    const rdata = answer.type === 1
-      ? Buffer.from(answer.data.split('.').map(Number))
-      : Buffer.from(answer.data.replace(/:/g, '').match(/../g).map((h) => parseInt(h, 16)));
+    const rdata = Buffer.from(answer.data.split('.').map(Number));
     const rr = Buffer.alloc(12);
     rr.writeUInt16BE(0xC00C, 0);        // name 指针 → question
     rr.writeUInt16BE(answer.type, 2);
@@ -85,6 +85,10 @@ sock.on('message', async (query, rinfo) => {
     if (!question) return sock.send(buildError(query, 1), rinfo.port, rinfo.address);
     if (question.type !== 1 && question.type !== 28) {
       return sock.send(buildError(query, 4), rinfo.port, rinfo.address); // NOTIMP：非 A/AAAA
+    }
+    if (question.type === 28) {
+      // AAAA 一律空答案（NOERROR、0 条，见文件头注释）；不是 NXDOMAIN——域名存在，只是没有 AAAA
+      return sock.send(buildReply(query, question, []), rinfo.port, rinfo.address);
     }
     const key = `${question.name}|${question.type}`;
     const hit = cache.get(key);

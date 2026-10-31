@@ -95,7 +95,7 @@ describe('wallet（M1-BE-02）', () => {
   });
 
   test('兑换码：成功入账、幂等重放、同键不同码 409、无效与已用 400', async () => {
-    const code1 = 'MIV-TEST-CODE-0001';
+    const code1 = 'MIV-TESTC-0DE01';
     await insertRedeemCode(ctx.db, code1, 1000);
     let res = await post(base, '/wallet/redeem', { code: code1, idempotencyKey: 'idem-redeem-0001' }, { cookie, csrf });
     assert.equal(res.status, 200);
@@ -107,13 +107,16 @@ describe('wallet（M1-BE-02）', () => {
     assert.deepEqual(await res.json(), { amountFen: 1000, wallet: { availableFen: 1000, frozenFen: 0 } });
 
     // 同键不同参数 → 409
-    await insertRedeemCode(ctx.db, 'MIV-TEST-CODE-0002', 500);
-    res = await post(base, '/wallet/redeem', { code: 'MIV-TEST-CODE-0002', idempotencyKey: 'idem-redeem-0001' }, { cookie, csrf });
+    await insertRedeemCode(ctx.db, 'MIV-TESTC-0DE02', 500);
+    res = await post(base, '/wallet/redeem', { code: 'MIV-TESTC-0DE02', idempotencyKey: 'idem-redeem-0001' }, { cookie, csrf });
     assert.equal(res.status, 409);
     assert.equal((await res.json()).code, 'IDEMPOTENCY_CONFLICT');
 
-    // 无效码
+    // 无效码：形式合法但不存在（不再用不合法形式——那会在规范化层就被拒绝，口径相同）
     res = await post(base, '/wallet/redeem', { code: 'MIV-NOPE', idempotencyKey: 'idem-redeem-0002' }, { cookie, csrf });
+    assert.equal(res.status, 400);
+    assert.equal((await res.json()).message, '兑换码无效或已被使用');
+    res = await post(base, '/wallet/redeem', { code: 'MIV-AAAAA-BBBBB', idempotencyKey: 'idem-redeem-0002b' }, { cookie, csrf });
     assert.equal(res.status, 400);
     assert.equal((await res.json()).message, '兑换码无效或已被使用');
 
@@ -133,15 +136,45 @@ describe('wallet（M1-BE-02）', () => {
 
   test('并发兑换同一码（不同幂等键）只成功一次', async () => {
     const f = await signUp(base, provider, '15800000006'); // 独立用户，避免与兑换码尝试上限计数互相干扰
-    await insertRedeemCode(ctx.db, 'MIV-TEST-CODE-0003', 777);
+    await insertRedeemCode(ctx.db, 'MIV-TESTC-0DE03', 777);
     const results = await Promise.all(
       Array.from({ length: 8 }, (_, i) =>
-        post(base, '/wallet/redeem', { code: 'MIV-TEST-CODE-0003', idempotencyKey: `idem-race-000${i}` }, { cookie: f.cookie, csrf: f.body.csrfToken })),
+        post(base, '/wallet/redeem', { code: 'MIV-TESTC-0DE03', idempotencyKey: `idem-race-000${i}` }, { cookie: f.cookie, csrf: f.body.csrfToken })),
     );
     assert.equal(results.filter((r) => r.status === 200).length, 1);
     assert.equal(results.filter((r) => r.status === 400).length, 7);
     const wallet = await (await request(base, 'GET', '/wallet', { cookie: f.cookie })).json();
     assert.equal(wallet.availableFen, 777);
+  });
+
+  // M2-OPS-03 复审必改 2：手机誊写误差（小写/空格/横线丢失/O↔0）必须能兑换成功，
+  // 且不消耗每小时 10 次的尝试额度（额度只挡真暴力猜码）。
+  test('兑换码誊写误差全部兑换成功（规范化后哈希一致）', async () => {
+    const f = await signUp(base, provider, '15800000007');
+    const real = 'MIV-F3T0N-PB5ZW'; // 含 0/O、5/S 易混位
+    await insertRedeemCode(ctx.db, real, 500);
+    const variants = [
+      real.toLowerCase(),            // 全小写
+      `  ${real}  `,                 // 首尾空格
+      real.replace(/-/g, ' '),       // 横线记成空格
+      real.replace(/-/g, ''),        // 少横线
+      'MIVF3T0N-PB5ZW',              // 横线错位
+      real.replace('0', 'O'),        // 0 看成 O 输入
+    ];
+    for (const [i, v] of variants.entries()) {
+      const res = await post(base, '/wallet/redeem', { code: v, idempotencyKey: `idem-typo-000${i}` },
+        { cookie: f.cookie, csrf: f.body.csrfToken });
+      if (i === 0) {
+        assert.equal(res.status, 200, `首个誊写变体 ${JSON.stringify(v)} 必须兑换成功`);
+        assert.equal((await res.json()).amountFen, 500);
+      } else {
+        // 同一码已用：仍须走到「已被使用」而不是「无效」——证明规范化命中了同一哈希
+        assert.equal(res.status, 400);
+        assert.equal((await res.json()).message, '兑换码无效或已被使用');
+      }
+    }
+    const wallet = await (await request(base, 'GET', '/wallet', { cookie: f.cookie })).json();
+    assert.equal(wallet.availableFen, 500, '誊写误差不重复入账');
   });
 
   test('流水分页：keyset 翻页与非法 cursor', async () => {

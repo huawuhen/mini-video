@@ -650,9 +650,13 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     // 第 2 段（prev_tail）：imageRefs 以尾帧开头
     await generate({ projectId, idx: 1 }, ctxOf());
     const seg1Take = (await ctx.db.query(
-      `SELECT t.id, t.last_frame_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
+      `SELECT t.id, t.last_frame_key, t.poster_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
         WHERE s.project_id = $1 AND s.idx = 0`, [projectId])).rows[0];
     assert.ok(seg1Take.last_frame_key, '第 1 段已提取尾帧');
+    // M2-OPS-03 复审必改 3：成功路径抽 1 秒处海报帧并写 poster_key（此前该列从无代码写入，
+    // 前端片段缩略图永远显示「生成中…」）
+    assert.ok(seg1Take.poster_key, '第 1 段已写 poster_key');
+    assert.ok(seg1Take.poster_key.endsWith('.poster.jpg'), `poster key 约定 .poster.jpg：${seg1Take.poster_key}`);
     assert.ok(videoProvider.submissions[1].imageRefs[0].includes('takes/'),
       '第 2 段以尾帧为首个参考（签名链接）');
     assert.ok(videoProvider.submissions[1].imageRefs[0].startsWith('http'), '尾帧同样是签名链接');
@@ -680,9 +684,10 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
        WHERE s.project_id = $1 AND s.idx = 0`, [projectId])).rows[0];
     assert.equal(usageRow.tokens, '108900', 'usage 透传落库');
     const { rows: takes } = await ctx.db.query(
-      `SELECT t.status, t.video_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
-        WHERE s.project_id = $1 ORDER BY s.idx`, [projectId]);
+      `SELECT t.status, t.video_key, t.poster_key FROM segment_takes t JOIN segments s ON s.id = t.segment_id
+       WHERE s.project_id = $1 ORDER BY s.idx`, [projectId]);
     assert.ok(takes.every((take) => take.status === 'succeeded' && take.video_key));
+    assert.ok(takes.every((take) => take.poster_key), '每段 take 都有海报帧 key');
   }, { timeout: 240_000 });
 
   test('inspect 不通过（全黑）：take failed、退回该段预占、项目 failed；retry 免费重建并交付', async () => {
@@ -1052,6 +1057,48 @@ describe('projects（M1-BE-05 复审修复）', () => {
     const detail = await getProjectDetail(ctx.db, { userId, projectId });
     assert.equal(detail.status, 'delivered');
     assert.equal(await countTempDirs(), before, 'job 结束后无临时目录残留');
+  }, { timeout: 240_000 });
+
+  // M2-OPS-03 复审必改 3：海报帧是展示增强——抽帧/转存失败只记日志，take 照常成功结算，
+  // poster_key 保持 NULL（前端以「已完成」文案兜底），不得因此判片段失败。
+  test('海报帧失败不阻塞：extractPosterFrame 抛错 → take 仍 succeeded、结算照常、poster_key 为空', async () => {
+    const sample = await makeVideo('poster-broken-30s.mp4', { duration: 30 });
+    const projectId = await driveToRendering('posterbad-0001');
+    const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
+      request: { kind: 'project_render', projectId } }));
+    await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'posterbad-cc', config });
+    const timeline = JSON.stringify({ shots: [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21),
+      SHOT(4, 21, 30)], avoid: [] });
+    const bind = createBindPromptsHandler({ db: ctx.db, logger: silentLogger,
+      storyAgent: createStoryAgent({ llm: createMockLlm([timeline, timeline]), logger: silentLogger }) });
+    await bind({ projectId }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
+    const videoProvider = fakeVideoProvider({ pollResults: {
+      // 只让第 1 段成功：第 2 段明确失败，链到该段为止（避免无限 running 的轮询循环）
+      up_1: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
+      up_2: [{ status: 'failed', error: '上游失败（测试）' }] } });
+    const render = { ...createRender({ logger: silentLogger }),
+      extractPosterFrame: async () => { throw new Error('ffmpeg 抽帧失败（模拟）'); } };
+    const storage = httpMemoryStorage();
+    const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage });
+    const poll = createGenPollHandler({ db: ctx.db, logger: silentLogger, config, videoProvider, storage, render,
+      downloadToTempFile: async (_url, localPath) => { await copyFile(sample, localPath); return localPath; } });
+    const ctxOf = () => ({ db: ctx.db, logger: silentLogger, enqueue: async (spec) => {
+      if (spec.type === 'segment.generate') return generate(spec.payload, ctxOf());
+      if (spec.type === 'gen.poll') return poll(spec.payload, ctxOf());
+    }, extendLease: async () => {} });
+    await generate({ projectId, idx: 0 }, ctxOf());
+    await poll({ takeId: (await ctx.db.query(
+      `SELECT t.id FROM segment_takes t JOIN segments s ON s.id = t.segment_id WHERE s.project_id = $1 AND s.idx = 0`,
+      [projectId])).rows[0].id }, ctxOf());
+    const take = (await ctx.db.query(
+      `SELECT t.status, t.video_key, t.poster_key FROM segment_takes t
+         JOIN segments s ON s.id = t.segment_id WHERE s.project_id = $1 AND s.idx = 0`,
+      [projectId])).rows[0];
+    assert.equal(take.status, 'succeeded', '抽帧失败不得改变 take 结果');
+    assert.ok(take.video_key, '视频照常转存');
+    assert.equal(take.poster_key, null, 'poster_key 保持 NULL');
+    const { rows: wallet } = await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
+    assert.ok(wallet[0].frozen_fen > 0, '后续段未跑完冻结仍在，但第 1 段已结算（不阻塞）');
   }, { timeout: 240_000 });
 
   test('必改 2 补充：形象 unknown → failed(LOOK_UNKNOWN) → retry 拒绝、上游不加调、cancel 退未冻结', async () => {

@@ -4,22 +4,21 @@
 // 规则：码只在生成时打印一次（stdout），数据库只存 sha256 哈希（redeem_codes.code_hash）；
 // 每批写一条管理审计（actor=redeem-create，detail 只含数量/金额/有效期，绝不含码本身）。
 // 金额为整数元（内测面额 50/100/500），有效天数缺省 365。
-import { createHash, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
 import { loadConfig } from '../src/config.js';
 import { createDb } from '../src/db/pool.js';
 import { createLogger } from '../src/logger.js';
-
-// Crockford base32（去 I L O U，避免手机上手抄/口误）
-const ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+import { REDEEM_ALPHABET, REDEEM_BODY_LENGTH, REDEEM_CODE_PREFIX, redeemCodeHash } from '../src/wallet/redeem-code.js';
 
 /** 生成一个可人工抄写的码：MIV-XXXXX-XXXXX（10 字符 ≈ 50 bit 熵）。 */
 export function newCode() {
   let body = '';
-  for (let i = 0; i < 10; i += 1) body += ALPHABET[randomInt(ALPHABET.length)];
-  return `MIV-${body.slice(0, 5)}-${body.slice(5)}`;
+  for (let i = 0; i < REDEEM_BODY_LENGTH; i += 1) body += REDEEM_ALPHABET[randomInt(REDEEM_ALPHABET.length)];
+  return `${REDEEM_CODE_PREFIX}-${body.slice(0, 5)}-${body.slice(5)}`;
 }
 
-export const hashOf = (code) => createHash('sha256').update(code).digest('hex');
+// 哈希口径与兑换侧共用（src/wallet/redeem-code.js：规范化后 sha256；生成即规范形式，历史码哈希不变）
+export const hashOf = redeemCodeHash;
 
 /**
  * 生成并落库 count 张兑换码；返回码列表（调用方负责只打印一次）。

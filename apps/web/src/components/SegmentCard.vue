@@ -9,12 +9,18 @@ const props = defineProps<{ segment: Segment; ratio: Ratio; editable: boolean }>
 const emit = defineEmits<{ select: [takeId: string]; edit: []; regenerate: [] }>();
 const selected = computed(() => props.segment.takes.find((t) => t.id === props.segment.selectedTakeId));
 const running = computed(() => props.segment.takes.some((t) => t.status === 'running' || t.status === 'pending'));
+// M2-OPS-03 复审必改 3：succeeded 无海报图（poster 抽帧失败/老数据）时显示「已完成」，
+// 不得再落到「生成中…」误导用户。
+const mediaText = computed(() => {
+  if (selected.value?.status === 'succeeded') return '已完成';
+  return running.value ? '生成中…' : '排队中';
+});
 </script>
 
 <template>
   <div class="seg miv-card">
     <div class="media">
-      <MediaPlaceholder :src="selected?.posterUrl" :ratio="ratio" :loading="!selected && running" text="生成中…" />
+      <MediaPlaceholder :src="selected?.posterUrl" :ratio="ratio" :loading="!selected && running" :text="mediaText" />
     </div>
     <div class="body">
       <div class="head">
