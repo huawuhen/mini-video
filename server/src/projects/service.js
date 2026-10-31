@@ -253,8 +253,17 @@ export async function buildPricing(t, { userId, project }) {
   const looksFen = looksToGenerate * (imageSku[0]?.price_fen ?? 0);
   const videoFen = segments.reduce((sum, segment) => sum + segment.duration_seconds, 0) * unit;
   const money = await projectMoneySummary(t, { userId, projectId: project.id });
+  // M2-BE-04③（API 2026-10-31 新增 looksPaidFen）：本作品已结算的形象费——
+  // 确认点 B「角色形象（已支付）」显示它（此前显示 looksFen=待生成费，交付前恒 0，误导）
+  const { rows: lookSettled } = await t.query(
+    `SELECT COALESCE(SUM(l.amount_fen), 0)::int AS fen FROM ledger l
+       JOIN look_versions lv ON l.ref_id = lv.id
+       JOIN project_cast pc ON pc.look_version_id = lv.id
+      WHERE pc.project_id = $1 AND l.kind = 'settle' AND l.ref_type = 'look'`,
+    [project.id]);
   return {
-    looksToGenerate, looksFen, videoFen, totalFen: looksFen + videoFen,
+    looksToGenerate, looksFen, looksPaidFen: lookSettled[0]?.fen ?? 0,
+    videoFen, totalFen: looksFen + videoFen,
     reservedFen: money.reservedFen, settledFen: money.settledFen, refundedFen: money.refundedFen,
     frozenFen: money.frozenFen,
   };

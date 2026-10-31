@@ -75,9 +75,9 @@ async function confirm() {
 
   <section class="miv-card pricing" data-tour="cast-pricing">
     <div class="miv-section-title">费用明细</div>
-    <div class="line"><span>角色形象（已支付）</span><PriceTag :fen="project.pricing.looksFen" size="sm" /></div>
+    <div class="line"><span>角色形象（已支付）</span><PriceTag :fen="project.pricing.looksPaidFen ?? 0" size="sm" /></div>
     <div class="line"><span>视频生成 · {{ project.story?.totalSeconds }} 秒 · {{ catalogStore.tierName(project.qualityTierId) }}</span><PriceTag :fen="project.pricing.videoFen" size="sm" /></div>
-    <div class="line total"><span>本片总价</span><PriceTag :fen="project.pricing.totalFen" /></div>
+    <div class="line total"><span>本片总价（不含已支付形象费）</span><PriceTag :fen="project.pricing.totalFen" /></div>
     <p class="miv-hint">点「确认并开始制作」时预占视频费，生成失败的片段会退回。当前余额 ¥{{ ((walletStore.wallet?.availableFen ?? 0) / 100).toFixed(2) }}</p>
   </section>
 

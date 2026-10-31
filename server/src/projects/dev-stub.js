@@ -38,8 +38,36 @@ export function createDevStoryAgent() {
       return { ...plan, degraded: true, inputKind: 'script', expanded: false,
         script: plan.synopsis, usage: USAGE };
     },
-    async bindPrompts() {
-      throw new Error('开发桩不提供 bindPrompts，请注入真实 storyAgent');
+    /**
+     * M2-BE-04②：确定性 bindPrompts 桩——GEN_UPSTREAMS=mock 的开发环境也能走完
+     * 确认点 B 之后的完整流程（此前直接抛错，mock 开发栈到 rendering 即断）。
+     * 单镜头直述 + 对白逐字嵌入，字段契约与 engine/story 相同（degraded: true 标记桩产出）。
+     */
+    async bindPrompts({ segments, cast, bible }) {
+      const startDefault = 'the characters stand naturally as the scene begins';
+      return segments.map((segment, index) => {
+        const names = (segment.castIndexes ?? []).map((i) => cast[i]?.id).filter(Boolean);
+        const spoken = (segment.dialogue ?? []).map((line) => {
+          const speaker = cast[line.castIndex]?.id ?? cast[line.castIndex]?.name ?? 'the character';
+          return { castId: speaker, line: line.line, delivery: 'calmly' };
+        });
+        return {
+          segmentIndex: index,
+          prompt: `[dev stub] ${segment.plot ?? ''}`.trim(),
+          imageRefs: names.map((id) => cast.find((c) => c.id === id)?.lookImageKey).filter(Boolean),
+          audioRefs: [],
+          usePrevTail: segment.transition === 'prev_tail',
+          droppedRefs: 0,
+          startState: index > 0 ? (bible?.characters?.[0]?.brief ?? startDefault) : startDefault,
+          endState: segment.endState ?? startDefault,
+          shots: [{ start: 0, end: segment.durationSeconds ?? 5, size: 'Medium shot',
+            transition: 'cut', action: segment.plot ?? 'the scene continues',
+            dialogue: (segment.dialogue ?? []).map((line, li) => ({
+              castIndex: line.castIndex, line: line.line, delivery: spoken[li]?.delivery })),
+            reaction: '', environment: 'plain daylight', camera: 'static' }],
+          skillId: 'generic', skillVersion: 'dev', degraded: true,
+        };
+      });
     },
   };
 }

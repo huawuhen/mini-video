@@ -101,7 +101,9 @@ export interface Segment {
   selectedTakeId?: string; takes: Take[];
 }
 export interface Pricing {
-  looksToGenerate: number; looksFen: number; videoFen: number; totalFen: number;
+  looksToGenerate: number; looksFen: number;   // 尚需生成的形象费（确认点 A）
+  looksPaidFen: number;                        // 已结算的形象费（确认点 B「已支付」行；2026-10-31 新增）
+  videoFen: number; totalFen: number;          // totalFen = looksFen + videoFen（不含已支付形象费）
   reservedFen: number; settledFen: number; refundedFen: number;
 }
 export interface Render { id: string; status: GenStatus; videoUrl?: string; coverUrl?: string; durationSeconds?: number; createdAt: string }

@@ -398,7 +398,7 @@ function seedDemo() {
       story: { inputKind: 'idea', expanded: true, script: expandIdea('周末带宝宝去公园野餐，宝宝第一次放风筝，开心得不得了。', ['宝宝', '妈妈']), synopsis: '周末一家人去公园野餐，宝宝第一次放风筝。', totalSeconds: 60, segmentCount: 2, compressed: false },
       cast: [baby, mom].map((c) => ({ id: uid('cast'), name: c.name, description: c.description || '', gender: c === mom ? 'female' : 'unknown', ageGroup: c === mom ? 'middle' : 'child', characterId: c.id, matchSource: 'user', look: { status: 'ready', versionId: c.looks[0].selectedVersionId, imageUrl: c.looks[0].imageUrl, versions: clone(c.looks[0].versions) }, voice: { voiceId: c.defaultVoiceId!, source: 'default' } })),
       segments: segs, voicesEnabled: true,
-      pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 1200, refundedFen: 0 },
+      pricing: { looksToGenerate: 0, looksFen: 0, looksPaidFen: 120, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 1200, refundedFen: 0 },
       render: { id: uid('rnd'), status: 'succeeded', coverUrl: cover, durationSeconds: 60, createdAt: iso(delivered) },
       deliveredAt: iso(delivered), stageAt: delivered, readyAt: {}, selectedCharacterIds: [baby.id, mom.id],
     };
@@ -426,7 +426,7 @@ function seedDemo() {
       cast: [{ id: uid('cast'), name: baby.name, description: baby.description || '', gender: 'unknown', ageGroup: 'child', characterId: baby.id, matchSource: 'user', look: { status: 'ready', versionId: baby.looks[0].selectedVersionId, imageUrl: baby.looks[0].imageUrl, versions: clone(baby.looks[0].versions) }, voice: { voiceId: baby.defaultVoiceId!, source: 'default' } }],
       segments: segs, voicesEnabled: true,
       // 第 1 段已结算、第 2 段失败已退回；reservedFen 保持 0，重试完成后不会重复动钱包
-      pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 600, refundedFen: 600 },
+      pricing: { looksToGenerate: 0, looksFen: 0, looksPaidFen: 120, videoFen: 1200, totalFen: 1200, reservedFen: 0, settledFen: 600, refundedFen: 600 },
       error: { code: 'SEGMENT_FAILED', message: '片段 2 生成失败，可重试', step: 'rendering' },
       stageAt: now(), readyAt: { [runningId]: now() - 30_000 }, selectedCharacterIds: [baby.id],
     };
@@ -590,7 +590,7 @@ export const mockApi: MivApi = {
       id: uid('prj'), title: body.title || '', status: 'understanding', group: 'active', progress: { percent: 5, message: 'AI 正在细读您的故事…' },
       createdAt: iso(), updatedAt: iso(), storyText: body.storyText.trim(), sourceType: body.sourceType, styleId: body.styleId,
       qualityTierId: body.qualityTierId, ratio: body.ratio || '9:16', cast: [], segments: [], voicesEnabled: false,
-      pricing: { looksToGenerate: 0, looksFen: 0, videoFen: 0, totalFen: 0, reservedFen: 0, settledFen: 0, refundedFen: 0 },
+      pricing: { looksToGenerate: 0, looksFen: 0, looksPaidFen: 0, videoFen: 0, totalFen: 0, reservedFen: 0, settledFen: 0, refundedFen: 0 },
       stageAt: now(), readyAt: {}, selectedCharacterIds: body.characterIds,
     };
     state.projects.unshift(p);

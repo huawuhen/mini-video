@@ -236,6 +236,39 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
   };
 }
 
+// M2-BE-04①：作品流水线任务重试耗尽（终态 failed）时把作品置 failed 的兜底表。
+// step 用任务对应的进行中状态；look.generate 的 payload 是 versionId，需反查项目。
+const PIPELINE_FALLBACK = new Map([
+  ['project.understand', { step: 'understanding', message: '故事理解遇到问题，可以重试或取消' }],
+  ['project.bind_prompts', { step: 'rendering', message: '制作遇到问题，可以重试或取消' }],
+  ['segment.generate', { step: 'rendering', message: '制作遇到问题，可以重试或取消' }],
+  ['gen.poll', { step: 'rendering', message: '制作遇到问题，可以重试或取消' }],
+  ['project.compose', { step: 'composing', message: '拼接遇到问题，可以重试或取消' }],
+  ['look.generate', { step: 'casting', message: '角色形象生成遇到问题，可以重试或取消' }],
+]);
+
+async function failProjectOnExhausted(db, job, logger) {
+  const spec = PIPELINE_FALLBACK.get(job.type);
+  if (!spec) return;
+  let projectId = job.payload?.projectId ?? null;
+  if (!projectId && job.type === 'gen.poll') {
+    const { rows } = await db.query(
+      `SELECT request->>'projectId' AS pid FROM gen_tasks gt
+         JOIN segment_takes t ON t.gen_task_id = gt.id WHERE t.id = $1`, [job.payload?.takeId]);
+    projectId = rows[0]?.pid ?? null;
+  }
+  if (!projectId && job.type === 'look.generate') {
+    const { rows } = await db.query(
+      `SELECT pc.project_id FROM look_versions lv
+         JOIN project_cast pc ON pc.look_version_id = lv.id WHERE lv.id = $1`,
+      [job.payload?.versionId]);
+    projectId = rows[0]?.project_id ?? null;
+  }
+  if (!projectId) return;
+  const { markProjectPipelineFailed } = await import('./projects/state.js');
+  await markProjectPipelineFailed(db, { projectId, step: spec.step, message: spec.message, logger });
+}
+
 export function createWorker({ db, logger, handlers, workerId, concurrency = 2, pollIntervalMs = 1000, leaseSeconds = 120 }) {
   const types = Object.keys(handlers);
   let stopping = false;
@@ -259,6 +292,10 @@ export function createWorker({ db, logger, handlers, workerId, concurrency = 2, 
     } catch (err) {
       const { retry, updated } = await fail(db, job, workerId, err);
       log[retry ? 'warn' : 'error']('job_failed', { retry, updated, ms: Date.now() - startedAt, err });
+      // M2-BE-04①：重试耗尽（终态 failed）且是作品流水线任务 → 作品置 failed（A 口径冻结保持，
+      // 可 retry/取消），不再永远停在进行中。failed 时 updated=false（租约已失）也兜底：
+      // job 已是终态 failed 即可（fail() 的条件更新输掉竞争不代表作品不该置 failed）。
+      if (!retry) await failProjectOnExhausted(db, job, log);
     }
     return true;
   }

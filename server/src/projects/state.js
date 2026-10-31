@@ -49,6 +49,36 @@ export async function transition(t, { projectId, userId, from, to, pausedFrom = 
   return rows[0];
 }
 
+/**
+ * M2-BE-04①：作品流水线任务在队列里重试耗尽（job 终态 failed）时的兜底——
+ * 此前 bind_prompts 等连续失败 5 次后 job 标 failed，但作品永远停在进行中
+ * （无 error、视频费一直冻结）。这里把作品置 failed（带 step 与中文原因），
+ * 金额按 A 口径保持冻结：retry 免费重建、cancel 一次性退回未结算部分。
+ * 幂等：仅当作品仍处于进行中状态才迁移（已是 failed/delivered/canceled 则不动）。
+ */
+export async function markProjectPipelineFailed(db, { projectId, step, code = 'PIPELINE_FAILED',
+  message = '制作遇到问题，可以重试或取消', logger }) {
+  try {
+    await db.tx(async (t) => {
+      const { rows } = await t.query(
+        `UPDATE projects SET status = 'failed', paused_from = NULL, updated_at = now(),
+            error = $2, progress = jsonb_build_object('percent', 0, 'message', $3::text)
+          WHERE id = $1 AND deleted_at IS NULL
+            AND status IN ('understanding', 'casting', 'rendering', 'composing', 'paused')
+          RETURNING user_id`,
+        [projectId, JSON.stringify({ code, step, message }), message],  // $1 id / $2 error / $3 message
+      );
+      if (rows.length) {
+        await appendEvent(t, { projectId, status: 'failed',
+          progress: { percent: 0, message: '制作失败' }, changed: [] });
+      }
+    });
+  } catch (error) {
+    // 兜底自身失败不阻塞 job 记账（下次 cron/人工可再处理）；记日志供排查
+    logger?.error?.('pipeline_fail_fallback_error', { projectId, step, message: error?.message });
+  }
+}
+
 /** 只更新进度（状态不变），如 rendering 内每完成一段推进一次。 */
 export async function updateProgress(t, { projectId, progress, changed = [] }) {
   const value = typeof progress === 'function' ? progress(0, 0) : progress;

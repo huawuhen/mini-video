@@ -17,7 +17,9 @@ const nav = [
 ];
 const tabs = nav.filter((n) => n.tab);
 const active = computed(() => {
-  const hit = [...nav].reverse().find((n) => (n.to === '/' ? route.path === '/' : route.path.startsWith(n.to)));
+  // M2-BE-04④：钱包不是 Tabbar 项（入口在「我的」）——钱包页时高亮「我的」，此前错亮「首页」
+  const path = route.path.startsWith('/wallet') ? '/me' : route.path;
+  const hit = [...nav].reverse().find((n) => (n.to === '/' ? path === '/' : path.startsWith(n.to)));
   return hit?.to || '/';
 });
 const hideTabbar = computed(() => route.meta.hideTabbar === true);

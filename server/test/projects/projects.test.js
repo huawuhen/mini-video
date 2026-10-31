@@ -428,6 +428,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const detail = await getProjectDetail(ctx.db, { userId, projectId });
     assert.equal(detail.status, 'cast_review');
     assert.equal(detail.pricing.looksFen, 0);
+    // M2-BE-04③：looksPaidFen=已结算形象费（确认点 B「已支付」行显示它；交付前 looksFen 恒 0 曾误导显示 ¥0.00）
+    assert.ok(Number.isInteger(detail.pricing.looksPaidFen) && detail.pricing.looksPaidFen >= 0,
+      `looksPaidFen 应为非负整数分，实际 ${detail.pricing.looksPaidFen}`);
     // 纠正匹配：把「妈妈」改绑到宝宝的数字人（user 来源、形象重算）；null 表示新建
     const mother = detail.cast.find((member) => member.name === '妈妈');
     await assert.rejects(() => updateCastCharacter(ctx.db, { userId, projectId, castId: mother.id,

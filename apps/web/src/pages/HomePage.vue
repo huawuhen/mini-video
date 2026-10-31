@@ -39,7 +39,8 @@ const canSubmit = computed(() => !!catalog.value && storyLength.value >= catalog
 let estimateTimer: ReturnType<typeof setTimeout> | undefined;
 watch(() => [draft.styleId, draft.qualityTierId, draft.characterIds.join()], () => {
   clearTimeout(estimateTimer);
-  if (!draft.styleId || !draft.qualityTierId) return;
+  // M2-BE-04⑤：estimate 需登录——未登录访问首页时不发（此前控制台 401 报错）
+  if (!auth.user || !draft.styleId || !draft.qualityTierId) return;
   estimateTimer = setTimeout(async () => {
     try { estimate.value = await api.estimate({ styleId: draft.styleId, qualityTierId: draft.qualityTierId, characterIds: draft.characterIds }); } catch { estimate.value = null; }
   }, 250);
