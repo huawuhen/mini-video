@@ -84,7 +84,7 @@
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
 | M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并；内测栈保留，暂停新增真实费用） | 2026-10-31 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
-| M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | 待审查（APIv3 客户端 + OAuth + 模拟网关 + 迁移 011 全部完成，412/412，零真实费用，见 §7） | 2026-10-31 |
+| M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | 复审 3 必改已修复待复审（time_expire 北京时间格式+网关校验、resolveScenes 整体必填项、NOTIFY_RESOURCE_MISSING；416/416；建议 4~6 已转记 §7 待带入 PAY-02/PAY-04） | 2026-11-01 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -212,6 +212,15 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-01 · BE-Core · M3-PAY-01 复审必改修复（time_expire 格式 / scenes 必填项 / 回调 resource 防御）
+
+- **背景**：Lead 复审（§6 2026-11-01）🔁 3 必改；同分支 `agent/be/M3-PAY-01-wechatpay`，已合并 main `6cf8f99`。
+- **必改 1（time_expire 格式）**：新增导出 `wechatPayTime(date)`——RFC3339 北京时间 `yyyy-MM-DDTHH:mm:ss+08:00`（UTC+8 换算、无毫秒；`toISOString` 的毫秒+Z 有被判参数错误的风险），`baseOrder` 的 `time_expire` 改用它；模拟网关对 `time_expire` 做官方格式校验（正则，不符回 400 `PARAM_ERROR`）。测试：格式化正例（UTC→北京 +8、跨日）、非 Date 拒绝、客户端带 `expiresAt` 下单后断言发出的 `time_expire` 匹配格式、**手工商户签名直打网关**验证 toISOString 旧格式被 400 拒 / 新格式通过。
+- **必改 2（resolveScenes 与客户端必填一致）**：`wechatMp.appid` 列为在线充值**整体必填**（Native/H5 下单同样必须带 appid，缺它时客户端拒绝构造——不能让前端看到 native 可用、一下单就 502）；`notifyUrl` 必须以 `https://` 开头否则视为未配置（整体 `[]`）；jsapi 额外要求 `wechatMp.secret`。测试更新：缺 appid → `[]`、http:// 回调地址 → `[]`、缺 secret → `[h5?, native]`（jsapi 掉）。
+- **必改 3（回调资源防御）**：`verifyAndDecryptNotify` 遇非 `encrypt-resource` 或缺 `ciphertext` 时抛 `NOTIFY_RESOURCE_MISSING`（不再返回无 `decrypted` 的对象——防止 PAY-02 误读外层字段绕过解密）；模拟网关提取 `signPayload(payload)`（对任意 JSON 做平台签名，`buildNotify` 的底层），测试覆盖三种缺失形态。
+- **建议 4~6 转记（本任务不改码）**：④ `WechatPayError.message` 拼了上游原文——**带到 M3-PAY-02**：对用户只返回固定中文（`PAYMENT_UNAVAILABLE` 等），上游原文只进日志；⑤ 只支持「微信支付公钥」验签模式（2024 年后新商户默认），不支持旧平台证书模式——**带到 M3-PAY-04 开通手册**：写明须开通微信支付公钥；⑥ 模拟网关与客户端同实现者只能证明自洽——**真实正确性以沙箱/真实联调为准**，各任务 §7「未验证」保持如实口径（PAY-02/04 沿用）。
+- **验证**：`npm run test:server` **416/416**（+4）、`check`、`build` 通过。零真实费用。
 
 ### 2026-10-31 · BE-Core · M3-PAY-01 微信支付 APIv3 客户端（纯客户端层 + 本地模拟网关，零真实费用）
 

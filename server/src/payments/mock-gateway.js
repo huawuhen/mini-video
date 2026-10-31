@@ -9,6 +9,8 @@ import { createCipheriv, createSign, createVerify, generateKeyPairSync, randomBy
 import { responseSignMessage } from './wechat-pay.js';
 
 const AUTH_SCHEMA = 'WECHATPAY2-SHA256-RSA2048';
+// 官方要求 RFC3339 北京时间、不带毫秒（M3-PAY-01 复审必改 1）
+const TIME_EXPIRE_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/;
 
 /** 12 字符 ASCII nonce（= 12 字节，AES-GCM IV 长度要求）。 */
 const asciiNonce = () => [...randomBytes(12)]
@@ -71,6 +73,24 @@ export function createMockWechatPayGateway({
     return { status, headers: signResponse(bodyText), body: bodyText };
   };
 
+  /** 对任意 JSON 生成平台签名的回调载荷（测试构造异常形态通知用；buildNotify 的底层）。 */
+  function signPayload(payload) {
+    const rawBody = JSON.stringify(payload);
+    const timestamp = String(unixNow());
+    const nonce = asciiNonce();
+    const signer = createSign('RSA-SHA256');
+    signer.update(responseSignMessage(timestamp, nonce, rawBody));
+    return {
+      rawBody,
+      headers: {
+        'wechatpay-serial': platformPublicKeyId,
+        'wechatpay-timestamp': timestamp,
+        'wechatpay-nonce': nonce,
+        'wechatpay-signature': signer.sign(platformPrivatePem, 'base64'),
+      },
+    };
+  }
+
   /** 验商户 Authorization（官方待签名串格式；任何不符 → 401 SIGN_ERROR，与真实网关一致）。 */
   function verifyMerchantAuth(method, path, bodyText, authorization) {
     if (typeof authorization !== 'string' || !authorization.startsWith(`${AUTH_SCHEMA} `)) {
@@ -107,6 +127,11 @@ export function createMockWechatPayGateway({
     if (!auth.ok) return reply(401, { code: 'SIGN_ERROR', message: auth.reason });
 
     const body = bodyText ? JSON.parse(bodyText) : {};
+    // time_expire 格式校验（复审必改 1）：官方要求北京时间、无毫秒、+08:00
+    if (body.time_expire !== undefined && !TIME_EXPIRE_PATTERN.test(body.time_expire)) {
+      return reply(400, { code: 'PARAM_ERROR',
+        message: `time_expire 必须是 yyyy-MM-DDTHH:mm:ss+08:00 格式，收到 ${JSON.stringify(body.time_expire)}` });
+    }
 
     // ── 下单（三种）──
     if (method === 'POST' && path === '/v3/pay/transactions/jsapi') {
@@ -221,29 +246,18 @@ export function createMockWechatPayGateway({
     buildNotify(outTradeNo, { eventType = 'TRANSACTION.SUCCESS', aad = 'transaction' } = {}) {
       const order = orders.get(outTradeNo);
       if (!order || order.status !== 'SUCCESS') throw new Error('只有已支付订单才能构造成功回调');
-      const payload = {
+      return signPayload({
         id: `evt_${randomBytes(8).toString('hex')}`,
         create_time: new Date(now()).toISOString(),
         resource_type: 'encrypt-resource',
         event_type: eventType,
         summary: '支付成功',
         resource: encryptResource(apiV3Key, transactionOf(order), aad),
-      };
-      const rawBody = JSON.stringify(payload);
-      const timestamp = String(unixNow());
-      const nonce = asciiNonce();
-      const signer = createSign('RSA-SHA256');
-      signer.update(responseSignMessage(timestamp, nonce, rawBody));
-      return {
-        rawBody,
-        headers: {
-          'wechatpay-serial': platformPublicKeyId,
-          'wechatpay-timestamp': timestamp,
-          'wechatpay-nonce': nonce,
-          'wechatpay-signature': signer.sign(platformPrivatePem, 'base64'),
-        },
-      };
+      });
     },
+
+    /** 平台签名任意载荷（测试构造非加密/缺字段等异常通知，复审必改 3 用）。 */
+    signPayload,
 
     /** 故障注入：下一次请求直接返回 { status, body }（5xx 不带签名头，验证客户端异常路径）。 */
     failNextResponse(status, body) { failNext = { status, body }; },

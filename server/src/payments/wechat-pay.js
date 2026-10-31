@@ -29,6 +29,18 @@ export const responseSignMessage = (timestamp, nonce, body) =>
 export const jsapiPaySignMessage = (appId, timeStamp, nonceStr, pkg) =>
   [appId, timeStamp, nonceStr, pkg, ''].join('\n');
 
+/** 微信 time_expire 格式（官方要求 RFC3339 北京时间）：yyyy-MM-DDTHH:mm:ss+08:00，
+ * 不带毫秒（toISOString 的毫秒与 Z 后缀有被判参数错误的风险）。 */
+export function wechatPayTime(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    throw new WechatPayError('TIME_EXPIRE_INVALID', 'time_expire 需要 Date 对象');
+  }
+  const inBeijing = new Date(date.getTime() + 8 * 3600 * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${inBeijing.getUTCFullYear()}-${p(inBeijing.getUTCMonth() + 1)}-${p(inBeijing.getUTCDate())}`
+    + `T${p(inBeijing.getUTCHours())}:${p(inBeijing.getUTCMinutes())}:${p(inBeijing.getUTCSeconds())}+08:00`;
+}
+
 /** 环境变量里的 PEM 常把换行写成 `\n` 字面量（单行写法），统一还原成真实换行。 */
 export function normalizePem(pem) {
   return typeof pem === 'string' && pem.includes('\\n') ? pem.replace(/\\n/g, '\n') : pem;
@@ -201,7 +213,7 @@ export function createWechatPayClient({
     out_trade_no: outTradeNo,
     notify_url: notifyUrl,
     amount: { total: amountFen, currency: 'CNY' },
-    ...(expiresAt instanceof Date ? { time_expire: expiresAt.toISOString() } : {}),
+    ...(expiresAt instanceof Date ? { time_expire: wechatPayTime(expiresAt) } : {}),
   });
   const assertAmountFen = (amountFen) => {
     if (!Number.isSafeInteger(amountFen) || amountFen <= 0) {
@@ -274,7 +286,9 @@ export function createWechatPayClient({
 
     /**
      * 回调通知验证 + 解密：先验平台签名（原始请求体，**不得**经任何 JSON 重排序/重新序列化），
-     * 再解密 resource。返回 { id, event_type, resource, summary, decrypted }（decrypted 即交易对象）。
+     * 再解密 resource。支付回调一律为加密资源：非 encrypt-resource 或缺 ciphertext
+     * 直接抛 NOTIFY_RESOURCE_MISSING（不返回无 decrypted 的对象——防止调用方误读外层字段
+     * 绕过解密，M3-PAY-01 复审必改 3）。
      */
     verifyAndDecryptNotify({ headers, rawBody }) {
       verifyPlatformSignature({
@@ -289,10 +303,11 @@ export function createWechatPayClient({
       } catch {
         throw new WechatPayError('NOTIFY_BODY_INVALID', '回调请求体不是有效的 JSON');
       }
-      if (parsed.resource_type === 'encrypt-resource' && parsed.resource?.ciphertext) {
-        return { ...parsed, decrypted: decryptResource(apiV3Key, parsed.resource) };
+      if (parsed.resource_type !== 'encrypt-resource' || !parsed.resource?.ciphertext) {
+        throw new WechatPayError('NOTIFY_RESOURCE_MISSING',
+          `回调缺少加密 resource（resource_type=${parsed.resource_type ?? '无'}）`);
       }
-      return parsed;
+      return { ...parsed, decrypted: decryptResource(apiV3Key, parsed.resource) };
     },
   };
 }

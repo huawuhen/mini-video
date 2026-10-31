@@ -39,7 +39,7 @@ describe('createWechatOAuth（snsapi_base 静默授权）', () => {
   });
 });
 
-describe('resolveScenes（缺配置 scenes=[]，API §3.1）', () => {
+describe('resolveScenes（缺配置 scenes=[]，API §3.1；复审必改 2 口径）', () => {
   const full = (over = {}) => ({
     payments: { mchid: 'm', privateKey: 'k', certSerial: 's', apiV3Key: 'a'.repeat(32),
       platformPublicKey: 'p', platformPublicKeyId: 'pid', notifyUrl: 'https://e/n', h5Enabled: false, ...over },
@@ -54,19 +54,27 @@ describe('resolveScenes（缺配置 scenes=[]，API §3.1）', () => {
     assert.deepEqual(resolveScenes(full()), ['jsapi', 'native']);
   });
 
-  test('任一必填缺失 → []（在线充值整体关闭）', () => {
+  test('任一必填缺失（含公众号 appid）→ []（在线充值整体关闭）', () => {
     for (const key of ['mchid', 'privateKey', 'certSerial', 'apiV3Key', 'platformPublicKey',
       'platformPublicKeyId', 'notifyUrl']) {
       const broken = full();
       broken.payments[key] = '';
       assert.deepEqual(resolveScenes(broken), [], `缺 ${key} 必须关闭`);
     }
+    // 复审必改 2：appid 是整体必填（Native/H5 下单同样要带 appid，缺它时客户端会拒绝构造）
+    assert.deepEqual(resolveScenes({ ...full(), wechatMp: { appid: '', secret: 'sec' } }), [],
+      '缺公众号 appid 时不得只剩 native——前端看到可用、一下单就 502');
     assert.deepEqual(resolveScenes({ payments: null, wechatMp: { appid: 'x', secret: 'y' } }), []);
     assert.deepEqual(resolveScenes(undefined), []);
   });
 
-  test('公众号未配置 → 无 jsapi（H5/native 照常）', () => {
-    assert.deepEqual(resolveScenes({ ...full({ h5Enabled: true }), wechatMp: { appid: '', secret: '' } }),
+  test('notifyUrl 非 https:// → 视为未配置（微信要求公网 HTTPS 回调）', () => {
+    assert.deepEqual(resolveScenes(full({ notifyUrl: 'http://e/n' })), []);
+    assert.deepEqual(resolveScenes(full({ notifyUrl: '' })), []);
+  });
+
+  test('公众号 secret 缺 → 无 jsapi（appSecret 用于静默授权，H5/native 照常）', () => {
+    assert.deepEqual(resolveScenes({ ...full({ h5Enabled: true }), wechatMp: { appid: 'wx1', secret: '' } }),
       ['h5', 'native']);
   });
 });

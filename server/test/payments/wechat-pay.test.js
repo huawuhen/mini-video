@@ -1,11 +1,11 @@
 // M3-PAY-01：微信支付 APIv3 客户端（签名/验签/AES-GCM/三种下单/调起参数/查单/关单/退款/回调）
 // 全程本地生成的 RSA 密钥对 + 本地模拟网关回环，零真实费用、零网络。
 import assert from 'node:assert/strict';
-import { createPublicKey, createVerify, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createPublicKey, createSign, createVerify, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { describe, test } from 'node:test';
 import {
   createWechatPayClient, decryptResource, jsapiPaySignMessage,
-  requestSignMessage, responseSignMessage, WechatPayError,
+  requestSignMessage, responseSignMessage, wechatPayTime, WechatPayError,
 } from '../../src/payments/wechat-pay.js';
 import { createMockWechatPayGateway, encryptResource } from '../../src/payments/mock-gateway.js';
 
@@ -149,6 +149,48 @@ describe('客户端 ↔ 模拟网关闭环', () => {
       notifyUrl: 'https://e/n' }),
     (err) => err instanceof WechatPayError && err.code === 'PARAM_ERROR');
   });
+
+  test('time_expire：北京时间无毫秒 +08:00（复审必改 1）', async () => {
+    const { gateway, client } = setup();
+    // 格式化：UTC→北京 +8；跨日；无毫秒
+    assert.equal(wechatPayTime(new Date('2026-11-01T03:00:00.000Z')), '2026-11-01T11:00:00+08:00');
+    assert.equal(wechatPayTime(new Date('2026-11-01T18:30:45.123Z')), '2026-11-02T02:30:45+08:00');
+    assert.throws(() => wechatPayTime('not-a-date'), (err) => err.code === 'TIME_EXPIRE_INVALID');
+    // 客户端带 expiresAt 下单：网关按官方格式校验通过
+    await client.native({ description: '余额充值', outTradeNo: 'po_te1', amountFen: 100,
+      notifyUrl: 'https://e/n', expiresAt: new Date(Date.now() + 30 * 60 * 1000) });
+    const sent = JSON.parse(gateway.seenRequests.at(-1).body);
+    assert.match(sent.time_expire, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+08:00$/,
+      `发出的 time_expire 必须是官方格式：${sent.time_expire}`);
+  });
+
+  test('网关对非法 time_expire 回 400 PARAM_ERROR（手工签名直打网关）', async () => {
+    const { gateway, merchant } = setup();
+    const privateKeyPem = merchant.privateKey.export({ type: 'pkcs8', format: 'pem' });
+    const PATH = '/v3/pay/transactions/native';
+    const signedRequest = (body) => {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const nonce = randomBytes(16).toString('hex');
+      const signer = createSign('RSA-SHA256');
+      signer.update(requestSignMessage('POST', PATH, timestamp, nonce, body));
+      return gateway.asHttp()({
+        method: 'POST', url: `https://api.mch.weixin.qq.com${PATH}`,
+        headers: { Authorization: `WECHATPAY2-SHA256-RSA2048 mchid="${MCHID}",nonce_str="${nonce}",`
+          + `signature="${signer.sign(privateKeyPem, 'base64')}",timestamp="${timestamp}",serial_no="${CERT_SERIAL}"` },
+        body,
+      });
+    };
+    const base = { appid: APPID, mchid: MCHID, description: 'x', out_trade_no: 'po_bad_te',
+      notify_url: 'https://e/n', amount: { total: 100, currency: 'CNY' } };
+    // 旧实现（toISOString：毫秒 + Z 后缀）→ 网关按官方格式校验拒绝
+    const bad = await signedRequest(JSON.stringify({ ...base, time_expire: new Date().toISOString() }));
+    assert.equal(bad.status, 400);
+    assert.equal(JSON.parse(await bad.text()).code, 'PARAM_ERROR');
+    // 官方格式（北京时间无毫秒）→ 通过
+    const good = await signedRequest(JSON.stringify(
+      { ...base, time_expire: wechatPayTime(new Date(Date.now() + 30 * 60 * 1000)) }));
+    assert.equal(good.status, 200);
+  });
 });
 
 describe('回调通知：验签 + AES-256-GCM 解密', () => {
@@ -219,6 +261,25 @@ describe('回调通知：验签 + AES-256-GCM 解密', () => {
     const notify = gateway.buildNotify('po_n5');
     assert.throws(() => client.verifyAndDecryptNotify(notify),
       (err) => err.code === 'RESOURCE_DECRYPT_FAILED');
+  });
+
+  test('非加密资源或缺 ciphertext → NOTIFY_RESOURCE_MISSING（复审必改 3，不返回无 decrypted 的对象）', async () => {
+    const { gateway, client } = setup();
+    // resource_type 不是 encrypt-resource（即使带 resource）
+    const plain = gateway.signPayload({ id: 'evt_x', event_type: 'TRANSACTION.SUCCESS',
+      resource_type: 'plain-text', resource: { ciphertext: 'AAAA' } });
+    assert.throws(() => client.verifyAndDecryptNotify(plain),
+      (err) => err.code === 'NOTIFY_RESOURCE_MISSING');
+    // encrypt-resource 但 resource 缺 ciphertext
+    const noCipher = gateway.signPayload({ id: 'evt_y', event_type: 'TRANSACTION.SUCCESS',
+      resource_type: 'encrypt-resource', resource: { nonce: 'x', associated_data: 'transaction' } });
+    assert.throws(() => client.verifyAndDecryptNotify(noCipher),
+      (err) => err.code === 'NOTIFY_RESOURCE_MISSING');
+    // 整个 resource 缺失
+    const noResource = gateway.signPayload({ id: 'evt_z', event_type: 'TRANSACTION.SUCCESS',
+      resource_type: 'encrypt-resource' });
+    assert.throws(() => client.verifyAndDecryptNotify(noResource),
+      (err) => err.code === 'NOTIFY_RESOURCE_MISSING');
   });
 });
 
