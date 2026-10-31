@@ -297,7 +297,8 @@ type Take = {
 };
 type Pricing = {
   looksToGenerate: number;         // 需要新生成形象的角色数
-  looksFen: number;                // 形象费（确认点 A 后单独扣）
+  looksFen: number;                // 尚需生成的形象费（确认点 A 弹窗用；形象生成后为 0）
+  looksPaidFen: number;            // 本作品已结算的形象费（2026-10-31 新增；确认点 B「角色形象（已支付）」显示它）
   videoFen: number;                // 视频费（确认点 B 预占）
   totalFen: number;                // looksFen + videoFen，确认点 B 展示
   reservedFen: number; settledFen: number; refundedFen: number;
