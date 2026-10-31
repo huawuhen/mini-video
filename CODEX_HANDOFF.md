@@ -84,6 +84,7 @@
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
 | M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并；内测栈保留，暂停新增真实费用） | 2026-10-31 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
+| M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | 待审查（APIv3 客户端 + OAuth + 模拟网关 + 迁移 011 全部完成，412/412，零真实费用，见 §7） | 2026-10-31 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -210,6 +211,19 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-10-31 · BE-Core · M3-PAY-01 微信支付 APIv3 客户端（纯客户端层 + 本地模拟网关，零真实费用）
+
+- **背景**：用户 2026-10-31 修订决策（§3：微信支付官方接口 APIv3，只开放微信支付；支付宝方案作废）。分支 `agent/be/M3-PAY-01-wechatpay`（基于 main `6cf605a`），范围 = TASKS M3-PAY-01 行：客户端 + OAuth + 模拟网关 + 迁移，**不含**充值订单接口/回调路由/对账（M3-PAY-02）。
+- **交付物**（`server/src/payments/`，全部 node:crypto 自实现、**不引入官方 SDK**）：
+  - `wechat-pay.js`——`createWechatPayClient({ baseUrl, mchid, appid, privateKey, certSerial, apiV3Key, platformPublicKey, platformPublicKeyId, http, now })`（ARCHITECTURE §337 签名）。请求签名（SHA256withRSA，`WECHATPAY2-SHA256-RSA2048` Authorization）；应答与回调统一验签（序列号比对 `Wechatpay-Serial` ↔ `platformPublicKeyId`、时间戳 ±5 分钟容差、RSA 验签，2xx 应答缺签名头即拒）；`resource` AES-256-GCM 解密（独立导出 `decryptResource`，密钥长度/密文/AAD/篡改全防御）；`jsapi/h5/native` 三种下单（金额断言正整数分后原样传 `amount.total`）；`jsapiPayParams`（appId/timeStamp/nonceStr/package/signType=RSA/paySign）；`query/close/refund`；`verifyAndDecryptNotify({headers, rawBody})`（原始请求体验签，不做任何重新序列化）。PEM 支持 `\n` 转义单行写法；`http`/`now` 可注入。
+  - `wechat-oauth.js`——`createWechatOAuth({appid, secret, http})` → `{authorizeUrl, openidByCode}`：snsapi_base 静默授权 URL（redirect_uri 编码、`#wechat_redirect` 结尾）；code 换 openid（微信 200+errcode 口径：40029 等 → 中文错误 `OAUTH_CODE_INVALID`）。
+  - `mock-gateway.js`——本地模拟微信支付网关（测试专用）：内存实现 APIv3 子集（验商户签名 → 三种下单/查单/关单/退款），全部应答带平台签名头；`simulatePayment`（模拟用户支付）、`buildNotify`（构造 AES-GCM 加密 + 平台签名的回调）、`failNextResponse`（故障注入）、`asHttp()`（注入客户端 http 形成回环，不经网络）。
+  - `scenes.js`——`resolveScenes(config)`：任一必填缺失 → `[]`（在线充值整体关闭）；jsapi 额外要求公众号 appid+secret；h5 由 `WXPAY_H5_ENABLED` 控制；固定顺序 jsapi|h5|native。
+- **配套**：迁移 `011-payments.sql`（`payment_orders` po_ 前缀、out_trade_no 唯一、amount_fen>0 CHECK、scene/status 枚举、`(status, expires_at) WHERE status='created'` 对账部分索引；`user_wechat` 每用户一条、UNIQUE(appid, openid)）；`newId` 前缀表加 `po`；`config.js` 加 `payments.*`（WXPAY_MCHID/PRIVATE_KEY/CERT_SERIAL/APIV3_KEY/PUBLIC_KEY/PUBLIC_KEY_ID/H5_ENABLED/NOTIFY_URL、WEB_BASE_URL）与 `wechatMp.*`（WECHAT_MP_APPID/SECRET），密钥只来自环境变量；`.env.example` 补全注释。
+- **测试**（`server/test/payments/`，25 用例）：待签名串三种格式**逐字符精确断言**；客户端↔网关闭环（三种下单、金额整数分直达、非整数金额客户端即拒不发请求、商户签名错 401、查单/关单/退款、已支付不能关单）；JSAPI 调起参数用商户公钥**独立复验** paySign；回调正反例（正常解密、body 篡改一字节拒、序列号不符拒、时间戳超 5 分钟拒、APIv3 密钥不符解密拒）；AES-GCM 正反例（互逆、篡改密文/错 AAD/错密钥/短密钥/非法密文）；OAuth（URL 格式、code 成功/失败）；scenes 缺配置；迁移表约束（金额/枚举/唯一）。
+- **验证**：`npm run test:server` **412/412**（+25）、`check`、`build` 通过。全程本地生成 RSA 密钥对 + 内存网关回环，**零真实费用、零真实微信调用**。
+- **风险/未验证（如实）**：未对真实微信网关联调（需用户另行授权 + 公网 HTTPS）；`defaultHttp` 用全局 fetch（生产装配是否换 safeFetch 包装由 M3-PAY-02 决定，本层 http 可注入）；应答验签严格模式（缺签名头即拒）与微信真实网关行为的一致性待联调确认（微信文档声明所有应答都带签名头）。实施中修过的坑：`assert.rejects` 对同步抛错的函数不走 matcher（4 个用例改 `assert.throws`）；node `URL` 无 `.path` 属性（`asHttp` 改 `pathname+search`）；Map 头大小写敏感（`headerOf` 做大小写不敏感查找）。
 
 ### 2026-10-31 · Ops · M2-OPS-03 复审必改修复（守卫回归测试 / 兑换码规范化 / 片段海报帧）
 
