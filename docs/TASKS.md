@@ -47,6 +47,7 @@
 | M2-WEB-01 | Web（+ BE-Core 配合） | 前端切换真实 API，联调全部流程；SSE。**零费用联调**：BE 侧新增本地模拟驱动 `drivers/local-mock/`（视频/图片/LLM，可配延迟与失败率，`NODE_ENV=production` 时拒绝加载/种子），`channel:seed -- --mock` 写入并激活；前端 `VITE_USE_MOCK=false` 走真实 server。覆盖：短信登录（console）、CSRF、创建→确认点 A/B→生成→交付→下载、retry/取消/重生成、钱包流水、`NO_ACTIVE_CHANNEL`/上游失败中文提示、SSE 断线重连与长排队文案（实测排队 12~79 分钟）。`types.ts` 与 API.md 不一致处走 handoff 变更申请 | M1-BE-06、M2-BE-03 |
 | M2-OPS-01 | Ops | 生产 Dockerfile（Linux，web/api/worker，worker 含 FFmpeg 与中文字体如 Noto Sans CJK，并在镜像内跑 render 测试，生产为 Ubuntu amd64 + Docker，开发机 arm64 也要能本地构建）、Compose、备份与恢复脚本 | M1-BE-06 |
 | M2-OPS-02 | Ops + BE-Core | 七牛真实桶联调（**需用户授权并写明费用上限**）：表单上传（小对象）、分片上传 v2（大于 8MB，含失败 abort）、签名下载链接（含中文与空格的 key、`attname` 文件名是否生效、过期后 401）、删除（含对象不存在）；联调后把结论写进 `engine/README.md` | 联调记录与结论；若 `attname` 或 key 编码与预期不符，据实调整 `signedUrl` | M1-ENG-03 |
+| M2-OPS-03 | Ops + BE-Core | **Mac 本机内测（用户 2026-10-31）**：在开发 Mac（Docker Desktop，arm64）用 `deploy/compose.yml` 生产口径起全栈，同 Wi-Fi 手机经 `http://<Mac 局域网 IP>:8080` 访问；补 `npm run redeem:create -- <金额元> <张数> [有效天数]`（只存哈希、码只打印一次、写审计）发内测余额；解决 Mac 代理 fake-IP 导致容器内 safeFetch 拦截真实下载的问题（不得放宽 SSRF 防护，靠宿主网络/代理配置解决）；防休眠（`caffeinate`）；每日备份。真实费用上限 300 元（§3） | 局域网手机全流程交付 1 条真实成片；兑换码充值可用；`channel:list` 核对真实渠道生效、local-mock 未加载；内测手册 `deploy/MAC-BETA.md` | M2-OPS-01 |
 | M2-QA-01 | Lead | 浏览器端到端验收（手机 + PC，模拟上游）+ 代码审查 | 以上全部 |
 
 ## M3 上线准备
