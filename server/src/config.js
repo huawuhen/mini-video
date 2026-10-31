@@ -97,6 +97,24 @@ export function loadConfig(env = process.env) {
       loginFailWindowSeconds: int(env.ADMIN_LOGIN_FAIL_WINDOW_SECONDS, 600),
       loginBanSeconds: int(env.ADMIN_LOGIN_BAN_SECONDS, 7200),
     },
+    // 微信支付 APIv3（M3-PAY-01，ARCHITECTURE §336）：密钥只来自环境变量；
+    // 任一必填缺失时在线充值整体关闭（scenes=[]），兑换码不受影响。
+    payments: {
+      mchid: env.WXPAY_MCHID || '',                 // 商户号
+      privateKey: env.WXPAY_PRIVATE_KEY || '',      // 商户 API 私钥（PEM 文本或 \n 转义）
+      certSerial: env.WXPAY_CERT_SERIAL || '',      // 商户证书序列号
+      apiV3Key: env.WXPAY_APIV3_KEY || '',          // APIv3 密钥（32 字节，回调解密）
+      platformPublicKey: env.WXPAY_PUBLIC_KEY || '',      // 微信支付公钥（PEM，验应答/回调签名）
+      platformPublicKeyId: env.WXPAY_PUBLIC_KEY_ID || '', // 微信支付公钥 ID（应答 Serial 比对）
+      h5Enabled: bool(env.WXPAY_H5_ENABLED, false), // H5 需另行申请开通，缺省关
+      notifyUrl: env.PAYMENTS_NOTIFY_URL || '',     // 回调地址（公网 HTTPS + 备案域名）
+      webBaseUrl: env.WEB_BASE_URL || '',           // 站点基址（OAuth redirect_uri 等）
+    },
+    // 公众号（服务号）静默网页授权：JSAPI 支付取 openid 用
+    wechatMp: {
+      appid: env.WECHAT_MP_APPID || '',
+      secret: env.WECHAT_MP_SECRET || '',
+    },
     // 渠道层（M2-BE-03，ARCHITECTURE §5.5）：GEN_UPSTREAMS=real 时上游全部经数据库渠道 + 驱动路由；
     // 缺省 mock 走确定性桩——测试与开发零真实费用。以下 providers.* 仅用于「首次部署的种子渠道引导」
     // （表空时写入 provider_channels），此后以数据库为准（后台 / CLI 管理）。
