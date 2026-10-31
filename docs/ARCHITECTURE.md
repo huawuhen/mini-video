@@ -36,7 +36,7 @@ mini-ai-video/
 │   │   ├─ db/           pg 连接池、事务（嵌套 savepoint）、迁移执行器
 │   │   ├─ auth/         手机号验证码、会话、CSRF、限流
 │   │   ├─ wallet/       账本、SKU 定价、报价、预占/结算/退回、兑换码
-│   │   ├─ payments/     支付宝适配（RSA2 签名/验签/客户端）与充值订单、回调、对账（M3）
+│   │   ├─ payments/     微信支付 APIv3 适配（签名/验签/回调解密/客户端）、公众号静默授权、充值订单、回调、对账（M3）
 │   │   ├─ catalog/      风格、画质档位、音色、运营配置（settings）
 │   │   ├─ characters/   数字资产库（数字人、照片、形象、版本）
 │   │   ├─ projects/     作品、角色表、片段、版本、成片、状态机、保存期
@@ -86,16 +86,17 @@ quotes(id, user_id, kind, ref_type, ref_id, params_hash, amount_fen, breakdown, 
 **支付（M3，PRD 6.4）**
 
 ```
-payment_orders(id po_, user_id, channel 'alipay', out_trade_no UNIQUE (= id), trade_no, buyer_id_masked,
-               amount_fen, device[pc|mobile], status[created|paid|expired|failed],
+payment_orders(id po_, user_id, channel 'wechatpay', out_trade_no UNIQUE (= id), transaction_id, payer_openid,
+               amount_fen, scene[jsapi|h5|native], status[created|paid|expired|failed],
                client_ip, expires_at, paid_at, credited_ledger_id, notify_count, last_notify jsonb,
                created_at, updated_at)
   -- 索引：(user_id, created_at DESC)；(status, expires_at) WHERE status = 'created'（对账扫描）
+user_wechat(user_id PK, appid, openid, created_at, UNIQUE(appid, openid))   -- 公众号静默授权得到的 openid（JSAPI 必需）
 ```
 
 - 新增迁移 `NNN-payments.sql`（编号取当时最大号加 1，不改 001）；`newId` 前缀表加入 `po`。
 - 入账：事务里 `UPDATE payment_orders SET status='paid', paid_at=now() WHERE id=$1 AND status IN ('created','expired')`，影响 1 行才继续写账本 `recharge`（幂等键 `recharge:<orderId>`），同一事务内完成，重复通知命中 0 行直接返回 `success`。
-- 金额在边界转换：我方整数分 ⇄ 支付宝元字符串（字符串解析 + 整数运算，不经过浮点）。
+- 金额：微信支付 `amount.total` 即整数分，与我方口径一致，直接传递，不做转换。
 
 **数字资产库**
 
@@ -332,6 +333,6 @@ export default {
 - 所有对象按 `user_id` 隔离；查询一律带 `user_id` 条件，查不到返回 404（不区分「不存在」和「无权」）。
 - 上传：类型白名单（校验文件头）、大小上限；下载与转存只经过 `engine/net`。
 - 日志脱敏：手机号、验证码、Cookie、签名链接不入日志。
-- **支付（M3）**：AppID、应用私钥、支付宝公钥只来自环境变量（`ALIPAY_GATEWAY`、`ALIPAY_APP_ID`、`ALIPAY_APP_PRIVATE_KEY`、`ALIPAY_PUBLIC_KEY`、`PAYMENTS_NOTIFY_URL`、`WEB_BASE_URL`）；缺任一项时在线充值关闭（`enabled=false`），兑换码不受影响。日志不记录私钥与签名。
-- 支付适配器接口 `createAlipayClient({ gateway, appId, appPrivateKey, alipayPublicKey, http, now })` → `{ pagePayUrl, wapPayUrl, query, close, refund, verifyNotify }`；不引入官方 SDK，签名/验签自行实现并用本地生成的 RSA 密钥对测试；自动化测试用本地模拟网关，零真实费用。
+- **支付（M3）**：商户号、商户 API 私钥、商户证书序列号、APIv3 密钥、微信支付公钥及公钥 ID、公众号 AppID/AppSecret 只来自环境变量（`WXPAY_MCHID`、`WXPAY_PRIVATE_KEY`、`WXPAY_CERT_SERIAL`、`WXPAY_APIV3_KEY`、`WXPAY_PUBLIC_KEY`、`WXPAY_PUBLIC_KEY_ID`、`WECHAT_MP_APPID`、`WECHAT_MP_SECRET`、`PAYMENTS_NOTIFY_URL`、`WEB_BASE_URL`、`WXPAY_H5_ENABLED`）；缺任一必填项时在线充值关闭（`scenes=[]`），兑换码不受影响。日志不记录私钥、签名与 openid 明文。
+- 支付适配器接口 `createWechatPayClient({ baseUrl, mchid, appid, privateKey, certSerial, apiV3Key, platformPublicKey, platformPublicKeyId, http, now })` → `{ jsapi, h5, native, jsapiPayParams, query, close, refund, verifyAndDecryptNotify }`；公众号授权 `createWechatOAuth({ appid, secret, http })` → `{ authorizeUrl, openidByCode }`。不引入官方 SDK，签名/验签/AES-GCM 解密自行实现，用本地生成的 RSA 密钥对与本地模拟网关测试，零真实费用。
 - 回调处理顺序固定：验签 → `trade_status` → `pid` → 订单存在 → 金额一致 → 主动查单核验 → 事务入账；任何一步失败都不入账并写审计日志。验签要兼容平台新增字段（以收到的全部非空参数参与）。

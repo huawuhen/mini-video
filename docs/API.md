@@ -115,42 +115,51 @@ type Quote = {
 - 扣费方式：`cast_looks` / `look_regenerate` 生成前预占、成功结算、失败退回（形象永久归入资产库，作品取消不退）；`project_render` / `segment_take` 同样预占→逐片段结算→失败退回。
 - 提交结果未知（`SUBMISSION_UNKNOWN`）的片段保持冻结，不自动重提，等待对账。
 
-### 3.1 在线充值（支付宝，M3；PRD 6.4）
+### 3.1 在线充值（微信支付，M3；PRD 6.4）
 
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
 | GET | `/wallet/recharge/options` | – | `RechargeOptions` |
-| POST | `/wallet/recharge` | `{ amountFen, device, idempotencyKey }` | `RechargeOrder`（201） |
+| POST | `/wallet/recharge` | `{ amountFen, scene, idempotencyKey }` | `RechargeOrder`（201） |
 | GET | `/wallet/recharge/:orderId` | – | `RechargeOrder`（前端支付后轮询） |
 | GET | `/wallet/recharge` | `?cursor&limit` | `{ items: RechargeOrder[], nextCursor }` |
+| GET | `/wechat/oauth/start` | `?returnTo=/wallet/recharge` | 302 到微信网页授权（`snsapi_base`，静默）；仅微信内置浏览器使用 |
+| GET | `/wechat/oauth/callback` | `?code&state` | 用 code 换 openid 绑定到当前登录用户后 302 回 `returnTo`；`state` 防 CSRF 且只允许站内相对路径 |
 
 ```ts
+type PayScene = 'jsapi' | 'h5' | 'native';   // 微信内 / 手机系统浏览器 / PC
 type RechargeOptions = {
   amountsFen: number[];      // 预设档位，默认 [5000, 10000, 50000, 100000]（50/100/500/1000 元）
   maxAmountFen: number;
-  enabled: boolean;          // false 表示在线充值暂不可用（只能用兑换码）
+  scenes: PayScene[];        // 当前开通的支付方式；为空表示在线充值暂不可用（只能用兑换码）
+  wechatOpenidReady: boolean; // 当前用户是否已有 openid；微信内为 false 时前端先走 /wechat/oauth/start
 };
 type RechargeOrder = {
   id: string; status: 'created' | 'paid' | 'expired' | 'failed';
-  amountFen: number; createdAt: string; expiresAt: string; paidAt?: string;
-  payUrl?: string;           // 仅 created 状态返回：支付宝收银台地址，前端整页跳转（location.href）
+  amountFen: number; scene: PayScene; createdAt: string; expiresAt: string; paidAt?: string;
+  // 仅 created 状态返回，按 scene 三选一
+  pay?:
+    | { type: 'jsapi'; params: { appId: string; timeStamp: string; nonceStr: string; package: string; signType: 'RSA'; paySign: string } }
+    | { type: 'h5'; url: string }          // 前端 location.href 跳转
+    | { type: 'native'; codeUrl: string }; // 前端渲染二维码
   wallet?: Wallet;           // 仅 paid 状态返回，用于结果页直接刷新余额
 };
 ```
 
-- `amountFen` 必须是 `amountsFen` 中的值，否则 400 `VALIDATION_FAILED`；`device` 取 `mobile`（手机网站支付）或 `pc`（电脑网站支付），由前端按屏幕与 UA 判断。
+- 前端按环境选 `scene`：UA 含 `MicroMessenger` → `jsapi`；其他手机浏览器 → `h5`（`scenes` 不含 `h5` 时提示「请在微信中打开本页面充值」）；PC → `native`。
+- `jsapi` 下单而用户没有 openid 时返回 409 `WECHAT_OPENID_REQUIRED`，前端跳 `/wechat/oauth/start` 后回到充值页重试。
+- `amountFen` 必须是 `amountsFen` 中的值，否则 400 `VALIDATION_FAILED`。
 - 同一 `idempotencyKey` 重放返回同一订单；每用户同时最多 3 笔 `created` 订单，每小时最多创建 10 笔，超出 429 `RATE_LIMITED`。
-- 支付宝配置缺失或下单签名失败返回 502 `PAYMENT_UNAVAILABLE`，**不留下 `created` 订单**。
-- `return_url` 为 `{WEB_BASE_URL}/wallet/recharge/result?orderId=<id>`；前端结果页只用 `GET /wallet/recharge/:orderId` 轮询，**不以浏览器跳转参数判断是否支付成功**。
-- 到账只由服务端的异步通知（加主动查单核验）和对账任务完成，前端没有「确认已支付」接口。
-- 微信内置浏览器里不发起支付，前端提示在系统浏览器中打开。
+- 微信支付未配置或下单失败返回 502 `PAYMENT_UNAVAILABLE`，**不留下 `created` 订单**。
+- 结果页只用 `GET /wallet/recharge/:orderId` 轮询，**不以前端支付回调或跳转判断是否支付成功**。
+- 到账只由服务端的支付通知（加主动查单核验）和对账任务完成，前端没有「确认已支付」接口。
 - 实现提示：`/wallet/recharge/options` 必须先于 `/wallet/recharge/:orderId` 注册，否则 `options` 会被当成订单号；订单 ID 只接受 `po_` 前缀，其他一律 404。
 
-**支付宝异步通知**（不属于前端接口，列出供后端、运维对接）
+**微信支付回调通知**（不属于前端接口，列出供后端、运维对接）
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/api/v1/payments/alipay/notify` | 支付宝服务器回调（`application/x-www-form-urlencoded`）；**不要求登录和 CSRF**，挂载在会话中间件之前；成功（含重复通知）返回 `text/plain` 的 `success`，其余返回其他内容并写审计日志；不记录签名和密钥 |
+| POST | `/api/v1/payments/wechat/notify` | 微信支付服务器回调（JSON，需读取**原始请求体**用于验签）；**不要求登录和 CSRF**，挂载在会话中间件之前；成功（含重复通知）返回 204，失败返回 4XX/5XX 与 `{"code":"FAIL","message":"…"}` 并写审计日志；不记录签名、密钥和解密后的 openid |
 
 ## 4. 上传
 
@@ -351,6 +360,7 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | 400 | `UPLOAD_TYPE_INVALID` / `UPLOAD_TOO_LARGE` | 上传文件不符合要求 |
 | 401 | `UNAUTHENTICATED` | 未登录 |
 | 403 | `CSRF_INVALID` | CSRF 或 Origin 校验失败 |
+| 409 | `WECHAT_OPENID_REQUIRED` | 微信内充值需要先完成静默网页授权获取 openid |
 | 402 | `INSUFFICIENT_BALANCE` | 余额不足 |
 | 404 | `NOT_FOUND` | 对象不存在或不属于当前用户 |
 | 409 | `IDEMPOTENCY_CONFLICT` / `QUOTE_MISMATCH` / `QUOTE_EXPIRED` | 幂等或报价冲突 |

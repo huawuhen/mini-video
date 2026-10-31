@@ -52,14 +52,14 @@
 
 ## M3 上线准备
 
-### 支付宝充值与阿里云短信（PRD 6.4 / §11；2026-10-31 用户确定：支付宝官方接口 + 阿里云短信，企业主体；可提前并行开发）
+### 微信支付充值与阿里云短信（PRD 6.4 / §11；2026-10-31 用户确定：微信支付 APIv3 + 阿里云短信，企业主体；可提前并行开发）
 
 | ID | 角色 | 任务 | 验收 | 依赖 |
 |---|---|---|---|---|
-| M3-PAY-01 | BE-Core | `payments/`：`createAlipayClient`（RSA2 签名、同步响应验签、`wap.pay`/`page.pay` 收银台地址、`trade.query`、`trade.close`、`trade.refund`、异步通知验签）+ 本地模拟支付宝网关（测试用）+ 迁移 `payment_orders`（channel `alipay`）+ `newId` 前缀 `po` + 配置与 `.env.example`（密钥只来自环境变量） | 签名与验签用本地生成的 RSA 密钥对测试；待签名串规则（非空、升序、不含 sign、值不 URL 编码）；通知验签去掉 sign/sign_type；元 ⇄ 分只用整数运算，覆盖 `0.1`、`1`、`1.00`、`1.005`（拒绝）；缺配置时在线充值关闭；不引入官方 SDK | M1-BE-02 |
-| M3-PAY-02 | BE-Core | 充值订单服务与接口（API.md §3.1）、`POST /api/v1/payments/alipay/notify` 回调（会话与 CSRF 之前挂载，解析 form）、`payments.reconcile` 对账任务（接入 `queue/cron.js`） | 重复通知只入账一次；验签失败、`app_id` 不符、金额不符、非 `TRADE_SUCCESS/TRADE_FINISHED`、查单未支付都不入账；并发通知只入账一次；过期订单后到的支付仍入账；对账补入账与关单；同时 3 单上限与每小时 10 单限流；下单失败不留 created 订单；账本对账正确 | M3-PAY-01 |
-| M3-PAY-03 | Web | 钱包页「充值」、充值页（只有档位，无支付方式选择）、结果页（types.ts 与 mock 同步 API.md §3.1，mock 模拟支付完成）；微信内置浏览器提示用系统浏览器打开 | 手机 390 与 PC 1280 走查截图；`npm run check` 与 build 通过 | M3-PAY-02 契约 |
-| M3-PAY-04 | Ops | 公网 HTTPS 回调域名与反向代理（放行 notify，不被登录和 CSRF 拦截）、环境变量注入说明、**支付宝沙箱联调手册**（用户侧：开放平台建应用、签约手机/电脑网站支付、配置 RSA2 公钥） | 先沙箱全流程；**真实小额支付联调前必须得到用户明确授权并写明金额上限**（AGENTS.md §6）；真实联调只能在 Ubuntu 服务器 + 域名上做 | M3-PAY-02 |
+| M3-PAY-01 | BE-Core | `payments/`：`createWechatPayClient`（APIv3 请求签名、应答与回调验签、`resource` AES-256-GCM 解密、JSAPI/H5/Native 下单、JSAPI 前端调起参数签名、查单、关单、退款）+ `createWechatOAuth`（`snsapi_base` 换 openid）+ 本地模拟微信支付网关（测试用）+ 迁移 `payment_orders`（channel `wechatpay`）与 `user_wechat` + `newId` 前缀 `po` + 配置与 `.env.example`（密钥只来自环境变量） | 用本地生成的 RSA 密钥对测签名与验签（含待签名串格式、时间戳超 5 分钟拒绝、序列号不符拒绝）；AES-GCM 解密正反例；金额全程整数分；缺配置时 `scenes=[]`；不引入官方 SDK | M1-BE-02 |
+| M3-PAY-02 | BE-Core | 充值订单服务与接口（API.md §3.1，含 `/wechat/oauth/start|callback`）、`POST /api/v1/payments/wechat/notify` 回调（会话与 CSRF 之前挂载，保留原始请求体验签）、`payments.reconcile` 对账任务（接入 `queue/cron.js`） | 重复通知只入账一次；验签失败、解密失败、`mchid/appid` 不符、金额不符、非 `SUCCESS`、查单未支付都不入账；并发通知只入账一次；过期订单后到的支付仍入账；对账补入账与关单；同时 3 单上限与每小时 10 单限流；下单失败不留 created 订单；无 openid 的 jsapi 下单 409；OAuth `state` 校验与 `returnTo` 只允许站内路径；账本对账正确 | M3-PAY-01 |
+| M3-PAY-03 | Web | 钱包页「充值」、充值页（只有档位）、结果页；按环境自动选 scene：微信内 JSAPI（无 openid 先静默授权，`WeixinJSBridge` 调起）、手机浏览器 H5（未开通时提示在微信中打开）、PC Native 二维码；types.ts 与 mock 同步 API.md §3.1，mock 模拟支付完成 | 手机 390（含微信开发者工具或真机微信）与 PC 1280 走查截图；`npm run check` 与 build 通过 | M3-PAY-02 契约 |
+| M3-PAY-04 | Ops | 公网 HTTPS 回调域名与反向代理（放行 notify 并透传原始请求体，不被登录和 CSRF 拦截）、环境变量注入说明、**微信支付开通手册**（写给非程序员：商户号、服务号认证与绑定、网页授权域名、JSAPI 支付授权目录、H5 支付申请、API 证书/APIv3 密钥/微信支付公钥） | **真实小额支付联调前必须得到用户明确授权并写明金额上限**（AGENTS.md §6）；真实联调只能在 Ubuntu 服务器 + 已备案域名上做 | M3-PAY-02 |
 | M3-SMS-01 | BE-Core | 阿里云短信 provider（`SMS_PROVIDER=aliyun`）：`dysmsapi` `SendSms` 自行实现签名（不引入官方 SDK），配置 `ALIYUN_SMS_ACCESS_KEY_ID/SECRET`（建议 RAM 子账号只授短信权限）、`ALIYUN_SMS_SIGN_NAME`、`ALIYUN_SMS_TEMPLATE_CODE`（模板变量 `code`）；发送失败映射中文提示（频控/余额不足/号码无效），原始错误只进日志且脱敏；生产启动缺配置即报错；`log` 占位保留给内测 | 本地模拟短信网关测试签名与错误映射；**真实发送前需用户授权并写明条数上限**；手机号日志脱敏 | M1-BE-01 |
 
 ### 其他
