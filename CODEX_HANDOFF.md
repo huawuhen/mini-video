@@ -82,6 +82,7 @@
 | M2-BE-03-e2e（真实渠道端到端验证） | BE-Core（本机开发 Agent） | `agent/be/M2-BE-03-e2e` | `server/scripts/e2e-real.js` `server/src/engine/providers/{transport.js,drivers/openai-images/**}` `server/src/projects/{download.js,segment.js}` `server/test/projects/projects.test.js` `server/scripts/aiide-smoke.js` `server/.env.example` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并）（delivered + 三项验证全过 + 修复 3 个真实链路 bug；720p 校准 +5.6% 超 5% 待 Lead 定夺，见 §7） | 2026-10-24 |
 | M2-WEB-01（前端切换真实 API 联调） | Web（本机开发 Agent，含 BE 配合：local-mock 驱动） | `agent/web/M2-WEB-01-real-api` | `server/src/engine/providers/drivers/local-mock/**` `server/src/engine/providers/{registry,contract-test}.js` `server/src/worker.js`（seed/deps） `server/scripts/channel-cli.js` `apps/web/**`（联调修复） `server/test/**` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-26 |
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
+| M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | 进行中（授权见 §3 2026-10-31：真实费用上限 300 元/停止线 250 元/同 Wi-Fi） | 2026-10-31 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
