@@ -7,17 +7,18 @@
     "node": ">=22.12.0"
   },
   "scripts": {
-    "start:api": "node src/app.js",
-    "start:worker": "node src/worker.js",
-    "migrate": "node src/db/migrate.js",
-    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\" \"src/engine/providers/drivers/**/driver.test.js\"",
-    "driver:new": "node scripts/driver-new.js",
     "admin:create": "node scripts/admin-create.js",
     "channel": "node scripts/channel-cli.js",
     "channel:list": "node scripts/channel-cli.js list",
-    "channel:use": "node scripts/channel-cli.js use",
+    "channel:seed": "node scripts/channel-cli.js seed",
     "channel:test": "node scripts/channel-cli.js test",
-    "channel:seed": "node scripts/channel-cli.js seed"
+    "channel:use": "node scripts/channel-cli.js use",
+    "driver:new": "node scripts/driver-new.js",
+    "migrate": "node src/db/migrate.js",
+    "redeem:create": "node scripts/redeem-create.js",
+    "start:api": "node src/app.js",
+    "start:worker": "node src/worker.js",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\" \"src/engine/providers/drivers/**/driver.test.js\""
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "0.87.1",

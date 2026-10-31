@@ -1,0 +1,42 @@
+# Mac 本机内测覆盖（M2-OPS-03，用法与说明见 deploy/MAC-BETA.md）：
+#   cd deploy && docker compose -f compose.yml -f compose.mac-beta.yml up -d --build
+# 唯一作用：加一个 DoH→UDP53 转发服务并把 api/worker 的 DNS 指向它，绕过开发 Mac 代理的
+# TUN fake-IP（一切 UDP 53 被劫持成 198.18/16、TCP 53 超时，仅 443 干净——详见
+# doh-forwarder.mjs 头注释）。safeFetch 的 SSRF 防护零改动、不写死任何业务 IP；
+# Docker embedded DNS（127.0.0.11）仍负责服务名解析，公网域名转发给本服务。
+# ⚠️ 仅 Mac 开发机内测需要；Ubuntu 生产服务器无此环境，不要带上这个文件部署。
+name: miv
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24 # 固定网段，让 dns 服务地址可预测
+
+services:
+  dns:
+    image: node:22-alpine
+    command: ["node", "/f.mjs"]
+    volumes:
+      - ./doh-forwarder.mjs:/f.mjs:ro
+    networks:
+      default:
+        ipv4_address: 172.28.0.53
+    restart: unless-stopped
+    healthcheck:
+      # 直接问本机 53（容器自身不经 Docker embedded DNS 转发——那条路仍会撞 fake-IP）
+      test: ["CMD-SHELL", "node -e \"require('dns').promises.setServers(['127.0.0.1']);require('dns').promises.resolve4('cdnh5.redith.cn').then(r=>process.exit(/198.1[89]/.test(r[0])?1:0)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 10s
+
+  api:
+    dns: ["172.28.0.53"]
+    depends_on:
+      dns: { condition: service_healthy }
+
+  worker:
+    dns: ["172.28.0.53"]
+    depends_on:
+      dns: { condition: service_healthy }

@@ -2,11 +2,11 @@
 // 金额一律整数「分」，禁止浮点。所有写操作接收调用方的事务作用域 t（§6 M1-BE-02 要点 a），
 // 余额用带条件的 UPDATE 原子增减，影响 0 行即拒绝；每笔流水带 idempotency_key（唯一）：
 // 同键重放返回首次结果，同键不同参数 409 IDEMPOTENCY_CONFLICT。
-import { createHash } from 'node:crypto';
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
+import { normalizeRedeemCode, redeemCodeHash } from './redeem-code.js';
 
-export const redeemCodeHash = (code) => createHash('sha256').update(code).digest('hex');
+export { redeemCodeHash };
 
 /** amountFen 为对可用余额的变化（扣减为负），frozenDeltaFen 为对冻结金额的变化。 */
 async function insertLedger(t, { userId, kind, amountFen, frozenDeltaFen, title, refType, refId, idempotencyKey }) {
@@ -132,9 +132,13 @@ export async function charge(t, op) {
   return { ...result, amountFen: result.entry.amount_fen };
 }
 
-/** 兑换码充值：码只存哈希；used_by IS NULL 条件更新防并发重复兑换。 */
+/** 兑换码充值：码只存哈希；used_by IS NULL 条件更新防并发重复兑换。
+ * 输入先经 normalizeRedeemCode（去空白/横线、大写、易混字符 O→0 I/L→1——M2-OPS-03
+ * 复审必改 2），结构不合法直接判无效，不再把合法码的誊写误差当错码烧尝试额度。 */
 export async function redeem(t, { userId, code, idempotencyKey }) {
-  const hash = redeemCodeHash(code);
+  const normalized = normalizeRedeemCode(code);
+  if (!normalized) throw appError('VALIDATION_FAILED', '兑换码无效或已被使用');
+  const hash = redeemCodeHash(normalized);
   const result = await withIdempotency(
     t,
     { userId, idempotencyKey, expect: { kind: 'redeem', ref_type: 'redeem_code', ref_id: hash } },

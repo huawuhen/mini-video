@@ -826,6 +826,7 @@ export async function createSegmentTake(db, { userId, projectId, segmentId, quot
         audioRefs: segment.final_prompt?.audioRefs ?? [], durationSeconds: segment.duration_seconds,
         ratio: project.ratio, videoKey: `users/${userId}/projects/${projectId}/takes/${takeId}.mp4`,
         lastFrameKey: `users/${userId}/projects/${projectId}/takes/${takeId}.last.jpg`,
+        posterKey: `users/${userId}/projects/${projectId}/takes/${takeId}.poster.jpg`,
         amountFen: quote.amount_fen, resolution: skuRows[0].resolution ?? '720p',
         redelivery: true, castCount: castRows.length,
       }), replayKey],

@@ -100,6 +100,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
             durationSeconds: segment.duration_seconds, ratio: project.ratio,
             videoKey: `users/${userId}/projects/${projectId}/takes/${takeIdResolved}.mp4`,
             lastFrameKey: `users/${userId}/projects/${projectId}/takes/${takeIdResolved}.last.jpg`,
+            posterKey: `users/${userId}/projects/${projectId}/takes/${takeIdResolved}.poster.jpg`,
             amountFen, resolution: skuRows[0].resolution ?? '720p',
           }), takeIdResolved], // 幂等键 = take id（docs/ARCHITECTURE.md §4）
         );
@@ -479,12 +480,27 @@ export function createGenPollHandler({ db, logger, config, videoProvider, storag
       const lastFramePath = await render.extractLastFrame(localPath, { workDir });
       await storage.put(request.lastFrameKey, await readFile(lastFramePath));
 
+      // 海报帧（M2-OPS-03 复审必改 3）：转存供片段卡缩略图；失败仅记日志不阻塞 take 成功
+      // （前端对 succeeded 无图有「已完成」文案兜底）。老任务 request 未写 posterKey：按同一约定派生。
+      const posterKey = request.posterKey
+        ?? request.videoKey.replace(/\.mp4$/, '.poster.jpg');
+      let posterPut = null;
+      try {
+        const posterPath = await render.extractPosterFrame(localPath, { workDir });
+        await storage.put(posterKey, await readFile(posterPath));
+        posterPut = posterKey;
+      } catch (posterError) {
+        ctx.logger.warn('segment_poster_failed', { takeId, projectId,
+          err: String(posterError?.message ?? posterError).slice(0, 200) });
+      }
+
       const redelivery = request.redelivery === true;
       const settled = await db.tx(async (t) => {
         const claimed = await t.query(
-          `UPDATE segment_takes SET status = 'succeeded', video_key = $2, last_frame_key = $3
+          `UPDATE segment_takes SET status = 'succeeded', video_key = $2, last_frame_key = $3,
+              poster_key = COALESCE($4, poster_key)
             WHERE id = $1 AND status = 'running' RETURNING id`,
-          [takeId, request.videoKey, request.lastFrameKey],
+          [takeId, request.videoKey, request.lastFrameKey, posterPut],
         );
         if (!claimed.rows.length) return false; // 输掉竞争：不动钱
         await t.query(`UPDATE gen_tasks SET status = 'succeeded', result = $2, updated_at = now() WHERE id = $1`,

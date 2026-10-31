@@ -82,6 +82,7 @@
 | M2-BE-03-e2e（真实渠道端到端验证） | BE-Core（本机开发 Agent） | `agent/be/M2-BE-03-e2e` | `server/scripts/e2e-real.js` `server/src/engine/providers/{transport.js,drivers/openai-images/**}` `server/src/projects/{download.js,segment.js}` `server/test/projects/projects.test.js` `server/scripts/aiide-smoke.js` `server/.env.example` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并）（delivered + 三项验证全过 + 修复 3 个真实链路 bug；720p 校准 +5.6% 超 5% 待 Lead 定夺，见 §7） | 2026-10-24 |
 | M2-WEB-01（前端切换真实 API 联调） | Web（本机开发 Agent，含 BE 配合：local-mock 驱动） | `agent/web/M2-WEB-01-real-api` | `server/src/engine/providers/drivers/local-mock/**` `server/src/engine/providers/{registry,contract-test}.js` `server/src/worker.js`（seed/deps） `server/scripts/channel-cli.js` `apps/web/**`（联调修复） `server/test/**` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-26 |
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
+| M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | 复审 3 必改已修复待复审（worker 守卫回归测试、normalizeRedeemCode、poster_key 链路；附建议 4/5；387/387，check/build 过，见 §7） | 2026-10-31 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -209,6 +210,32 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-10-31 · Ops · M2-OPS-03 复审必改修复（守卫回归测试 / 兑换码规范化 / 片段海报帧）
+
+- **背景**：Lead 复审（§6 2026-10-31）🔁 3 必改 + 建议 4/5；同分支 `agent/ops/M2-OPS-03-mac-beta`，已合并 origin/main `7f167fc`（支付决策修订文档）。
+- **必改 1（worker 守卫回归测试）**：`server/test/wiring-regression.test.js` 新增 `buildHandlers 生产守卫` 三用例——生产 + real + 渠道层**不注入 provider 也不抛错且 handlers 完整**（含 `worker_upstreams` 摘要 `channels: db-routed` 断言）；生产 + real + 无渠道层仍按原样拒绝；生产 + mock 无渠道层仍拒绝缺省 provider。
+- **必改 2（兑换码规范化）**：抽共用模块 `server/src/wallet/redeem-code.js`——`normalizeRedeemCode`（去所有空白含全角/横线含全角 → 大写 → **易混字符映射只作用于前缀后的 body**（O→0、I/L→1；直接全文映射会把前缀 MIV 的 I 也换成 1，实现中踩到并修掉）→ 按 MIV-XXXXX-XXXXX 重组；结构不合返回 null）+ `redeemCodeHash`（规范化后 sha256）。生成侧（`scripts/redeem-create.js` 的 `hashOf`/字符表/长度常量）与兑换侧（`wallet/service.js` redeem 入口）全部改走同一模块；生成即规范形式，**历史码哈希不变**。测试：`redeem-code.test.js`（纯函数：小写/首尾空格/中间空格/全角空格/少横线/横线错位/全角长横线/O↔0/I·L→1 全归一，结构不合 null）+ `wallet.test.js` 端到端（誊写误差兑换成功且不重复入账；原测试码 `MIV-TEST-CODE-0001` 等非规范形式同步改为 `MIV-TESTC-0DE0x`）。
+- **必改 3（片段海报帧）**：`render/index.js` 新增 `extractPosterFrame`（默认 1 秒处、片长不足回退首帧）；`segment.js`/`service.js` 两处建 gen_tasks 的 request 写 `posterKey`（老任务按 `.mp4 → .poster.jpg` 约定派生），gen.poll 成功路径抽帧转存并写 `segment_takes.poster_key`（**失败仅记日志不阻塞 take 成功**，`COALESCE` 保持原值）。前端 `SegmentCard.vue` 按 take 状态给文案：succeeded 无图显示「已完成」，不再显示「生成中…」。测试：`render.test.js`（1 秒处取帧验证——注意 ffmpeg 的 `green` 是 #008000，luma≈76 与红相同，须用纯绿 0x00FF00 才能以 YAVG 区分；短片回退首帧）+ `projects.test.js` 串行链断言每段 `poster_key` 落库 + 新用例「抽帧失败不阻塞」（take 照常 succeeded 结算、poster_key 为 NULL）。
+- **建议 4**：`deploy/doh-forwarder.mjs` AAAA 一律回空答案（NOERROR、0 条，区别于 NXDOMAIN），删掉压缩写法会编错的 IPv6 rdata 展开，只保留 A。
+- **建议 5**：`redeem-create.test.js` 的 `_guard` 重复 import 占位已删。
+- **验证**：`npm run test:server` **387/387**（+11：守卫 3、规范化 5、串行链 poster 断言并入 2、海报失败不阻塞 1）；`npm run check`、`npm run build` 通过；`node --check doh-forwarder.mjs` 通过。零真实费用。
+- **风险/未验证**：已交付的旧 take 无 poster_key（列保持 NULL，前端显示「已完成」，可点开播放视频本身）；doh-forwarder 的 AAAA 空答案未在容器栈内实测（纯转发逻辑变更，Mac 栈下次重启自然生效）；手机端走查仍待内测用户。
+
+### 2026-10-31 · Ops · LLM 剧本模型切换 glm-4.6 → glm-5.3-flash（用户指示，零代码运营变更）
+
+- **背景**：用户指示「LLM 模型修改为 glm-5.3-flash」。渠道层设计下模型存于 `provider_channels.model_map`（以数据库为准，不需要改代码）；在同分支 `agent/ops/M2-OPS-03-mac-beta` 追加记录。
+- **改动**：① **Mac 内测栈库**：zhipu LLM 渠道（`pch_vg86evny2usfx0iq`）`model_map.llm` → `glm-5.3-flash`——api 容器内走 service 层 `updateChannel`（与 `channel:use` 同机制，`admin_audit_logs` actor=cli 留痕）；渠道按次从库读取，只影响新提交、无需重启。② **种子环境同步**：`deploy/.env`、`server/.env`（均不入库）的 `STORY_LLM_MODEL=glm-5.3-flash`，未来重建/新部署种入即新模型。③ dev 库（127.0.0.1:56432/miv）渠道表为空表（此前未播种，本次顺带补齐 migrate 010），无需改库。
+- **验证**：`channel:list` 生效模型显示 `glm-5.3-flash`；`channel:test zhipu` ✅ 且该模型在供应商目录（目录共 11 个模型）；**真实最小冒烟通过**——api 容器内 `story-smoke.js` 以 glm-5.3-flash 跑通故事理解：degraded=false、规划 3 段共 75s / 2 角色，input 1534 / output 4020 tok，约 90s（智谱套餐内 0 元，OPS-03 真实渠道授权口径）。
+- **风险/未验证**：glm-5.3-flash 与 glm-4.6 的剧本规划习惯差异未做长链路对比（下一条真实成片自然验证）；视频/图片渠道未动。
+
+### 2026-10-31 · Ops · M2-OPS-03 Mac 本机内测（生产栈 + DoH 绕行 + 兑换码 + 真实交付）
+
+- **背景**：用户授权（§3 2026-10-31：同 Wi-Fi、真实费用上限 300 元/停止线 250 元、每笔记账）。分支 `agent/ops/M2-OPS-03-mac-beta`（基于 main `8c29d72`）。
+- **交付物**：① `server/scripts/redeem-create.js` + `npm run redeem:create -- <元> <张> [有效天数]`：Crockford base32 码（可抄写）、只存 sha256 哈希、stdout 只打印一次、审计不含码；测试 2 用例（格式/落库哈希/审计/兑换哈希口径一致）；生产容器 `docker compose run --rm api node scripts/redeem-create.js` 实测生成 3 张码。② `deploy/doh-forwarder.mjs` + `compose.mac-beta.yml`：**fake-IP 解法**——实测容器内 UDP 53 全被代理 TUN 劫持（含显式 223.5.5.5）、TCP 53 超时、仅 443 干净；自写 UDP53→DoH(443) 转发容器（固定 IP 172.28.0.53、健康检查、零外部镜像依赖），api/worker `dns:` 指向它（Docker embedded DNS 仍负责服务名）；**栈内实测解析 cdnh5/aiide/open.bigmodel/七牛上传/volces 下载全部真实公网 IP，safeFetch SSRF 防护零改动、不写死 IP**。③ **修生产阻断回归**（`server/src/worker.js`）：渠道路由模式下注入式 provider 为 null 是正确状态，旧守卫误拒——**生产 worker 在渠道路由模式下此前从未真正启动过**（e2e 自驱 handler、OPS-01 验收均未覆盖）；本次首次以 `channel-router + qiniu` 生产口径启动成功。④ `deploy/MAC-BETA.md` 非程序员内测手册（启动/防休眠/验证码转告/兑换码/费用/切渠道/备份/手机连不上排查/管理员）。⑤ 环境就位：`deploy/.env`（ORIGINS 含 LAN IP 192.168.10.249、COOKIE_SECURE=false）、caffeinate 防休眠、每日 04:00 backup cron（内测本机未加 --upload）。
+- **初始化核对**：admin `mac-beta`；渠道由 worker 自动种子引导（生产首次部署链路实证）——**aiide（video/image）生效、zhipu LLM 生效、miaowuai 备用、local-mock 零加载**（`channel:list` 干净 + worker 日志 `driver_disabled_in_production`；DB 计数 0）。
+- **真实渠道验证（全流程交付 1 条 90 秒成片，Mac 浏览器 375px 驱动）**：登录（SMS_PROVIDER=log 验证码日志转告口径实测）→ 兑换码充值 ¥50+¥100 → 创建（**真实 glm-4.6 扩写**完整剧本，input 452/output 877 tok）→ 确认点 A → **真实 aiide 形象 3 张**（真实 LLM 规划了 3 角色，各 ~28s）→ 确认点 B（预占 ¥90——真实 LLM 自主规划 3×30s=90s，符合「时长 agent 决定」产品规则）→ **真实 aiide 视频 3 段** → 拼接 → 交付：播放器 90.24s 签名 URL 可播、下载 200 video/mp4 8.1MB；钱包逐笔对账一致（15000-180-9000=5820，冻结归零）；SSE/进度推进正常。**排队实测：提交 11:15:51 → 交付 12:09:18，全程 53.5 分钟**（段 1≈28min、段 2≈12min、段 3≈13min、拼接 45s——「制作中」分钟~小时级文案再获实证）。**真实成本：61.11 元**（形象 3×36 分 + 视频 3 段各 usage 288,625 tokens ≈ 2001 分/段 + LLM 0 套餐内；账本 `server/.data/ops03-cost-ledger.jsonl` 每笔在案，**累计 61.11 元 << 250 元停止线**）。截图 `docs/m2-ops03/`（兑换/确认A/确认B/制作中/交付 5 张 Mac 侧）。
+- **未验证（如实）**：**真实手机端走查留给内测用户**（栈已就位：`http://192.168.10.249:8080`，剩余兑换码 `MIV-F3TNN-PBSZW` ¥50 在 MAC-BETA.md §3 口径发放；手机截图与体验反馈待用户回传后补记）；喵呜渠道真实提交（仅登记备用，切换 CLI 就绪）；LAN IP 变更场景（手册 §7 已写处理办法）；支付（易支付 M3）；短信真实通道。
+- **测试**：`npm run test:server` **375/375**（+redeem 2）、`check`、`build` 通过。
 ### 2026-10-29 · Ops · M2-OPS-01 复审必改修复（流程预防/生产模板拆分/TRUST_PROXY 手册/异地备份）
 
 - **背景**：Lead 复审（§6 2026-10-29）🔁 3 必改 + 建议 4/5；dump 泄露事件用户已决定忽略（§3 同日），流程预防照做。同分支 `agent/ops/M2-OPS-01-docker`。

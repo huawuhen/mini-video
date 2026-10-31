@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { createApp, buildUrlFor } from '../src/app.js';
-import { createWorker, } from '../src/worker.js';
+import { buildHandlers, createWorker, } from '../src/worker.js';
 import { enqueue } from '../src/queue/index.js';
 import { createMemoryStorage } from '../src/engine/storage/memory.js';
 import { createLogger } from '../src/logger.js';
@@ -104,5 +104,53 @@ describe('buildUrlFor（媒体签名链接装配）', () => {
       await new Promise((resolve) => server.close(resolve));
       await ctx2.drop();
     }
+  });
+});
+
+// M2-OPS-03 复审必改 1 回归测试：worker 装配守卫——渠道路由模式下生产 worker 不注入
+// provider 是正确状态（此前守卫误拒，生产 worker 在渠道路由模式下从未真正启动过）。
+// buildHandlers 是纯装配（只创建处理器闭包，不连数据库/网络），fake db + 内存存储即可覆盖。
+describe('buildHandlers 生产守卫（M2-OPS-03 复审必改 1）', () => {
+  const makeConfig = (over = {}) => ({
+    production: true,
+    cron: { sweepBatchSize: 10, jobsDoneRetentionDays: 30 },
+    projects: { maxVideoBytes: 1024, failedCancelDays: 7 },
+    worker: { maxAttempts: 5 },
+    providers: { real: true },
+    storage: { driver: 'memory' },
+    ...over,
+    providers: { real: true, ...(over.providers ?? {}) },
+  });
+  const channelLayer = { service: { sweepRetiredCredentials: async () => ({ cleared: 0 }) }, router: {} };
+
+  test('生产 + GEN_UPSTREAMS=real + 渠道层：不注入 provider 也不抛错，handlers 完整', () => {
+    const logs = [];
+    const capture = { info: (name, fields) => logs.push({ name, fields }), warn: () => {}, error: () => {},
+      child: () => capture };
+    const handlers = buildHandlers({
+      config: makeConfig(), db: {}, logger: capture, storage: createMemoryStorage(),
+      channelLayer, // 关键：不传 imageProvider / storyAgent / videoProvider
+    });
+    for (const type of ['look.generate', 'segment.generate', 'gen.poll', 'project.compose', 'channels.retired_sweep']) {
+      assert.equal(typeof handlers[type], 'function', `生产渠道路由模式必须注册 ${type}（守卫误拒时这里直接抛错）`);
+    }
+    const summary = logs.find((l) => l.name === 'worker_upstreams')?.fields;
+    assert.equal(summary?.channels, 'db-routed', `上游摘要应标记渠道路由：${JSON.stringify(summary)}`);
+    assert.equal(summary?.video, 'channel-router');
+  });
+
+  test('生产 + GEN_UPSTREAMS=real + 无渠道层：仍按原样拒绝', () => {
+    assert.throws(
+      () => buildHandlers({ config: makeConfig(), db: {}, logger: silent, storage: createMemoryStorage() }),
+      /生产环境 GEN_UPSTREAMS=real 必须装配渠道路由层/,
+    );
+  });
+
+  test('生产 + mock（GEN_UPSTREAMS≠real）：无渠道层也必须拒绝缺省 provider', () => {
+    assert.throws(
+      () => buildHandlers({ config: makeConfig({ providers: { real: false } }), db: {}, logger: silent,
+        storage: createMemoryStorage() }),
+      /生产环境必须注入真实/,
+    );
   });
 });
