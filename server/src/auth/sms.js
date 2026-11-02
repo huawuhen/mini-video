@@ -85,10 +85,13 @@ export async function sendSmsCode({ db, config, logger, provider, phone }) {
   try {
     await provider.send({ phone, code });
   } catch (err) {
-    // 发送失败删除记录：不占冷却、不留死码
+    // 发送失败删除记录：不占冷却、不留死码。
+    // M3-SMS-01：provider 可带 userMessage（阿里云错误码映射的固定中文）；原始错误只进日志，
+    // 手机号脱敏。日志不落验证码与完整手机号。
     await db.query(`DELETE FROM sms_codes WHERE id = $1 AND consumed_at IS NULL`, [smsRowId]);
-    logger.error('sms_send_failed', { phone: maskPhone(phone), err });
-    throw appError('UPSTREAM_FAILED', '验证码发送失败，请稍后再试');
+    logger.error('sms_send_failed', { phone: maskPhone(phone),
+      err: { code: err?.code, message: String(err?.message ?? err).slice(0, 300) } });
+    throw appError('UPSTREAM_FAILED', err?.userMessage || '验证码发送失败，请稍后再试');
   }
   logger.info('sms_code_sent', { phone: maskPhone(phone), provider: provider.id });
   return { cooldownSeconds: config.sms.sendCooldownSeconds };

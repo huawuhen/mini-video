@@ -89,6 +89,7 @@
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
+| M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | 待审查（dysmsapi SendSms 自实现签名 + 错误映射 + 独立验签模拟网关；456/456；零真实发送，见 §7） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -157,6 +158,7 @@
 5. 生成式 AI 备案主体（M3）。
 6. 充值相关（PRD 6.4、§12 第 4 条）：（预设金额已决：50/100/500/1000 元，上限 1000 元）充值退款政策、易支付商户资质 / 结算周期 / 费率、真实小额联调的授权与金额上限。
 7. ~~（M2-OPS-02 联调发现）七牛桶选择~~ **已决（2026-10-21，用户）**：新建**私有桶 `redith-h5` + CDN `cdnh5.redith.cn`**（HTTPS 证书、CDN 回源鉴权均已配置——回源鉴权是官方对「私有空间 + 自定义域名」的强制要求，须保留）。旧桶 `redith` 保持公开不动，桶内既有实验数据不受影响。Engine 已在该配置上重跑联调 **10/10 通过**（过期/无 token 均被 403 拒绝；详见 `server/src/engine/README.md` 联调结论）。生产环境变量：`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`（region 必须显式配置）。
+9. **（M3-SMS-01，2026-11-02）真实短信发送授权**：阿里云短信 provider 已完成（模拟网关测试，零真实发送）；**用户阿里云账号尚未申请**。真实发送验证需：① 账号就绪并配置四项环境变量；② 用户明确授权并写明**测试条数上限**（建议 ≤5 条）；③ 顺带验证真实错误码与到达率。
 8. **（2026-10-23，aiide 渠道切换）**：① 密钥与首批冒烟已决已毕（见 §7 当日条目）；**定价已决（迁移 008，用户委托）**：480p 100 / 720p 200 / 形象 60 分，成本 68 / 143 / 36（见 §3 当日决策，Lead 可复核）；② **渠道限制待用户向商家反馈**：gpt-image-2 是**同步接口**且在 Cloudflare 后面（网关约 100 秒掐断，HTTP 524）——生成高峰期超 100 秒的请求会被切断，适配器按「结果未知」冻结待对账。本次端到端第二个形象就撞上了（63 秒成功、125 秒 524，重试一次成功）。请商家确认：是否有异步任务接口 / 能否放宽网关超时；若不能，建议产品策略允许「同步图片 524/504 网关超时自动重试 ≤2 次」（最坏双倍计费 72 分/张，须 Lead 追认）；③ **部署注意**：成片在火山 TOS 新加坡，本机跨境下载实测 ~60KB/s（safeFetch 与 curl 一致，慢在线路）；生产服务器须实测，Worker 下载超时 300 秒写死（720p 30 秒片约 40MB），必要时配置化放宽；④ 真人照片素材过审、720p 真实 token 未验证。
 
 ## 5. 接口/跨域变更申请
@@ -225,6 +227,17 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-02 · BE-Core · M3-SMS-01 阿里云短信 provider（自实现签名，零真实发送）
+
+- **背景**：TASKS M3-SMS-01（用户 2026-10-31 选型：阿里云短信）；分支 `agent/be/M3-SMS-01-aliyun-sms`（基于 main `de8143d`）。**用户阿里云账号尚未申请，全程本地模拟网关，零真实发送**（真实发送前需用户授权并写明条数上限，TASKS 口径）。
+- **交付物**：`server/src/auth/sms-aliyun.js`——`aliyunSmsProvider(config, logger, { http, now, nonce })`：dysmsapi（2017-05-25）`SendSms`，RPC API **签名 V1.0 自实现**（HMAC-SHA1：参数 key 升序 → RFC3986 percentEncode 拼串 → `GET&%2F&percentEncode(串)` → HMAC(secret&) base64；不引入官方 SDK）；`buildAliyunSmsRequest` 纯函数导出（测试直接断言参数/待签名串/签名）。错误口径：阿里原始 Code/Message 只进 err.message 供日志，用户看 `err.userMessage`（映射表：分钟/天级频控、余额不足、号码无效、签名/模板配置问题→「联系客服」类，未命中默认「验证码发送失败，请稍后再试」）。
+- **装配**：`SMS_PROVIDER=aliyun`（`auth/index.js` 按 provider 选择；构造即校验四配置缺任一**点名变量**报错，不挑环境）；`config.js` 新增 `sms.aliyun.*`（ALIYUN_SMS_ACCESS_KEY_ID/SECRET、SIGN_NAME、TEMPLATE_CODE）+ **生产缺配置 loadConfig 启动即报错**；`sms.js` 的 catch 透出 `err.userMessage` 并保持脱敏日志（`maskPhone`，不落验证码与完整手机号）；`log` 占位与 `console`（仅开发测试）保留不动；`.env.example` 补注释（RAM 子账号建议只授短信权限）。
+- **测试**（`test/sms-aliyun.test.js` 13 用例）：模拟网关为**测试内独立实现**（RFC3986 编码与 HMAC 验签重写一遍，不 import src，避免同一实现自证）——① 固定向量：参数齐全（Action/Version=2017-05-25/TemplateParam={"code":…}/Timestamp UTC 秒级/Nonce）、percentEncode 口径（空格/+/*/~ 与 JSON 模板变量）、待签名串格式 `GET&%2F&…`、签名与独立重算一致；② 回环：发送成功（验签通过+参数正确）；**密钥不符 → 网关拒签**（证明签名实现会被真实网关同款校验）；错误映射六例（分钟/天级频控、余额不足、号码无效、HTTP 400 Throttling、未知码默认）；网络类失败原始错误只在 message；缺任一配置点名报错；③ 生产 loadConfig 缺配置报错/配齐通过；④ **端到端**（真实 createApp HTTP 栈 + 模拟网关）：发码成功落库、频控错误 → 502 + 固定中文 + 响应不透出阿里原始 Code/Message + 失败不留死码（不占冷却/每日次数）。
+- **验证**：`npm run test:server` **456/456**（+13）、`check`、`build` 通过。
+- **未验证（如实）**：真实阿里云网关的签名接受度、真实错误码全集（映射表只覆盖高频码）、模板变量实际渲染与到达率——待用户阿里云账号就绪并授权后小批量真实验证（§4 待用户确认已登记该前提）。
+
+### 2026-11-02 · Web · M3-PAY-03 复审必改修复（409 处理 / H5 回跳 / 提示条与按钮打磨）
 
 ### 2026-11-02 · Web · M3-PAY-03 复审必改修复（409 处理 / H5 回跳 / 提示条与按钮打磨）
 
