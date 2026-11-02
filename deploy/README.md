@@ -48,6 +48,7 @@ nano deploy/.env        # 或 vi；只改下面列出的行，其余保持默认
 | `STORY_LLM_API_KEY` | 智谱密钥（`STORY_LLM_BASE_URL`/`MODEL` 已预填） |
 | `ALLOWED_ORIGINS` | 你的站点地址，如 `https://video.example.com`（没域名先填 `http://服务器IP:8080`） |
 | `COOKIE_SECURE` | **用 IP + HTTP 内测阶段保持 `false`**（填 true 浏览器在 http 下不回传 Cookie，会登录不上）；**启用 HTTPS 后必须改成 `true`**（见第 8 步），否则会话 Cookie 可经明文传输 |
+| 微信支付（`WXPAY_*` 等 11 项）与阿里云短信（`ALIYUN_SMS_*` 4 项） | 全部开通与逐项填写指引见 **[PAY-SETUP.md](./PAY-SETUP.md)**（写给非程序员）；配齐前在线充值自动整体关闭、短信仍走 `log` 占位。**所有密钥只放服务器上的 `deploy/.env`，绝不提交进仓库或经聊天工具传输** |
 
 保持默认即可的重点（勿删）：`NODE_ENV=production`、`TRUST_PROXY_HOPS=1`（前面加了一层外部代理/CDN 时要调大，见第 8 步）、`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`、`PROJECTS_VIDEO_DOWNLOAD_TIMEOUT_MS=1200000`（渠道结果下载跨境较慢，5 分钟缺省不够）、`SMS_PROVIDER=log`（短信通道上线前的占位，验证码会打进日志，**正式上线前必须接入真实短信**）。
 
@@ -164,6 +165,33 @@ docker compose exec -T postgres psql -U miv -d miv -c \
 ```
 
 如果 `ip` 和第 1 步查到的公网 IP 一致，说明配置正确；如果是内网/代理 IP（如 `172.x.x.x`、`192.168.x.x` 或 CDN 节点 IP），把 `TRUST_PROXY_HOPS` 加 1，`docker compose up -d` 后重做第 2、3 步。
+
+### 外层 HTTPS 代理的两条硬性要求（微信支付上线时）
+
+1. **微信支付回调路径 `/api/v1/payments/wechat/notify` 必须原样透传**：不加任何登录/鉴权跳转、不做内容改写或压缩变换（验签按原始请求体逐字节比对；应用层已豁免登录与 CSRF，代理层不要再拦）。外层 nginx 示例：
+
+   ```nginx
+   location /api/v1/payments/wechat/notify {
+     proxy_pass http://127.0.0.1:8080;
+     proxy_set_header Host $host;
+     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+     proxy_set_header X-Forwarded-Proto $scheme;
+     # 不要加 auth_request / limit_req 挡它 / 任何 body 改写
+   }
+   ```
+   容器内 web 层的 nginx 已为该路径单独透传（见 `nginx.conf`）。
+2. **H5 支付域名与站点域名一致**（前端回跳 `redirect_url` 依赖），详见 [PAY-SETUP.md](./PAY-SETUP.md) 第 6 章。
+
+### 微信校验文件放置（公众号域名归属验证）
+
+微信设置「网页授权域名 / JSAPI 支付授权目录」时会要求把 `MP_verify_xxxx.txt`（或同类校验文件）放在 `https://你的域名/` 下可直接访问。放法：
+
+```bash
+# 在服务器上，进 deploy 目录后执行（文件名换成微信给你的）：
+docker compose cp MP_verify_xxxx.txt web:/usr/share/nginx/html/
+# 浏览器打开 https://你的域名/MP_verify_xxxx.txt 能看到内容即生效；
+# 校验通过后文件可留着（不影响任何功能），容器重建会消失——重验时重复上面一步即可
+```
 
 ## 9. 常见问题
 

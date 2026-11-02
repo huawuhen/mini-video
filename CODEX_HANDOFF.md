@@ -90,6 +90,7 @@
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
+| M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | 待审查（公网 HTTPS 反代透传 + 环境变量清单 + 非程序员开通手册；纯文档/配置零代码，见 §7） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -228,6 +229,17 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-02 · Ops · M3-PAY-04 支付上线配置与开通手册（纯文档/配置，零代码）
+
+- **背景**：TASKS M3-PAY-04；分支 `agent/ops/M3-PAY-04-pay-ops`（基于 main `4582868`）。**不做任何真实支付/真实短信**（需用户另行授权并写明上限，§4 已有登记）。
+- **① 公网 HTTPS 与反代**：`deploy/nginx.conf`（web 容器层）为 `/api/v1/payments/wechat/notify` 增加专属 location——原样透传请求体（验签按原始字节比对；不加 auth/redirect/改写，登录与 CSRF 由应用层豁免）、收紧 `client_max_body_size 1m`（回调 <10KB）、应答不缓冲；`nginx -t` 通过（一次性 nginx:stable-alpine 容器验证）。README §8 新增「外层 HTTPS 代理的两条硬性要求」：外层 nginx 透传示例片段（明确不要 auth_request/限流挡它/body 改写）+ H5 支付域名与站点域名一致（前端 `redirect_url` 回跳依赖）；并补「微信校验文件放置」（`docker compose cp MP_verify_xxx.txt web:...`，域名归属验证用）。
+- **② 环境变量清单**：`.env.production.example` 补齐微信支付 11 项（WXPAY_MCHID/PRIVATE_KEY/CERT_SERIAL/APIV3_KEY/PUBLIC_KEY/PUBLIC_KEY_ID/H5_ENABLED、PAYMENTS_NOTIFY_URL、WEB_BASE_URL、WECHAT_MP_APPID/SECRET，含 PAYMENTS_AMOUNTS_FEN 可选项）+ 阿里云短信 4 项（ALIYUN_SMS_ACCESS_KEY_ID/SECRET/SIGN_NAME/TEMPLATE_CODE + SMS_PROVIDER=aliyun），每项带「在哪个平台哪个页面拿」的注释；README 必改表新增一行指向手册；**密钥只放服务器 `deploy/.env`、不进仓库不经聊天工具**写进两处。
+- **③ 开通手册 `deploy/PAY-SETUP.md`（写给非程序员，10 章）**：0 总览（事项/平台/前置对照表、时间线 1~3 周、费用）→ 1 ICP 备案（域名实名→云厂商备案→管局审核，完成标志）→ 2 服务号+微信认证（300 元/年；AppID/AppSecret 只显示一次）→ 3 商户号申请与**绑定服务号**（经营场景填 AppID）→ 4 网页授权域名（校验文件转运维）+ JSAPI 支付授权目录（**精确到 `/wallet/recharge`**；填错现象「URL 未注册」速查）→ 5 APIv3 密钥/商户 API 证书（apiclient_key.pem+序列号）/**微信支付公钥（只支持公钥模式，不支持旧平台证书）** → 6 H5 支付申请（**域名必须与站点一致**，回跳 redirect_url 依赖）→ 7 阿里云短信（RAM 子账号只授 AliyunDysmsFullAccess、签名资质、模板变量只有 code）→ 8 逐项对照表（抄录的东西→环境变量）+ 重启 + **零成本自检清单**（日志点名缺失变量、health、notify 探测返回 `{"code":"FAIL"}` 证明链路通且守卫工作、充值页四档位）→ 9 常见问题速查表（未开放/URL 未注册/授权失败/回跳不回来/收不到验证码等逐条给原因）→ 10 真实联调与上线（必须先授权并写明金额/条数上限，只能 Ubuntu+备案域名+HTTPS，最小档位测试顺序）。
+- **验证**：`nginx -t` 通过；`test:server` **456/456**、`check`、`build` 通过（纯文档/配置，无代码改动）。
+- **未验证（如实）**：外层 HTTPS 形态（caddy/云 CDN 各家）下的透传行为——手册与 README 已给 nginx 正例与禁改写清单，实际联调时按第 10 章顺序验证；PAY-SETUP 的平台界面路径基于当前公开流程撰写，平台改版以官方指引为准。
+
+### 2026-11-02 · BE-Core · M3-SMS-01 阿里云短信 provider（自实现签名，零真实发送）
 
 ### 2026-11-02 · BE-Core · M3-SMS-01 阿里云短信 provider（自实现签名，零真实发送）
 
