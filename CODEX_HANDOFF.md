@@ -51,8 +51,8 @@
 |---|---|
 | 阶段 | M2 收尾 + M3 开工：真实渠道（aiide 视频/图片、智谱 LLM）已端到端验证；生产 Docker、Mac 内测栈、微信支付客户端已合并 |
 | `main` 最新可用 | 完整生成流水线（理解→形象→分段生成→合成交付，含重试耗尽兜底与 unknown 冻结）；渠道层（DB 管理、加密凭证、local-mock 零费用联调）；兑换码充值；微信支付充值后端（下单/公众号静默授权/回调验签入账/对账，模拟网关验证，未真实联调） |
-| 测试基线 | `npm run test:server` 442 通过；`npm run check`、`npm run build` 通过；Lead playwright-cli 真实浏览器走查（iPhone 15）通过到确认角色/制作/失败重试/待核对取消 |
-| 下一步 | M3-PAY-03（先修 PAY-02 合并后必改：卡单）（前端充值）→ M3-SMS-01（阿里云短信）→ M3-PAY-04（开通手册） |
+| 测试基线 | `npm run test:server` 445 通过；`npm run check`、`npm run build` 通过；Lead playwright-cli 真实浏览器走查（iPhone 15）通过到确认角色/制作/失败重试/待核对取消 |
+| 下一步 | M3-SMS-01（阿里云短信，先用模拟网关）→ M3-PAY-04（HTTPS 回调与开通手册，含 H5 支付域名 / redirect_url）→ M1-WEB-02（引导与文案打磨，含钱包冻结文案、PC 侧边栏高亮） |
 | 阻塞项 | 上线前用户侧：ICP 备案、服务号认证、微信支付商户号与密钥、阿里云短信签名模板；中文产品名、C 端定价待定 |
 
 ## 2. 认领表
@@ -88,7 +88,7 @@
 | M1-WEB-02 | — | — | — | 待认领 | — |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
-| M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | 复审 2 必改已修复待复审（409 处理/needAuth 按钮替换、H5 redirect_url；建议 3~6 全做；445/445、check/build 过） | 2026-11-02 |
+| M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -171,6 +171,7 @@
 
 | 日期 | 分支 / 任务 | 结论 | 问题清单 / 备注 |
 |---|---|---|---|
+| 2026-11-02 | `agent/web/M3-PAY-03-recharge-ui` @ `8cde54c`（M3-PAY-03 复审） | ✅ 通过并合并 | 2 条必改到位：① `submit` 捕获 409 `WECHAT_OPENID_REQUIRED`——未带 `wechatAuth=failed` 自动去授权，带了则提示不再自动跳；微信内未授权时主按钮换成「先完成微信授权」、授权卡片常显（文案「立即授权/重新授权」）；mock 加演示开关模拟未授权与 409。② H5 跳转拼 `redirect_url` 指回结果页（域名须与商户后台 H5 支付域名一致，写进 M3-PAY-04 手册）。建议 3~6 全做（提示条可换行 + 去兑换、删错位提示、`--miv-qr-bg` 令牌、§7 重复标题——合并时 Lead 又删掉一处合并产生的重复标题）。后端自上轮无改动（上轮 445/445），本轮 check/build 过。**Lead 走查（iPhone 15 + 模拟微信 UA + 未授权开关）**：`?wechatAuth=failed` → 提示条完整换行显示 + 「重新授权」卡片 + 主按钮「先完成微信授权」、不自动跳 ✔；不带 failed 打开 → 自动跳 `/api/v1/wechat/oauth/start?returnTo=%2Fwallet%2Frecharge` ✔。遗留（不阻塞）：服务端说已授权但下单仍 409 且 URL 带 failed 时，toast 让点「重新授权」但该卡片只在 needAuth 时显示——极少见，M1-WEB-02 顺手处理（409 时把 needAuth 置真即可）。**未验证**：真实微信桥调起、真实授权回跳、H5 收银台回跳（待 M3-PAY-04 真实联调）。 |
 | 2026-11-02 | `agent/web/M3-PAY-03-recharge-ui` @ `b95cdcc`（M3-PAY-03 + PAY-02 合并后必改） | 🔁 需修改（2 条必改，均小） | Lead 复跑 445/445、check/build 过。**PAY-02 合并后必改（`32cfbf6`）到位**：查单 `CLOSED/REVOKED/PAYERROR` 直接置 expired 不调关单；只有 `ORDERPAID` 保持 created，其余关单错误记日志仍置 expired；待支付上限加 `expires_at > now()`；3 条测试覆盖（含「零 close 请求」断言、ORDERPAID → 下一轮入账、过期单不占上限），模拟网关改用真实错误码 ORDERPAID。前端：结果页只按服务端轮询判断到账 ✔；mock「模拟支付」只在 mock 实现存在 ✔；环境判断只按 UA（不靠窗口尺寸）✔。<br>**Lead 真实浏览器走查（mock 模式）**：iPhone 15 普通浏览器 → 「请在微信中打开本页面」+ 去兑换 ✔；模拟微信 UA → 4 档位、「微信支付」✔；注入假 `WeixinJSBridge`：用户取消 → 留在充值页并提示 ✔，支付成功 → 结果页「等待支付」→ 模拟支付 → 「支付成功」余额 ¥50→¥100 ✔；`?wechatAuth=failed` → 提示条 + 「重新授权」卡片、不自动跳 ✔；PC 1280 → 「微信扫码支付」→ 二维码 → 模拟支付 → 余额 ¥150 ✔；连下 4 单第 4 单提示「待支付订单最多 3 笔」✔。<br>**必须修改**<br>1. **未处理 409 `WECHAT_OPENID_REQUIRED`**（API §3.1 明确要求：jsapi 下单遇此错误跳 `/wechat/oauth/start` 后回充值页重试）。现在 `submit` 只弹出错误文字。真实场景：授权失败回来（`wechatAuth=failed`）时「立即支付」按钮仍可点 → 必然 409 → 用户只看到一句错误；或 options 显示已授权但下单时 openid 失效（如更换服务号）。请：a) `submit` 捕获 `WECHAT_OPENID_REQUIRED`：未带 `wechatAuth=failed` 时 `startOauth()`，带了则提示并引导点「重新授权」；b) 微信内且 `wechatOpenidReady=false` 时禁用「立即支付」（或替换为「先完成微信授权」按钮）。<br>2. **H5 支付后回不到结果页**：`location.href = pay.url` 未带 `redirect_url`，微信 H5 收银台支付完成后回到发起页 `/wallet/recharge`，用户看不到支付结果、也不知道是否到账。请拼接 `&redirect_url=` + `encodeURIComponent(location.origin + '/wallet/recharge/' + order.id)`（微信要求该域名与商户后台 H5 支付域名一致，写进 M3-PAY-04 开通手册）；结果页已有轮询，可直接复用。<br>**建议（不阻塞）**<br>3. 授权失败提示条文字过长会**横向滚动**（走查截图只显示半句），妈妈用户不易读完；请改为可换行（`wrapable :scrollable="false"`），文案按 API §3.1「微信授权未完成，可重试或使用兑换码」并给「去兑换」链接。<br>4. 提示「如未自动弹出微信支付，请点「重新授权」后重试」出现时页面上并没有「重新授权」按钮（按钮只在 `authFailed` 时显示）；改为微信内且未授权时都显示该按钮，或删掉这句提示。<br>5. `.qr img { background: #fff }` 硬编码色值，请改用令牌（二维码底色必须纯白，可在 tokens.css 加 `--miv-qr-bg`）。<br>6. §7 本条下方多出一行重复的「M3-PAY-02 复审必改修复」标题，请删掉。<br>7. （既有问题，非本分支引入，转 M1-WEB-02）PC 侧边栏在 `/wallet` 及充值页高亮「我的」而不是「钱包」——`AppLayout` 把 `/wallet` 映射成 `/me` 是给手机底栏用的，PC 侧边栏有「钱包」项时应直接高亮「钱包」。 |
 | 2026-10-21 | `agent/eng/M0-02-modelhub-channel` @ `0d205ba`（M0-02 渠道接入） | ✅ 通过并合并 | 密钥未入库（diff 与账本扫描无密钥/临时链接）；flare 适配 `resolutionField` 不影响旧模型，providers 14/14，开发方报 243/243、check/build 通过；真实冒烟累计 2.06 元（文生图、参考图合成、seedance-2.5 4s/480p 文生视频均成功）。fake-IP DoH 绕行仅在冒烟脚本内，产品代码与 SSRF 防护未改。**关键发现**：①seedance-2.5 实时单价 480p=39/720p=47/1080p=280 分/秒，报价必须以实时目录为准（源快照已过期）；②4 秒小样渠道排队约 44 分钟，「制作中」预期与总时长须按分钟～小时级排队设计（120 分钟轮询上限刚够，需关注）。**未验证**：30 秒多镜头、参考图/音频一致性、尾帧衔接、七牛签名链接作视频参考、各风格形象、成本曲线——继续按授权推进。 |
 | 2026-10-31 | `main` @ `6cf605a`（Lead 真实浏览器走查，playwright-cli，iPhone 15 视口，本机 dev 栈 + 隔离库） | ⚠️ 发现 5 项，登记为 **M2-BE-04** | 走通：未登录点「一键生成」→ 登录（验证码）→ 回到首页故事保留 → 新手引导 → 兑换码（**小写加空格输入兑换成功**，验证 M2-OPS-03 规范化）→ 确认点 A → 形象报价弹窗 → 确认点 B → 预占弹窗 → 制作中页（长排队文案正确）。<br>**问题**：① **重试耗尽后作品永远停在「生成中」**——bind_prompts 失败 5 次后 job=failed，作品 `rendering`/45%/无 error，¥5 冻结不动，用户只能自己点取消（真实环境下 LLM 渠道短暂故障约 75 秒就会触发）；② 开发桩缺 `bindPrompts`，mock 开发环境走不完流程（①就是借此复现的）；③ 确认点 B「角色形象（已支付）¥0.00」，实际付了 ¥0.60（`looksFen` 语义是待生成费用）——API 已加 `Pricing.looksPaidFen`；④ 钱包页底部导航高亮「首页」；⑤ 未登录首页请求 `/quotes/estimate` 401。详见 TASKS M2-BE-04。 |
@@ -232,8 +233,6 @@
 - **必改 2（H5 支付回跳结果页）**：`location.href` 拼接 `redirect_url=` + `encodeURIComponent(origin + '/wallet/recharge/' + order.id)`（按 URL 是否已含 query 选 `?`/`&`）；微信收银台支付完成后回到结果页由轮询判读到账。域名须与商户后台「H5 支付域名」一致——已按 Lead 意见归属 M3-PAY-04 开通手册。
 - **建议 3~6 全做**：③ 授权失败提示条 `wrapable :scrollable="false"`（不再横向滚动），文案改「微信授权未完成，可重试或使用兑换码」+「去兑换」链接；④ 授权卡片改为 `needAuth` 即显示（原 `authFailed` 才显示，出现「提示点按钮但按钮不存在」的错位），删除「如未自动弹出微信支付…」提示；⑤ `tokens.css` 新增 `--miv-qr-bg: #ffffff`（注释写明二维码底色必须纯白），`.qr img` 改用令牌，全仓库无残留 `#fff` 硬编码；⑥ §7 重复标题已删。
 - **验证**：`npm run test:server` **445/445**、`check`、`build` 通过。真实微信内 409 授权回跳与 H5 收银台 redirect_url 回跳仍待真实联调（同前口径）。
-
-### 2026-11-02 · Web（+BE 合并后必改） · M3-PAY-03 充值页与结果页（按环境选支付方式）+ PAY-02 合并后必改
 
 ### 2026-11-02 · Web（+BE 合并后必改） · M3-PAY-03 充值页与结果页（按环境选支付方式）+ PAY-02 合并后必改
 
