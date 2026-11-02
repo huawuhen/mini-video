@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "pinia": "^3.0.4",
+    "qrcode": "^1.5.4",
     "vant": "^4.9.21",
     "vue": "^3.5.22",
     "vue-router": "^4.6.3"
   },
   "devDependencies": {
+    "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.1",
     "typescript": "^5.9.3",
     "vite": "^7.1.12",

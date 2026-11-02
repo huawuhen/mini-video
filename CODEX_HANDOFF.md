@@ -88,6 +88,7 @@
 | M1-WEB-02 | — | — | — | 待认领 | — |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
+| M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | 待审查（PAY-02 合并后必改 32cfbf6 + 充值/结果页 + 按环境选 scene + mock 模拟支付；445/445、check/build 过；390/1280 走查 10 截图，见 §7） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -222,6 +223,21 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-02 · Web（+BE 合并后必改） · M3-PAY-03 充值页与结果页（按环境选支付方式）+ PAY-02 合并后必改
+
+- **背景**：分支 `agent/web/M3-PAY-03-recharge-ui`（基于 main `de53345`）。**第一个提交 `32cfbf6` 完成 PAY-02 合并后必改**（§6 2026-11-02）：a) 对账查单 `CLOSED/REVOKED/PAYERROR` 直接本地置 expired 不调关单；b) 关单只有 `ORDERPAID`（已支付）保持 created 等下一轮/通知，其余错误记日志后仍置 expired（不卡「3 笔待支付」、不挤占 LIMIT 100 对账窗口）——mock 网关关单对已支付订单改回微信真实错误码 ORDERPAID，`failNextResponse` 加 `matchPath` 定向拦关单；c) 「同时 3 笔」计数加 `expires_at > now()`。补 3 测试：微信侧已关闭→本地 expired 且零 close 请求；ORDERPAID 保持 created→模拟支付→下一轮入账 + 其他关单错误置 expired；3 笔过期单不占上限、第 4 笔新单才 429。
+- **M3-PAY-03 前端**（TASKS/API §3.1）：
+  - `types.ts` 加 `PayScene/RechargeOptions/RechargeOrder/JsapiPayParams` 与 `MivApi` 四方法 + 可选 `mockPayOrder`；`http.ts` 对接四个后端接口；`mock/index.ts` 同步实现（scenes=['jsapi','native']、恒 openidReady、3 单上限、**mockPayOrder 模拟支付完成**：置 paid + 钱包入账 + ledger recharge 行；订单 30 分钟过期）。
+  - `utils/payEnv.ts`：`isWechatBrowser`（MicroMessenger）/`isMobileBrowser`（**只按 UA**——窗口尺寸回退会把 1470×736 的笔记本误判成手机）+ `pickScene(scenes)`：微信内→jsapi；手机浏览器→h5（未开通→`wechat-only` 提示「在微信中打开」+ 兜底去兑换）；PC→native。
+  - **RechargePage**：只有档位（默认选 ¥50）；wechat 内无 openid **首次自动发起静默授权**（`authJumped` 防循环），**带 `wechatAuth=failed` 回来时不自动跳**——notice bar 提示 + 独立卡片「重新授权」按钮（手动 `location.href` 后端 302）；jsapi 经 `WeixinJSBridge.invoke` 调起（取消留在本页不重复下单；桥未注入等 1.5s 兜底进结果页，兼顾真实微信桥迟加载与 mock/走查环境）；h5 整页跳转；native 进结果页。
+  - **RechargeResultPage**：只轮询 `GET /wallet/recharge/:orderId`（2s，终态即停；paid 时用返回的 wallet 刷新钱包）——**不以前端回调判断支付成功**（服务端有节流查单 + 对账兜底）；native 用 `qrcode` 本地生成二维码（新增依赖 qrcode + @types/qrcode，MIT）；created 显示过期时间与「返回充值」；**mock 模式显示「模拟支付成功（演示模式）」按钮**（`'mockPayOrder' in api` 判定）；expired/failed 给重新充值入口。
+  - 钱包页「在线充值（即将上线）」→ 可用按钮跳 `/wallet/recharge`；路由 `/wallet/recharge`、`/wallet/recharge/:orderId`（auth + hideTabbar）。
+- **走查**（ego-browser，mock 模式，10 截图 `docs/m3-pay03/`）：**PC 1280**：钱包入口 → 充值页（4 档位 + 微信扫码）→ native 下单 → 结果页二维码 + 「模拟支付成功」→ paid（余额 ¥100 正确入账）5 张；**手机 390**：手机浏览器无 h5 → 「请在微信中打开」提示 + 去兑换兜底；微信 UA → jsapi 下单（无桥环境 1.5s 兜底进结果页）→ 模拟支付 paid；`wechatAuth=failed` → 提示条 + 重新授权卡片、**不自动跳** 5 张。走查中抓到并修复：视口尺寸启发式误判 PC 为手机。
+- **验证**：`npm run test:server` **445/445**（+3）、`check`、`build` 通过。
+- **未验证（如实）**：真实微信内 `WeixinJSBridge` 调起、静默授权真实 302 回跳、H5 收银台真实跳转与回退——需微信开发者工具/真机 + 真实支付配置（M3-PAY-04 开通后联调）；`qrcode` 生成的二维码能否被真实微信识别（标准库，风险低）。
+
+### 2026-11-02 · BE-Core · M3-PAY-02 复审必改修复（openid 多账号 / OAuth 回调全 302 / 下单按 appid）+ 建议 4~7
 
 ### 2026-11-02 · BE-Core · M3-PAY-02 复审必改修复（openid 多账号 / OAuth 回调全 302 / 下单按 appid）+ 建议 4~7
 

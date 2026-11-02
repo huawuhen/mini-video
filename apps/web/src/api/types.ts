@@ -121,6 +121,26 @@ export interface ProjectDetail extends ProjectSummary {
 }
 export interface ProjectEvent { projectId: string; status: ProjectStatus; progress: Progress; changed: ('story' | 'cast' | 'segments' | 'render' | 'pricing')[] }
 
+// ── §3.1 在线充值（M3-PAY-03，API.md §3.1）──
+export type PayScene = 'jsapi' | 'h5' | 'native'; // 微信内 / 手机系统浏览器 / PC
+export interface RechargeOptions {
+  amountsFen: number[];      // 预设档位（分）
+  maxAmountFen: number;
+  scenes: PayScene[];        // 当前开通的支付方式；空 = 在线充值不可用（只能用兑换码）
+  wechatOpenidReady: boolean; // 微信内 JSAPI 需先静默授权拿 openid
+}
+export interface JsapiPayParams { appId: string; timeStamp: string; nonceStr: string; package: string; signType: 'RSA'; paySign: string }
+export type RechargeOrderPay =
+  | { type: 'jsapi'; params: JsapiPayParams }
+  | { type: 'h5'; url: string }
+  | { type: 'native'; codeUrl: string };
+export interface RechargeOrder {
+  id: string; status: 'created' | 'paid' | 'expired' | 'failed';
+  amountFen: number; scene: PayScene; createdAt: string; expiresAt: string; paidAt?: string;
+  pay?: RechargeOrderPay; // 仅 created 状态返回，按 scene 三选一
+  wallet?: Wallet;        // 仅 paid 状态返回（结果页直接刷新余额）
+}
+
 /** 前端统一 API 接口；mock 与 http 两套实现必须同时满足（src/api/index.ts 选择）。 */
 export interface MivApi {
   // §1
@@ -138,6 +158,13 @@ export interface MivApi {
   redeem(code: string): Promise<{ amountFen: number; wallet: Wallet }>;
   estimate(body: EstimateRequest): Promise<{ minFen: number; maxFen: number }>;
   quote(body: QuoteRequest): Promise<Quote>;
+  // §3.1 在线充值（M3-PAY-03）
+  rechargeOptions(): Promise<RechargeOptions>;
+  createRechargeOrder(body: { amountFen: number; scene: PayScene; idempotencyKey: string }): Promise<RechargeOrder>;
+  getRechargeOrder(orderId: string): Promise<RechargeOrder>;
+  listRechargeOrders(cursor?: string): Promise<Page<RechargeOrder>>;
+  /** 仅 mock 实现提供：模拟用户支付完成（联调/走查用，真实 API 不存在）。 */
+  mockPayOrder?(orderId: string): Promise<RechargeOrder>;
   // §4
   uploadStory(file: File): Promise<{ title: string; text: string }>;
   uploadImage(file: File): Promise<UploadedImage>;

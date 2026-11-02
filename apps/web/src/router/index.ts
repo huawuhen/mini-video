@@ -23,6 +23,8 @@ export const router = createRouter({
         { path: 'projects', component: () => import('@/pages/ProjectsPage.vue'), meta: { auth: true, title: '我的作品' } },
         { path: 'projects/:id', component: () => import('@/pages/ProjectDetailPage.vue'), meta: { auth: true, title: '作品详情', hideTabbar: true } },
         { path: 'wallet', component: () => import('@/pages/WalletPage.vue'), meta: { auth: true, title: '钱包' } },
+        { path: 'wallet/recharge', component: () => import('@/pages/RechargePage.vue'), meta: { auth: true, title: '在线充值', hideTabbar: true } },
+        { path: 'wallet/recharge/:orderId', component: () => import('@/pages/RechargeResultPage.vue'), meta: { auth: true, title: '支付结果', hideTabbar: true } },
         { path: 'me', component: () => import('@/pages/MePage.vue'), meta: { title: '我的' } },
       ],
     },
