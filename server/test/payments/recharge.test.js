@@ -332,6 +332,69 @@ describe('M3-PAY-02：在线充值（微信支付）', () => {
     assert.equal(await walletFen(), totalRecharge, '账本对账正确');
   });
 
+  test('对账（合并后必改 a）：微信侧已关闭/撤销/支付失败 → 直接本地置 expired，不调关单', async () => {
+    await resetCreateRateLimit();
+    await ctx.db.query(`UPDATE payment_orders SET status = 'failed' WHERE status = 'created'`);
+    const { body: closedRemote } = await createOrder({ key: 'rca1' });
+    await ctx.db.query(
+      `UPDATE payment_orders SET expires_at = now() - interval '40 minutes' WHERE id = $1`, [closedRemote.id]);
+    // 微信侧已关闭（用户在微信里关掉、或微信超时自动关）：本地查单见 CLOSED
+    gateway.orders.get(closedRemote.id).status = 'CLOSED';
+    const requestsBefore = gateway.seenRequests.length;
+    const result = await runPaymentsReconcile(ctx.db, deps);
+    assert.equal(result.closed, 1);
+    assert.equal((await orderRow(closedRemote.id)).status, 'expired');
+    // 不调关单：网关没有收到任何 close 请求
+    assert.ok(gateway.seenRequests.slice(requestsBefore)
+      .every((r) => !r.path.includes('/close')), 'CLOSED/REVOKED/PAYERROR 不调关单');
+  });
+
+  test('对账（合并后必改 b）：关单 ORDERPAID 保持 created，下一轮查到已支付后入账；其他关单错误仍置 expired', async () => {
+    await resetCreateRateLimit();
+    await ctx.db.query(`UPDATE payment_orders SET status = 'failed' WHERE status = 'created'`);
+    const before = await walletFen();
+    // ① 查单 NOTPAY、关单瞬间用户恰好付款（注入 ORDERPAID）→ 保持 created
+    const { body: racing } = await createOrder({ key: 'rcb1' });
+    await ctx.db.query(
+      `UPDATE payment_orders SET expires_at = now() - interval '40 minutes' WHERE id = $1`, [racing.id]);
+    gateway.failNextResponse(400, { code: 'ORDERPAID', message: '订单已支付，不能关单' });
+    let result = await runPaymentsReconcile(ctx.db, deps);
+    assert.equal(result.closed, 0, 'ORDERPAID 不置 expired');
+    assert.equal((await orderRow(racing.id)).status, 'created', '保持 created 等下一轮');
+    // 用户随后真的支付成功 → 下一轮对账查单 SUCCESS → 入账
+    gateway.simulatePayment(racing.id);
+    result = await runPaymentsReconcile(ctx.db, deps);
+    assert.equal(result.credited, 1);
+    assert.equal((await orderRow(racing.id)).status, 'paid');
+    assert.equal(await walletFen(), before + 5000);
+    // ② 其他关单错误（如长期网络类 SYSTEM_ERROR）→ 记日志后仍置 expired（真付了有通知从 expired 入账兜底）
+    const { body: broken } = await createOrder({ key: 'rcb2' });
+    await ctx.db.query(
+      `UPDATE payment_orders SET expires_at = now() - interval '40 minutes' WHERE id = $1`, [broken.id]);
+    gateway.failNextResponse(500, { code: 'SYSTEM_ERROR', message: '微信侧系统繁忙' }, '/close'); // 只拦关单
+    result = await runPaymentsReconcile(ctx.db, deps);
+    assert.equal((await orderRow(broken.id)).status, 'expired', '非 ORDERPAID 错误不卡 created');
+  });
+
+  test('上限（合并后必改 c）：已过期未对账的单不占「同时 3 笔待支付」', async () => {
+    await resetCreateRateLimit();
+    await ctx.db.query(`UPDATE payment_orders SET status = 'failed' WHERE status = 'created'`);
+    // 造 3 笔已过期但未对账（对账卡住时）的单——不占上限
+    for (const key of ['stale1', 'stale2', 'stale3']) {
+      const { body: order } = await createOrder({ key });
+      await ctx.db.query(
+        `UPDATE payment_orders SET expires_at = now() - interval '40 minutes' WHERE id = $1`, [order.id]);
+    }
+    // 新下单仍可进行（3 笔过期单不挡路）
+    for (const key of ['fresh1', 'fresh2', 'fresh3']) {
+      const res = await createOrder({ key });
+      assert.equal(res.status, 201, `过期单不占上限：${key} 应成功`);
+    }
+    // 第 4 笔新的才触发上限
+    const blocked = await createOrder({ key: 'fresh4' });
+    assert.equal(blocked.status, 429);
+  });
+
   test('OAuth：start 302 微信授权（returnTo 编码、state）；callback 校验 state 并绑定 openid', async () => {
     // start：returnTo 站内 → 编码进 state；外站 → 回退 /wallet
     let res = await authed(base, '/wechat/oauth/start?returnTo=/wallet/recharge', { cookie: user.cookie, redirect: 'manual' });

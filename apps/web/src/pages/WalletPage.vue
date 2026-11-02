@@ -52,7 +52,7 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
       <span class="miv-hint">可用余额（元）</span>
       <PriceTag :fen="walletStore.wallet?.availableFen ?? 0" size="lg" />
       <span class="miv-hint">制作中冻结 ¥{{ formatFen(walletStore.wallet?.frozenFen ?? 0) }}，完成后按实际结算</span>
-      <van-button type="primary" class="miv-btn-accent" block disabled>在线充值（即将上线）</van-button>
+      <van-button type="primary" class="miv-btn-accent" block to="/wallet/recharge">在线充值</van-button>
       <van-button v-if="back" block plain type="primary" :to="back">充好了，返回继续</van-button>
     </section>
     <section class="miv-card">

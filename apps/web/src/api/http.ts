@@ -60,6 +60,11 @@ export const httpApi: MivApi = {
   redeem: (code) => request('POST', '/wallet/redeem', { code, idempotencyKey: crypto.randomUUID() }),
   estimate: (body) => request('POST', '/quotes/estimate', body),
   quote: (body) => request('POST', '/quotes', body),
+  // §3.1 在线充值（M3-PAY-03）
+  rechargeOptions: () => request('GET', '/wallet/recharge/options'),
+  createRechargeOrder: (body) => request('POST', '/wallet/recharge', { ...body, idempotencyKey: crypto.randomUUID() }),
+  getRechargeOrder: (orderId) => request('GET', `/wallet/recharge/${encodeURIComponent(orderId)}`),
+  listRechargeOrders: (cursor) => request('GET', `/wallet/recharge${qs({ cursor })}`),
 
   uploadStory: (file) => upload('/uploads/story', file),
   uploadImage: (file) => upload('/uploads/image', file),

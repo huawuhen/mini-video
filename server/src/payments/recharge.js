@@ -62,7 +62,9 @@ export async function createRechargeOrder(db, { userId, amountFen, scene, idempo
   await hitRateLimit(db, { key: `recharge:create:${userId}`, windowSeconds: 3_600, max: CREATE_PER_HOUR,
     message: `创建充值订单太频繁，一小时最多 ${CREATE_PER_HOUR} 笔` });
   const { rows: active } = await db.query(
-    `SELECT count(*)::int AS n FROM payment_orders WHERE user_id = $1 AND status = 'created'`, [userId]);
+    // 合并后必改 c：已过期未对账的单不占「同时最多 3 笔」——否则对账卡住时会挡死用户充值
+    `SELECT count(*)::int AS n FROM payment_orders WHERE user_id = $1 AND status = 'created' AND expires_at > now()`,
+    [userId]);
   if (active[0].n >= MAX_ACTIVE_ORDERS) {
     throw appError('RATE_LIMITED', `待支付订单最多 ${MAX_ACTIVE_ORDERS} 笔，请先完成支付或等待过期`);
   }
@@ -307,18 +309,25 @@ export async function runPaymentsReconcile(db, deps) {
           credited += 1;
           logger?.info?.('reconcile_credited', { orderId: order.id });
         }
+      } else if (['CLOSED', 'REVOKED', 'PAYERROR'].includes(remote.trade_state)) {
+        // 合并后必改 a：微信侧已关闭/已撤销/支付失败——不调关单，直接本地置 expired
+        const { rowCount } = await db.query(
+          `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
+          [order.id]);
+        if (rowCount) closed += 1;
       } else {
-        // 建议 6：关单失败若是「订单已支付」类错误（查单与关单之间用户恰好付款），
-        // 保持 created 等下一轮对账（后续通知或下轮查单会入账）；其他错误也不置 expired
-        let closeRejected = false;
+        // 合并后必改 b：关单只有「已支付」（ORDERPAID，查单与关单之间用户恰好付款）才保持
+        // created 等下一轮/通知入账；其余错误记日志后仍置 expired（真付了还有通知从 expired
+        // 入账兜底）——否则长期关单失败的单会永远占着「待支付 3 笔」并把新到期订单挤出对账窗口
+        let keepCreated = false;
         try {
           await payClient.close(order.out_trade_no);
         } catch (err) {
-          closeRejected = true;
+          if (err?.code === 'ORDERPAID') keepCreated = true;
           logger?.warn?.('reconcile_close_failed', { orderId: order.id, code: err?.code,
-            message: String(err?.message ?? err).slice(0, 200) });
+            keepCreated, message: String(err?.message ?? err).slice(0, 200) });
         }
-        if (!closeRejected) {
+        if (!keepCreated) {
           const { rowCount } = await db.query(
             `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
             [order.id]);

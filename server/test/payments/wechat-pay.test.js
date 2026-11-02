@@ -117,9 +117,9 @@ describe('客户端 ↔ 模拟网关闭环', () => {
     await client.native({ description: '余额充值', outTradeNo: 'po_q2', amountFen: 100, notifyUrl: 'https://e/n' });
     assert.equal(await client.close('po_q2'), null); // 204 无 body
     assert.equal((await client.query('po_q2')).trade_state, 'CLOSED');
-    // 已支付订单不能关
+    // 已支付订单不能关（微信真实错误码 ORDERPAID）
     await assert.rejects(() => client.close('po_q1'),
-      (err) => err instanceof WechatPayError && err.code === 'TRADE_STATE_ERROR');
+      (err) => err instanceof WechatPayError && err.code === 'ORDERPAID');
   });
 
   test('JSAPI 调起参数：字段齐全，paySign 可用商户公钥独立验证', async () => {

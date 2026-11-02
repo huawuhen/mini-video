@@ -6,3 +6,10 @@ declare module '*.vue' {
 }
 interface ImportMetaEnv { readonly VITE_USE_MOCK?: string }
 interface ImportMeta { readonly env: ImportMetaEnv }
+
+// 微信内置浏览器 JSAPI 支付桥（M3-PAY-03；仅微信内存在，由微信注入）
+interface WeixinJSBridgePayResult { err_msg: string }
+interface WeixinJSBridge {
+  invoke(api: 'getBrandWCPayRequest', params: Record<string, string>, callback: (result: WeixinJSBridgePayResult) => void): void;
+}
+interface Window { WeixinJSBridge?: WeixinJSBridge }

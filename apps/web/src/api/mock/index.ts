@@ -5,7 +5,7 @@ import { groupOf } from '@/utils/status';
 import { MivApiError } from '../http';
 import type {
   AgeGroup, CastMember, Catalog, Character, CharacterDetail, CreateProjectRequest, Gender, LedgerEntry, LookVersion,
-  MivApi, ProjectDetail, ProjectStatus, ProjectSummary, Quote, QuoteRequest, Segment, Session, TipKey, Voice, VoiceCategory, Wallet,
+  MivApi, ProjectDetail, ProjectStatus, ProjectSummary, Quote, QuoteRequest, RechargeOrder, Segment, Session, TipKey, Voice, VoiceCategory, Wallet,
 } from '../types';
 import { placeholderAudio, placeholderImage, shrinkImage } from './placeholder';
 
@@ -19,6 +19,7 @@ const TAKE_MS = 3500;
 const COMPOSE_MS = 2500;
 const RETENTION_DAYS = 90;
 const MAX_SECONDS = 90;
+const RECHARGE_AMOUNTS_FEN = [5000, 10000, 50000, 100000]; // 充值档位（API §3.1 默认）
 const DAILY_FREE = 20;
 const DAY = 86_400_000;
 
@@ -78,6 +79,7 @@ interface MockState {
   knownPhones: string[];
   wallet: Wallet;
   ledger: LedgerEntry[];
+  rechargeOrders: RechargeOrder[];
   characters: MockCharacter[];
   projects: MockProject[];
   quotes: Record<string, Quote & { request: QuoteRequest }>;
@@ -97,7 +99,7 @@ const styleName = (styleId: string) => CATALOG.styles.find((s) => s.id === style
 
 function emptyState(): MockState {
   return {
-    session: null, knownPhones: [], wallet: { availableFen: 5000, frozenFen: 0 }, ledger: [], characters: [], projects: [],
+    session: null, knownPhones: [], wallet: { availableFen: 5000, frozenFen: 0 }, ledger: [], rechargeOrders: [], characters: [], projects: [],
     quotes: {}, lookReadyAt: {}, freeUsage: { day: today(), count: 0 },
   };
 }
@@ -476,6 +478,60 @@ export const mockApi: MivApi = {
     addLedger('redeem', 10000, '兑换码充值');
     save();
     return { amountFen: 10000, wallet: clone(state.wallet) };
+  },
+
+  // ── §3.1 在线充值（M3-PAY-03）：mock 恒可用、不跳真实微信授权；mockPayOrder 模拟支付完成 ──
+  async rechargeOptions() {
+    await wait(60); requireLogin();
+    // 演示开关：localStorage['miv-mock-no-openid']='1' 模拟「微信内未授权」状态（走查用）
+    return { amountsFen: [...RECHARGE_AMOUNTS_FEN], maxAmountFen: Math.max(...RECHARGE_AMOUNTS_FEN),
+      scenes: ['jsapi', 'native'], wechatOpenidReady: localStorage.getItem('miv-mock-no-openid') !== '1' };
+  },
+  async createRechargeOrder({ amountFen, scene }) {
+    await wait(); requireLogin();
+    if (!RECHARGE_AMOUNTS_FEN.includes(amountFen)) fail(400, 'VALIDATION_FAILED', '金额不在可选档位');
+    // 与后端同口径：jsapi 无 openid → 409（演示开关同上；前端走查「下单遇 409 自动去授权」用）
+    if (scene === 'jsapi' && localStorage.getItem('miv-mock-no-openid') === '1') {
+      fail(409, 'WECHAT_OPENID_REQUIRED', '请在微信中完成授权后充值');
+    }
+    if (!['jsapi', 'native'].includes(scene)) fail(400, 'VALIDATION_FAILED', '该支付方式未开通');
+    const active = state.rechargeOrders.filter((o) => o.status === 'created').length;
+    if (active >= 3) fail(429, 'RATE_LIMITED', '待支付订单最多 3 笔，请先完成支付或等待过期');
+    const id = uid('po');
+    const order = {
+      id, status: 'created' as const, amountFen, scene,
+      createdAt: iso(), expiresAt: iso(now() + 30 * 60 * 1000),
+      pay: scene === 'jsapi'
+        ? { type: 'jsapi' as const, params: { appId: 'wxMockAppId0000000000', timeStamp: String(Math.floor(now() / 1000)),
+            nonceStr: uid('n'), package: `prepay_id=mock_${id}`, signType: 'RSA' as const, paySign: 'mock-sign' } }
+        : { type: 'native' as const, codeUrl: `weixin://wxpay/mock/${id}` },
+    };
+    state.rechargeOrders.unshift(order);
+    save();
+    return clone(order);
+  },
+  async getRechargeOrder(orderId) {
+    await wait(60); requireLogin();
+    const order = state.rechargeOrders.find((o) => o.id === orderId) || fail(404, 'NOT_FOUND', '订单不存在');
+    if (order.status === 'created' && now() > Date.parse(order.expiresAt)) order.status = 'expired';
+    return clone(order);
+  },
+  async listRechargeOrders(cursor) {
+    await wait(80); requireLogin();
+    const items = state.rechargeOrders.slice(0, 20);
+    return { items: clone(items), nextCursor: cursor ? null : (state.rechargeOrders.length > 20 ? 'mock-cursor' : null) };
+  },
+  async mockPayOrder(orderId) {
+    await wait(); requireLogin();
+    const order = state.rechargeOrders.find((o) => o.id === orderId) || fail(404, 'NOT_FOUND', '订单不存在');
+    if (order.status !== 'created') return clone(order); // 已支付/过期：幂等返回
+    order.status = 'paid';
+    order.paidAt = iso();
+    delete order.pay;
+    state.wallet.availableFen += order.amountFen;
+    addLedger('recharge', order.amountFen, '余额充值');
+    save();
+    return clone({ ...order, wallet: state.wallet });
   },
   async estimate({ qualityTierId, styleId, characterIds }) {
     await wait(60);
