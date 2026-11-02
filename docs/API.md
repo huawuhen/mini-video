@@ -124,7 +124,7 @@ type Quote = {
 | GET | `/wallet/recharge/:orderId` | – | `RechargeOrder`（前端支付后轮询） |
 | GET | `/wallet/recharge` | `?cursor&limit` | `{ items: RechargeOrder[], nextCursor }` |
 | GET | `/wechat/oauth/start` | `?returnTo=/wallet/recharge` | 302 到微信网页授权（`snsapi_base`，静默）；仅微信内置浏览器使用 |
-| GET | `/wechat/oauth/callback` | `?code&state` | 用 code 换 openid 绑定到当前登录用户后 302 回 `returnTo`；`state` 防 CSRF 且只允许站内相对路径 |
+| GET | `/wechat/oauth/callback` | `?code&state` | 用 code 换 openid 绑定到当前登录用户后 302 回 `returnTo`；`state` 防 CSRF 且只允许站内相对路径。**这是浏览器整页跳转，任何失败都不返回 JSON**：一律 302 回 `returnTo`（state 无效时回 `/wallet`）并带 `?wechatAuth=failed`，前端据此提示「微信授权未完成，可重试或使用兑换码」（2026-11-02） |
 
 ```ts
 type PayScene = 'jsapi' | 'h5' | 'native';   // 微信内 / 手机系统浏览器 / PC
@@ -148,6 +148,8 @@ type RechargeOrder = {
 
 - 前端按环境选 `scene`：UA 含 `MicroMessenger` → `jsapi`；其他手机浏览器 → `h5`（`scenes` 不含 `h5` 时提示「请在微信中打开本页面充值」）；PC → `native`。
 - `jsapi` 下单而用户没有 openid 时返回 409 `WECHAT_OPENID_REQUIRED`，前端跳 `/wechat/oauth/start` 后回到充值页重试。
+- 同一个微信（openid）可以绑定多个手机号账号（例如家人共用一个微信付款、或换号后重新注册）；openid 只用于付款，不是账号身份（2026-11-02）。
+- 前端发起授权前必须防循环：带 `wechatAuth=failed` 回来时不再自动跳授权，改为显示提示与「重新授权」按钮。
 - `amountFen` 必须是 `amountsFen` 中的值，否则 400 `VALIDATION_FAILED`。
 - 同一 `idempotencyKey` 重放返回同一订单；每用户同时最多 3 笔 `created` 订单，每小时最多创建 10 笔，超出 429 `RATE_LIMITED`。
 - 微信支付未配置或下单失败返回 502 `PAYMENT_UNAVAILABLE`，**不留下 `created` 订单**。
