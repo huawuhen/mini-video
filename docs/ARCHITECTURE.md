@@ -91,7 +91,7 @@ payment_orders(id po_, user_id, channel 'wechatpay', out_trade_no UNIQUE (= id),
                client_ip, expires_at, paid_at, credited_ledger_id, notify_count, last_notify jsonb,
                created_at, updated_at)
   -- 索引：(user_id, created_at DESC)；(status, expires_at) WHERE status = 'created'（对账扫描）
-user_wechat(user_id PK, appid, openid, created_at, UNIQUE(appid, openid))   -- 公众号静默授权得到的 openid（JSAPI 必需）
+user_wechat(user_id PK, appid, openid, created_at)   -- 公众号静默授权得到的 openid（JSAPI 必需）；openid 不唯一：一个微信可为多个账号付款（2026-11-02 去掉 UNIQUE(appid, openid)），索引 (appid, openid) 普通索引
 ```
 
 - 新增迁移 `NNN-payments.sql`（编号取当时最大号加 1，不改 001）；`newId` 前缀表加入 `po`。
