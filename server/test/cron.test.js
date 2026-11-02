@@ -63,6 +63,7 @@ describe('cron（M1-BE-03）', () => {
       ['auth.sweep', 1],
       ['channels.retired_sweep', 1],  // M2-BE-03
       ['jobs.cleanup', 1],
+      ['payments.reconcile', 1],   // M3-PAY-02
       ['projects.expire_sweep', 1],
       ['projects.failed_sweep', 1],   // M2-BE-01
       ['providers.price_audit', 1],   // M2-BE-01
@@ -71,7 +72,7 @@ describe('cron（M1-BE-03）', () => {
     // 同窗口内再次调度（含另一个调度器）不再新增
     await s2.tick();
     const again = await ctx.db.query(`SELECT count(*)::int AS n FROM jobs WHERE dedupe_key LIKE 'cron:%'`);
-    assert.equal(again.rows[0].n, 7);
+    assert.equal(again.rows[0].n, 8); // 7 项 cron + payments.reconcile（M3-PAY-02）
   });
 
   test('auth.sweep：清理过期限流窗口、作废/过期超 1 天的验证码、过期会话；可重复执行（要点 c）', async () => {
@@ -250,7 +251,7 @@ describe('cron（M1-BE-03）', () => {
     // 非生产环境缺省内存实现可用；M1-BE-05 起注册 project.understand（开发用确定性 story 桩）
     const dev = buildHandlers({ config, db: ctx.db, logger: silentLogger });
     assert.deepEqual(Object.keys(dev).sort(),
-      ['auth.sweep', 'channels.retired_sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'projects.failed_sweep', 'providers.price_audit', 'segment.generate', 'uploads.sweep']);
+      ['auth.sweep', 'channels.retired_sweep', 'gen.poll', 'jobs.cleanup', 'look.generate', 'payments.reconcile', 'project.bind_prompts', 'project.compose', 'project.understand', 'projects.expire_sweep', 'projects.failed_sweep', 'providers.price_audit', 'segment.generate', 'uploads.sweep']);
   });
 
   test('projects.failed_sweep：failed 超 7 天自动取消并退款（M2-BE-01），未到期不动、重复执行幂等', async () => {

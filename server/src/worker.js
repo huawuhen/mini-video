@@ -20,6 +20,8 @@ import { createDevStoryAgent, createDevVideoProvider } from './projects/dev-stub
 import { createRender } from './render/index.js';
 import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runProjectsFailedSweep,
   runUploadsSweep } from './queue/cron.js';
+import { runPaymentsReconcile } from './payments/recharge.js';
+import { createPaymentsContext } from './payments/context.js';
 import { createPriceAuditHandler } from './queue/price-audit.js';
 import { claim, complete, enqueue, extendLease, fail, PermanentJobError } from './queue/index.js';
 
@@ -173,7 +175,7 @@ export async function seedMockChannels({ config, db, service, logger }) {
   return { channels };
 }
 
-export function buildHandlers({ config, db, logger, storage, imageProvider, storyAgent, videoProvider, channelLayer }) {
+export function buildHandlers({ config, db, logger, storage, imageProvider, storyAgent, videoProvider, channelLayer, payments = null }) {
   // §6 审查 3（BE-03）：生产环境不允许缺省内存存储；未注入时按 config.storage.driver 解析
   const objectStorage = storage ?? createStorageFromConfig(config);
   const useChannels = config.providers.real && channelLayer;
@@ -228,6 +230,10 @@ export function buildHandlers({ config, db, logger, storage, imageProvider, stor
     'channels.retired_sweep': withLog('cron_retired_channels_swept', (sdb) =>
       channelLayer ? channelLayer.service.sweepRetiredCredentials() : { cleared: 0 }),
     'providers.price_audit': createPriceAuditHandler({ db, logger, config, channelLayer }),
+    // M3-PAY-02：支付对账（过期订单补入账/关单）；payments 可注入（测试用模拟网关），
+    // 缺省按 config 构造（未配置支付时 handler 内部直接跳过）
+    'payments.reconcile': withLog('cron_payments_reconciled', (sdb, ctx) => runPaymentsReconcile(sdb,
+      payments ?? createPaymentsContext({ config, logger: ctx.logger }))),
     'look.generate': createLookGenerateHandler({ db, logger, storage: objectStorage,
       imageProvider: imageModel, channelRouter: channelLayer?.router ?? null }), // M1-BE-04 + M2-BE-03
     ...createProjectHandlers({ db, logger, config, storyAgent: story, videoProvider: video,

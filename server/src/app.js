@@ -9,8 +9,11 @@ import { characterRoutes } from './api/characters.js';
 import { quoteRoutes } from './api/quotes.js';
 import { uploadRoutes } from './api/uploads.js';
 import { walletRoutes } from './api/wallet.js';
+import { rechargeRoutes } from './api/recharge.js';
+import { wechatNotifyRoutes } from './api/wechat-notify.js';
 import { projectRoutes } from './api/projects.js';
 import { adminRoutes } from './api/admin.js';
+import { createPaymentsContext } from './payments/context.js';
 import { extractText } from './engine/extract/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
 import { loadConfig } from './config.js';
@@ -30,15 +33,19 @@ import { createMemoryStorage } from './engine/storage/memory.js';
  * @param {(buffer: Buffer, mime: string) => Promise<string>} [deps.extractText]  docx 文本提取（M1-ENG-03）；未注入时 docx 上传返回 UPLOAD_TYPE_INVALID
  */
 export function createApp({ config, db, logger, urlFor = () => undefined, smsProvider, storage, extractText,
-  channelLayer = null }) {
+  channelLayer = null, payments = null }) {
   if (config.production && !storage) throw new Error('生产环境必须注入真实对象存储（engine/storage）');
   const objectStorage = storage ?? createMemoryStorage();
+  const paymentsCtx = payments ?? createPaymentsContext({ config });
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', config.trustProxy);
 
   const api = express.Router();
   api.use(requestId());
+  // M3-PAY-02：微信支付回调先于 JSON 解析与会话/CSRF（自带 raw 保留原始请求体验签；
+  // 不要求登录——微信服务器直调）
+  api.use(wechatNotifyRoutes({ db, logger, payments: paymentsCtx }));
   api.use(express.json({ limit: '200kb' }));
   api.use((req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
 
@@ -61,6 +68,9 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   // 钱包与报价（M1-BE-02），挂载在认证中间件之后，全部要求登录
   api.use(walletRoutes({ db }));
   api.use(quoteRoutes({ db }));
+
+  // 在线充值与公众号静默授权（M3-PAY-02，API §3.1）
+  api.use(rechargeRoutes({ db, logger, payments: paymentsCtx }));
 
   // 上传与数字资产库（M1-BE-04）
   api.use(uploadRoutes({ config, db, logger, storage: objectStorage, urlFor, extractText }));

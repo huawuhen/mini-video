@@ -77,6 +77,8 @@ export function loadConfig(env = process.env) {
       sweepBatchSize: int(env.CRON_SWEEP_BATCH_SIZE, 500),
       // 渠道调价对账：拉实时目录校验生效渠道的模型是否在售（real 模式才执行）
       priceAuditEverySeconds: int(env.CRON_PRICE_AUDIT_EVERY_SECONDS, 21_600),
+      // 支付对账：过期 +5 分钟仍 created 的订单查单补入账/关单（M3-PAY-02）
+      paymentsReconcileEverySeconds: int(env.CRON_PAYMENTS_RECONCILE_EVERY_SECONDS, 300),
     },
     // 对象存储（七牛 Kodo），由 Engine 角色在 engine/storage 中使用
     storage: {
@@ -109,6 +111,8 @@ export function loadConfig(env = process.env) {
       h5Enabled: bool(env.WXPAY_H5_ENABLED, false), // H5 需另行申请开通，缺省关
       notifyUrl: env.PAYMENTS_NOTIFY_URL || '',     // 回调地址（公网 HTTPS + 备案域名）
       webBaseUrl: env.WEB_BASE_URL || '',           // 站点基址（OAuth redirect_uri 等）
+      amountsFen: (env.PAYMENTS_AMOUNTS_FEN || '5000,10000,50000,100000')
+        .split(',').map((s) => Number(s.trim())).filter((n) => Number.isSafeInteger(n) && n > 0), // 充值档位（分）
     },
     // 公众号（服务号）静默网页授权：JSAPI 支付取 openid 用
     wechatMp: {
