@@ -574,3 +574,53 @@ function refundReserved(t, { userId, versionId, amountFen }) {
     idempotencyKey: `look:${versionId}:refund`, title: '生成形象退回',
   });
 }
+
+/**
+ * look.generate 重试耗尽兜底（M2-BE-04 复审必改 1c）：收口在途形象版本，防止
+ * 「版本留 pending → casting 重试只补建 failed 版本 → 无可补建 → 卡死」。
+ * 按 gen_task 状态分派：created（从未提交上游）→ 与正常业务失败同口径：版本/gen_task
+ * 置 failed、预占退回（幂等键 look:<versionId>:refund）、作品 LOOK_FAILED（可重试，
+ * 重试补建新版本 amountFen=0 平台承担）；submitting/running（已提交、结果未知）→
+ * gen_task 置 unknown、版本保持 pending、作品 LOOK_UNKNOWN（重试被拒、冻结待核对）。
+ * 返回 true=已收口；false=版本/gen_task 缺失或已终态（由调用方按普通兜底处理）。
+ */
+export async function settleExhaustedLookGenerate(db, { versionId }, logger) {
+  const { rows } = await db.query(
+    `SELECT lv.status AS version_status, gt.id AS gen_task_id, gt.status AS task_status,
+            gt.request, gt.user_id
+       FROM look_versions lv JOIN gen_tasks gt ON gt.id = lv.gen_task_id
+      WHERE lv.id = $1`, [versionId]);
+  const row = rows[0];
+  if (!row) return false;
+  const request = typeof row.request === 'string' ? JSON.parse(row.request) : row.request;
+  if (row.task_status === 'created') {
+    await db.tx(async (t) => {
+      const claimed = await t.query(
+        `UPDATE look_versions SET status = 'failed', error = $2
+          WHERE id = $1 AND status = 'pending' RETURNING id`,
+        [versionId, JSON.stringify({ message: '形象生成多次失败，可重试' })]);
+      if (claimed.rows.length) {
+        await t.query(`UPDATE gen_tasks SET status = 'failed', error = $2, updated_at = now() WHERE id = $1`,
+          [row.gen_task_id, JSON.stringify({ message: '形象生成多次失败，可重试' })]);
+        if (Number.isSafeInteger(request?.amountFen) && request.amountFen > 0) {
+          await refundReserved(t, { userId: row.user_id, versionId, amountFen: request.amountFen });
+        }
+        await failProjectsForVersion(t, { versionId, userId: row.user_id,
+          code: 'LOOK_FAILED', message: '角色形象生成失败，可重试' });
+      }
+    });
+    logger?.warn?.('look_generate_exhausted_failed', { versionId });
+    return true;
+  }
+  if (row.task_status === 'submitting' || row.task_status === 'running') {
+    await db.tx(async (t) => {
+      await t.query(`UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1`,
+        [row.gen_task_id]);
+      await failProjectsForVersion(t, { versionId, userId: row.user_id,
+        code: 'LOOK_UNKNOWN', message: '角色形象生成结果未知，金额已冻结，请联系客服处理' });
+    });
+    logger?.error?.('look_generate_exhausted_unknown', { versionId });
+    return true;
+  }
+  return false; // gen_task 已终态：版本已有归属（failed 可重试补建；unknown 重试被拒）
+}

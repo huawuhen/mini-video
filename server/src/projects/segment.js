@@ -228,7 +228,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
 }
 
 /** take unknown：金额保持冻结、不重提；项目进入 failed（§5② 口径，retry 空转）。 */
-async function markTakeUnknown(db, ctx, { take, projectId, userId, genTaskId, logger }) {
+export async function markTakeUnknown(db, ctx, { take, projectId, userId, genTaskId, logger }) {
   await db.tx(async (t) => {
     await t.query(`UPDATE gen_tasks SET status = 'unknown', updated_at = now() WHERE id = $1`, [genTaskId]);
     await t.query(`UPDATE segment_takes SET status = 'unknown' WHERE id = $1`, [take]);
@@ -352,6 +352,46 @@ export async function failSegment(db, ctx, { takeId, projectId, userId, genTaskI
     }
   });
   logger.warn('segment_failed', { takeId, projectId, reason: error.message });
+}
+
+/**
+ * segment.generate 重试耗尽兜底（M2-BE-04 复审必改 1b）：收口在途 take，防止「作品置
+ * failed 可重试 → 点重试 → segment.generate 遇 running take 幂等空转 → 再卡死」或重复提交。
+ * 按 gen_task 状态分派：created（从未提交上游）→ take/gen_task 置 failed（作品
+ * SEGMENT_FAILED 可重试，重试建新 take、复用失败时保持的冻结；redelivery 预占当场退回）；
+ * submitting/running（已提交、结果未知）→ markTakeUnknown（unknown + TAKE_UNKNOWN，
+ * 重试被拒、冻结待核对）。返回 true=已收口（不再走作品 PIPELINE_FAILED 兜底）；
+ * false=无在途 take 或 gen_task 已终态（take 已有归属，由调用方按普通兜底处理）。
+ */
+export async function settleExhaustedSegmentGenerate(db, payload, logger) {
+  const { projectId, idx, takeId } = payload ?? {};
+  if (!projectId || !Number.isInteger(idx)) return false;
+  const params = [projectId, idx];
+  let where = `s.project_id = $1 AND s.idx = $2 AND t.status IN ('pending', 'running')`;
+  if (takeId) {
+    params.push(takeId);
+    where += ` AND t.id = $${params.length}`;
+  }
+  const { rows } = await db.query(
+    `SELECT t.id AS take_id, gt.id AS gen_task_id, gt.status AS task_status, gt.request, gt.user_id
+       FROM segments s JOIN segment_takes t ON t.segment_id = s.id
+       JOIN gen_tasks gt ON gt.id = t.gen_task_id
+      WHERE ${where} LIMIT 1`, params);
+  const take = rows[0];
+  if (!take) return false;
+  const request = typeof take.request === 'string' ? JSON.parse(take.request) : take.request;
+  if (take.task_status === 'created') {
+    await failSegment(db, null, { takeId: take.take_id, projectId, userId: take.user_id,
+      genTaskId: take.gen_task_id, keepDelivered: request?.redelivery === true,
+      amountFen: request?.amountFen, error: { message: '片段生成多次失败，可重试' }, logger });
+    return true;
+  }
+  if (take.task_status === 'submitting' || take.task_status === 'running') {
+    await markTakeUnknown(db, null, { take: take.take_id, projectId, userId: take.user_id,
+      genTaskId: take.gen_task_id, logger });
+    return true;
+  }
+  return false; // gen_task 已终态（succeeded/failed/unknown）：take 已有归属
 }
 
 /** 轮询上游（gen.poll）：running → 退避重排；成功 → 下载 → inspect → 转存 → 尾帧 → 结算 → 下一段；
