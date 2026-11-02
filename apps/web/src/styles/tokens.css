@@ -7,6 +7,7 @@
   --miv-accent-soft: #fff1ea;
   --miv-bg: #f5f7fa;
   --miv-surface: #ffffff;
+  --miv-qr-bg: #ffffff; /* 二维码底色：必须纯白（扫码对比度），单独成令牌便于辨识与审计 */
   --miv-text: #1f2933;
   --miv-text-2: #5b6775;
   --miv-text-3: #9aa4b0;

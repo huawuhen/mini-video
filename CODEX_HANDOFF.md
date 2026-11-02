@@ -88,7 +88,7 @@
 | M1-WEB-02 | — | — | — | 待认领 | — |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
-| M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | 待审查（PAY-02 合并后必改 32cfbf6 + 充值/结果页 + 按环境选 scene + mock 模拟支付；445/445、check/build 过；390/1280 走查 10 截图，见 §7） | 2026-11-02 |
+| M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | 复审 2 必改已修复待复审（409 处理/needAuth 按钮替换、H5 redirect_url；建议 3~6 全做；445/445、check/build 过） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -225,6 +225,16 @@
 
 ## 7. 变更记录（最新在上）
 
+### 2026-11-02 · Web · M3-PAY-03 复审必改修复（409 处理 / H5 回跳 / 提示条与按钮打磨）
+
+- **背景**：Lead 复审（§6 2026-11-02）2 必改 + 建议 3~6；同分支，已合并 main `b3302e5`。建议 7（PC 侧边栏 /wallet 高亮错位）为既有问题，转 M1-WEB-02 不在本分支处理。
+- **必改 1（409 WECHAT_OPENID_REQUIRED，API §3.1）**：① `submit` 捕获该错误码——未因授权失败回来过（无 `wechatAuth=failed`）直接 `startOauth()` 去授权后回来重试；已 failed 过一次则不再自动跳（防循环），toast 引导点「重新授权」；② 新增 `needAuth`（微信内 jsapi 且 `wechatOpenidReady=false`）：主按钮从「立即支付」**替换为「先完成微信授权」**（点击即 `startOauth`），授权卡片常显（按钮文案按 `authFailed` 显示「重新授权/立即授权」）。mock 加演示开关：`localStorage['miv-mock-no-openid']='1'` 时 options 报未授权 + jsapi 下单返回同口径 409（走查/演示用）。**走查复核**：needAuth 态（提示条+卡片+按钮替换，截图 `390-07-need-auth.png`）；「options 已授权但下单时服务端 409」场景点击立即支付 → 页面自动跳 `/api/v1/wechat/oauth/start?...`（dev mock 无后端路由显示 chrome-error，真实部署 302 到微信——跳转行为符合预期）。
+- **必改 2（H5 支付回跳结果页）**：`location.href` 拼接 `redirect_url=` + `encodeURIComponent(origin + '/wallet/recharge/' + order.id)`（按 URL 是否已含 query 选 `?`/`&`）；微信收银台支付完成后回到结果页由轮询判读到账。域名须与商户后台「H5 支付域名」一致——已按 Lead 意见归属 M3-PAY-04 开通手册。
+- **建议 3~6 全做**：③ 授权失败提示条 `wrapable :scrollable="false"`（不再横向滚动），文案改「微信授权未完成，可重试或使用兑换码」+「去兑换」链接；④ 授权卡片改为 `needAuth` 即显示（原 `authFailed` 才显示，出现「提示点按钮但按钮不存在」的错位），删除「如未自动弹出微信支付…」提示；⑤ `tokens.css` 新增 `--miv-qr-bg: #ffffff`（注释写明二维码底色必须纯白），`.qr img` 改用令牌，全仓库无残留 `#fff` 硬编码；⑥ §7 重复标题已删。
+- **验证**：`npm run test:server` **445/445**、`check`、`build` 通过。真实微信内 409 授权回跳与 H5 收银台 redirect_url 回跳仍待真实联调（同前口径）。
+
+### 2026-11-02 · Web（+BE 合并后必改） · M3-PAY-03 充值页与结果页（按环境选支付方式）+ PAY-02 合并后必改
+
 ### 2026-11-02 · Web（+BE 合并后必改） · M3-PAY-03 充值页与结果页（按环境选支付方式）+ PAY-02 合并后必改
 
 - **背景**：分支 `agent/web/M3-PAY-03-recharge-ui`（基于 main `de53345`）。**第一个提交 `32cfbf6` 完成 PAY-02 合并后必改**（§6 2026-11-02）：a) 对账查单 `CLOSED/REVOKED/PAYERROR` 直接本地置 expired 不调关单；b) 关单只有 `ORDERPAID`（已支付）保持 created 等下一轮/通知，其余错误记日志后仍置 expired（不卡「3 笔待支付」、不挤占 LIMIT 100 对账窗口）——mock 网关关单对已支付订单改回微信真实错误码 ORDERPAID，`failNextResponse` 加 `matchPath` 定向拦关单；c) 「同时 3 笔」计数加 `expires_at > now()`。补 3 测试：微信侧已关闭→本地 expired 且零 close 请求；ORDERPAID 保持 created→模拟支付→下一轮入账 + 其他关单错误置 expired；3 笔过期单不占上限、第 4 笔新单才 429。
@@ -237,8 +247,6 @@
 - **走查**（ego-browser，mock 模式，10 截图 `docs/m3-pay03/`）：**PC 1280**：钱包入口 → 充值页（4 档位 + 微信扫码）→ native 下单 → 结果页二维码 + 「模拟支付成功」→ paid（余额 ¥100 正确入账）5 张；**手机 390**：手机浏览器无 h5 → 「请在微信中打开」提示 + 去兑换兜底；微信 UA → jsapi 下单（无桥环境 1.5s 兜底进结果页）→ 模拟支付 paid；`wechatAuth=failed` → 提示条 + 重新授权卡片、**不自动跳** 5 张。走查中抓到并修复：视口尺寸启发式误判 PC 为手机。
 - **验证**：`npm run test:server` **445/445**（+3）、`check`、`build` 通过。
 - **未验证（如实）**：真实微信内 `WeixinJSBridge` 调起、静默授权真实 302 回跳、H5 收银台真实跳转与回退——需微信开发者工具/真机 + 真实支付配置（M3-PAY-04 开通后联调）；`qrcode` 生成的二维码能否被真实微信识别（标准库，风险低）。
-
-### 2026-11-02 · BE-Core · M3-PAY-02 复审必改修复（openid 多账号 / OAuth 回调全 302 / 下单按 appid）+ 建议 4~7
 
 ### 2026-11-02 · BE-Core · M3-PAY-02 复审必改修复（openid 多账号 / OAuth 回调全 302 / 下单按 appid）+ 建议 4~7
 

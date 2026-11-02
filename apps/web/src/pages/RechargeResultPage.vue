@@ -114,7 +114,7 @@ const statusText = { created: '等待支付', paid: '支付成功', expired: '�
 .state.paid strong { color: var(--miv-primary); }
 .amount { font-size: 22px; font-weight: 700; }
 .qr { display: flex; flex-direction: column; align-items: center; gap: var(--miv-space-2); padding: var(--miv-space-2) 0; }
-.qr img { width: 220px; height: 220px; border: 1px solid var(--miv-border); border-radius: var(--miv-radius-md); background: #fff; padding: 8px; }
+.qr img { width: 220px; height: 220px; border: 1px solid var(--miv-border); border-radius: var(--miv-radius-md); background: var(--miv-qr-bg); padding: 8px; }
 .center { text-align: center; }
 .sub { margin-bottom: var(--miv-space-2); }
 .link { color: var(--miv-primary); }

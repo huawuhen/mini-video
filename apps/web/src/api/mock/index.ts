@@ -483,12 +483,17 @@ export const mockApi: MivApi = {
   // ── §3.1 在线充值（M3-PAY-03）：mock 恒可用、不跳真实微信授权；mockPayOrder 模拟支付完成 ──
   async rechargeOptions() {
     await wait(60); requireLogin();
+    // 演示开关：localStorage['miv-mock-no-openid']='1' 模拟「微信内未授权」状态（走查用）
     return { amountsFen: [...RECHARGE_AMOUNTS_FEN], maxAmountFen: Math.max(...RECHARGE_AMOUNTS_FEN),
-      scenes: ['jsapi', 'native'], wechatOpenidReady: true };
+      scenes: ['jsapi', 'native'], wechatOpenidReady: localStorage.getItem('miv-mock-no-openid') !== '1' };
   },
   async createRechargeOrder({ amountFen, scene }) {
     await wait(); requireLogin();
     if (!RECHARGE_AMOUNTS_FEN.includes(amountFen)) fail(400, 'VALIDATION_FAILED', '金额不在可选档位');
+    // 与后端同口径：jsapi 无 openid → 409（演示开关同上；前端走查「下单遇 409 自动去授权」用）
+    if (scene === 'jsapi' && localStorage.getItem('miv-mock-no-openid') === '1') {
+      fail(409, 'WECHAT_OPENID_REQUIRED', '请在微信中完成授权后充值');
+    }
     if (!['jsapi', 'native'].includes(scene)) fail(400, 'VALIDATION_FAILED', '该支付方式未开通');
     const active = state.rechargeOrders.filter((o) => o.status === 'created').length;
     if (active >= 3) fail(429, 'RATE_LIMITED', '待支付订单最多 3 笔，请先完成支付或等待过期');

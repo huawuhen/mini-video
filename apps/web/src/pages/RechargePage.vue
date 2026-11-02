@@ -21,6 +21,9 @@ const authJumped = ref(false); // 本次会话已自动跳过一次授权（防�
 
 const choice = computed(() => pickScene(options.value?.scenes ?? []));
 const amounts = computed(() => options.value?.amountsFen ?? []);
+/** 微信内走 jsapi 但还没有 openid：需要先静默授权（此时「立即支付」换成「先完成微信授权」） */
+const needAuth = computed(() => isWechatBrowser && choice.value.scene === 'jsapi'
+  && options.value != null && !options.value.wechatOpenidReady);
 
 function startOauth() {
   // 后端 302 整页跳转（snsapi_base 静默授权），returnTo 限站内
@@ -77,11 +80,24 @@ async function submit() {
       callJsapiPay({ appId: params.appId, timeStamp: params.timeStamp, nonceStr: params.nonceStr,
         package: params.package, signType: params.signType, paySign: params.paySign }, order.id);
     } else if (scene === 'h5' && order.pay?.type === 'h5') {
-      window.location.href = order.pay.url; // 整页跳转微信收银台，支付后浏览器回退到本站
+      // 必改 2：带 redirect_url 指回结果页——支付完成后微信收银台跳回结果页（轮询判读到账），
+      // 不再落回充值页不知道结果（域名须与商户后台「H5 支付域名」一致，见 M3-PAY-04 手册）
+      const back = `${window.location.origin}/wallet/recharge/${order.id}`;
+      window.location.href = `${order.pay.url}${order.pay.url.includes('?') ? '&' : '?'}redirect_url=${encodeURIComponent(back)}`;
     } else {
       void router.push({ path: `/wallet/recharge/${order.id}` }); // native：结果页扫码
     }
   } catch (e) {
+    // 必改 1a：openid 缺失/失效（409 WECHAT_OPENID_REQUIRED，API §3.1）——未因授权失败
+    // 回来过就直接去授权后回来重试；已经 failed 过一次则不再自动跳（防循环），引导手动点
+    if ((e as { code?: string }).code === 'WECHAT_OPENID_REQUIRED') {
+      if (!authFailed.value) {
+        startOauth();
+        return;
+      }
+      showFailToast('请先点击「重新授权」完成微信授权');
+      return;
+    }
     showFailToast((e as Error).message);
   } finally {
     submitting.value = false;
@@ -93,11 +109,12 @@ async function submit() {
   <div class="miv-page recharge">
     <van-nav-bar title="在线充值" left-arrow @click-left="router.back()" />
 
-    <van-notice-bar v-if="authFailed" left-icon="info-o" mode="closeable"
-      text="微信授权未完成，暂时无法在微信内支付，可点击重新授权后再试" />
-    <section v-if="authFailed && isWechatBrowser" class="miv-card retry-auth">
+    <van-notice-bar v-if="authFailed" left-icon="info-o" mode="closeable" wrapable :scrollable="false">
+      微信授权未完成，可重试或使用兑换码 <router-link class="link" to="/wallet">去兑换</router-link>
+    </van-notice-bar>
+    <section v-if="needAuth" class="miv-card retry-auth">
       <p class="miv-hint">本次充值需要先完成微信授权（用于确认付款人身份，不会添加好友或发送消息）。</p>
-      <van-button type="primary" size="small" plain @click="startOauth">重新授权</van-button>
+      <van-button type="primary" size="small" plain @click="startOauth">{{ authFailed ? '重新授权' : '立即授权' }}</van-button>
     </section>
 
     <section class="miv-card">
@@ -119,10 +136,10 @@ async function submit() {
             >¥{{ formatFen(fen) }}</button>
           </div>
           <p class="miv-hint sub">支付方式：{{ { jsapi: '微信支付', h5: '微信支付（浏览器跳转）', native: '微信扫码支付' }[choice.scene!] }}</p>
-          <van-button type="primary" class="miv-btn-accent" block :loading="submitting"
+          <van-button v-if="needAuth" type="primary" class="miv-btn-accent" block
+            :loading="submitting" @click="startOauth">先完成微信授权</van-button>
+          <van-button v-else type="primary" class="miv-btn-accent" block :loading="submitting"
             :disabled="selectedFen == null" @click="submit">立即支付</van-button>
-          <p v-if="isWechatBrowser && choice.scene === 'jsapi' && !options.wechatOpenidReady && !authFailed"
-            class="miv-hint sub">如未自动弹出微信支付，请点「重新授权」后重试</p>
         </template>
       </template>
       <van-skeleton v-else :row="2" title />
