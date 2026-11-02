@@ -116,7 +116,7 @@ export function createMockWechatPayGateway({
 
   function handle(method, rawPath, headers, bodyText) {
     const [path, queryString = ''] = rawPath.split('?');
-    if (failNext) {
+    if (failNext && (!failNext.matchPath || path.includes(failNext.matchPath))) {
       const injected = failNext;
       failNext = null;
       return injected.status >= 500
@@ -179,7 +179,7 @@ export function createMockWechatPayGateway({
     if (method === 'POST' && closeMatch) {
       const order = orders.get(decodeURIComponent(closeMatch[1]));
       if (!order) return reply(404, { code: 'ORDER_NOT_EXIST', message: '订单不存在' });
-      if (order.status === 'SUCCESS') return reply(400, { code: 'TRADE_STATE_ERROR', message: '订单已支付，不能关单' });
+      if (order.status === 'SUCCESS') return reply(400, { code: 'ORDERPAID', message: '订单已支付，不能关单' });
       order.status = 'CLOSED';
       return reply(204);
     }
@@ -259,8 +259,8 @@ export function createMockWechatPayGateway({
     /** 平台签名任意载荷（测试构造非加密/缺字段等异常通知，复审必改 3 用）。 */
     signPayload,
 
-    /** 故障注入：下一次请求直接返回 { status, body }（5xx 不带签名头，验证客户端异常路径）。 */
-    failNextResponse(status, body) { failNext = { status, body }; },
+    /** 故障注入：下一次（可选：匹配 matchPath 的）请求直接返回 { status, body }（5xx 不带签名头）。 */
+    failNextResponse(status, body, matchPath) { failNext = { status, body, matchPath }; },
 
     orders, refunds, seenRequests,
   };
