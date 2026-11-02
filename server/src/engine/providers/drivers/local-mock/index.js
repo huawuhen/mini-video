@@ -7,6 +7,11 @@
 // 故障注入（渠道 params）：delayMs、failRate（明确失败→演练 retry/退款）、unknownRate
 // （结果未知→演练冻结/禁重试）。**devOnly：NODE_ENV=production 时 registry 拒绝注册、
 // create 直接拒绝**（见 registry.js 与本文件 create 守卫），种子亦拒绝写入。
+// 走查限制（M2-BE-04 复审建议 2）：视频产物依赖「存储签名链接 + safeFetch 受控下载」，
+// **完整成片走查（到 delivered）需要七牛测试桶**（STORAGE_DRIVER=qiniu + 测试桶凭证）；
+// STORAGE_DRIVER=memory 时签名链接为 memory://、会被网络安全模块拒绝——走查会停在
+// 「gen.poll 下载失败耗尽 → TAKE_UNKNOWN」链路（该口径本身也是有效演练，Lead 走查
+// 曾借此验证耗尽收口），但走不到 delivered。
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { createHash } from 'node:crypto';

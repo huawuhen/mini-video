@@ -401,6 +401,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
         AND idempotency_key = $2`, [userId, `look:${versionIds[0]}:settle`]);
     assert.ok(ledger.some((row) => row.kind === 'settle' && row.frozen_delta_fen === -60),
       '形象费已结算（BE-04 结算流水的 ref 是 look/versionId）');
+    // M2-BE-04 复审必改 1：确认点 B「角色形象（已支付）」的精确值——settle 行 amount_fen
+    // 恒 0（扣款在 frozen_delta_fen = -60），按 -frozen_delta_fen 求和恰为 60（1 个形象）
+    assert.equal(detail.pricing.looksPaidFen, 60, '1 个已生成形象 = 60 分（旧实现 SUM(amount_fen) 恒 0）');
 
     // 余额不足：另一个项目清零钱包后确认 → 402，项目停在 story_review
     const projectId2 = await createAtStoryReview('c3-0003');
@@ -428,9 +431,8 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const detail = await getProjectDetail(ctx.db, { userId, projectId });
     assert.equal(detail.status, 'cast_review');
     assert.equal(detail.pricing.looksFen, 0);
-    // M2-BE-04③：looksPaidFen=已结算形象费（确认点 B「已支付」行显示它；交付前 looksFen 恒 0 曾误导显示 ¥0.00）
-    assert.ok(Number.isInteger(detail.pricing.looksPaidFen) && detail.pricing.looksPaidFen >= 0,
-      `looksPaidFen 应为非负整数分，实际 ${detail.pricing.looksPaidFen}`);
+    // M2-BE-04③/复审必改 1：本作品无已结算形象（缺口 0、引用的是已有形象）→ looksPaidFen 精确为 0
+    assert.equal(detail.pricing.looksPaidFen, 0);
     // 纠正匹配：把「妈妈」改绑到宝宝的数字人（user 来源、形象重算）；null 表示新建
     const mother = detail.cast.find((member) => member.name === '妈妈');
     await assert.rejects(() => updateCastCharacter(ctx.db, { userId, projectId, castId: mother.id,
