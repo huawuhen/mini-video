@@ -27,6 +27,7 @@ export const ERROR_CODES = {
   QUOTE_EXPIRED: [409, '报价已过期，请重新确认'],
   PROJECT_STATE_INVALID: [409, '作品当前状态不能进行这个操作，请刷新后重试'],
   VOICE_DUPLICATED: [409, '两个角色不能使用同一个声音'],
+  WECHAT_OPENID_REQUIRED: [409, '微信内充值需要先完成授权'],
   PROJECT_EXPIRED: [410, '作品已过期，视频已清理'],
   CONTENT_REJECTED: [422, '内容未通过审核，请修改后重试'],
   RATE_LIMITED: [429, '操作太频繁，请稍后再试'],
@@ -40,6 +41,7 @@ export const ERROR_CODES = {
   CHANNEL_TEST_FAILED: [400, '渠道连接测试失败'],
   UPSTREAM_FAILED: [502, '生成服务暂时不可用，请稍后再试'],
   SUBMISSION_UNKNOWN: [502, '生成结果确认中，费用已冻结，请稍后查看'],
+  PAYMENT_UNAVAILABLE: [502, '支付通道暂不可用，请稍后重试'],
 };
 
 /** 按错误码创建 AppError；message 省略时用默认中文提示。 */

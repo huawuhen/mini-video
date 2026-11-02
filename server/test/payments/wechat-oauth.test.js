@@ -108,18 +108,17 @@ describe('迁移 011：payment_orders 与 user_wechat', () => {
       /check constraint/);
   });
 
-  test('user_wechat：每用户一条，appid+openid 唯一', async () => {
-    const { rows: users } = await ctx.db.query(
-      `INSERT INTO users (id, phone, nickname) VALUES ('usr_pay00000000002', '15800000091', '测试') RETURNING id`);
-    const insert = (uid) => ctx.db.query(
+  test('user_wechat：每用户一条（主键）；同一 openid 可绑多个账号（M3-PAY-02 复审必改 1）', async () => {
+    await ctx.db.query(
+      `INSERT INTO users (id, phone, nickname) VALUES ('usr_pay00000000002', '15800000091', '测试'),
+       ('usr_pay00000000003', '15800000092', '测试二')`);
+    const insert = (uid, openid = `o_${uid}`) => ctx.db.query(
       `INSERT INTO user_wechat (user_id, appid, openid) VALUES ($1, 'wx1', $2)`,
-      [uid, `o_${uid}`]);
+      [uid, openid]);
     await insert('usr_pay00000000001');
     await insert('usr_pay00000000002');
-    // 同一 openid 不能绑给第二个用户（同 appid 下 openid 唯一）
-    await assert.rejects(() => ctx.db.query(
-      `INSERT INTO user_wechat (user_id, appid, openid) VALUES ('usr_pay00000000002', 'wx1', 'o_usr_pay00000000001')`),
-      /duplicate key/);
+    // openid 只用于付款、不是账号身份：家人共用微信/换号重注册都合法
+    await insert('usr_pay00000000003', 'o_usr_pay00000000001');
     // 同一用户重复插入 → 主键冲突（上层用 upsert 更新）
     await assert.rejects(() => insert('usr_pay00000000001'), /duplicate key/);
   });

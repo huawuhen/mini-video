@@ -14,6 +14,7 @@ export function cronTasks(config) {
     { type: 'jobs.cleanup', everySeconds: config.cron.jobsCleanupEverySeconds },
     { type: 'providers.price_audit', everySeconds: config.cron.priceAuditEverySeconds }, // M2-BE-01：渠道调价对账（real 模式执行）
     { type: 'channels.retired_sweep', everySeconds: config.cron.sweepEverySeconds }, // M2-BE-03：软删除渠道在途清空后清除凭证
+    { type: 'payments.reconcile', everySeconds: config.cron.paymentsReconcileEverySeconds }, // M3-PAY-02：过期订单补入账/关单（支付已配置才执行）
   ];
 }
 

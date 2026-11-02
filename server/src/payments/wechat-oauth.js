@@ -54,5 +54,5 @@ export function createWechatOAuth({
     return { openid: parsed.openid };
   }
 
-  return { authorizeUrl, openidByCode };
+  return { appid, authorizeUrl, openidByCode };
 }

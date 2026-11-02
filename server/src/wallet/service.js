@@ -111,6 +111,24 @@ export async function refund(t, op) {
   return { ...result, amountFen: result.entry.amount_fen };
 }
 
+/** 充值入账（M3-PAY-02）：可用余额增加，流水 kind='recharge'。与 redeem 同构但 ref 指向支付订单。 */
+export async function recharge(t, { userId, amountFen, idempotencyKey, refId }) {
+  assertAmount(amountFen);
+  const result = await withIdempotency(
+    t,
+    { userId, idempotencyKey, expect: { kind: 'recharge', amount_fen: amountFen, frozen_delta_fen: 0, ref_type: 'payment_order', ref_id: refId } },
+    async () => {
+      await t.query(`INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      await t.query(`UPDATE wallets SET available_fen = available_fen + $2, updated_at = now() WHERE user_id = $1`,
+        [userId, amountFen]);
+      const entry = await insertLedger(t, { userId, kind: 'recharge', amountFen, frozenDeltaFen: 0,
+        title: '余额充值', refType: 'payment_order', refId, idempotencyKey });
+      return { replayed: false, entry };
+    },
+  );
+  return { ...result, amountFen: result.entry.amount_fen };
+}
+
 /** 直接扣费：从可用余额扣除（不走冻结）。余额不足 402。 */
 export async function charge(t, op) {
   assertAmount(op.amountFen);
