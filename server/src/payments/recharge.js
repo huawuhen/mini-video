@@ -69,7 +69,9 @@ export async function createRechargeOrder(db, { userId, amountFen, scene, idempo
 
   let openid = null;
   if (scene === 'jsapi') {
-    const { rows } = await db.query(`SELECT openid FROM user_wechat WHERE user_id = $1`, [userId]);
+    // 复审必改 3：按当前公众号过滤——换服务号后旧 openid 不再拿来下单（options 与下单口径一致）
+    const { rows } = await db.query(
+      `SELECT openid FROM user_wechat WHERE user_id = $1 AND appid = $2`, [userId, deps.appid]);
     if (!rows.length) throw appError('WECHAT_OPENID_REQUIRED', '请在微信中完成授权后充值');
     openid = rows[0].openid;
   }
@@ -138,12 +140,38 @@ function buildPay(row, payClient) {
   return undefined;
 }
 
+/** GET 轮询的主动查单节流（进程内 Map；多实例各自节流，总量仍是每单每 10 秒至多 N 实例次）。 */
+const pollQueryAt = new Map(); // orderId → last query ms
+
 export async function getRechargeOrder(db, { userId, orderId }, deps) {
   if (typeof orderId !== 'string' || !orderId.startsWith('po_')) throw appError('NOT_FOUND');
-  const { rows } = await db.query(
+  let { rows } = await db.query(
     `SELECT * FROM payment_orders WHERE id = $1 AND user_id = $2`, [orderId, userId]);
   if (!rows.length) throw appError('NOT_FOUND');
-  const row = rows[0];
+  let row = rows[0];
+  // 建议 7：结果页轮询兜底——回调延迟/丢失时，created 且下单已 >10s 的单节流地主动查一次
+  //（每单每 10 秒最多一次），已支付就地入账，用户不必等 ~35 分钟后的对账
+  if (row.status === 'created' && deps.payClient && Date.now() - row.created_at.getTime() > 10_000) {
+    const last = pollQueryAt.get(orderId) ?? 0;
+    if (Date.now() - last > 10_000) {
+      pollQueryAt.set(orderId, Date.now());
+      if (pollQueryAt.size > 10_000) { // 防泄漏：清掉老记录（长期未轮询的订单）
+        for (const [key, ts] of pollQueryAt) {
+          if (Date.now() - ts > 600_000) pollQueryAt.delete(key);
+        }
+      }
+      try {
+        const remote = await deps.payClient.query(row.out_trade_no);
+        if (remote.trade_state === 'SUCCESS' && remote.amount?.total === row.amount_fen) {
+          await creditPaidOrder(db, { order: row, transactionId: remote.transaction_id,
+            payerOpenid: remote.payer?.openid, notify: { eventType: 'poll-query', tradeState: 'SUCCESS' } });
+          ({ rows } = await db.query(
+            `SELECT * FROM payment_orders WHERE id = $1 AND user_id = $2`, [orderId, userId]));
+          row = rows[0];
+        }
+      } catch { /* 查单失败：本次仍按 created 返回，等回调/对账 */ }
+    }
+  }
   const serialized = serializeOrder(row, deps);
   if (row.status === 'paid') {
     const { rows: wallet } = await db.query(
@@ -280,11 +308,22 @@ export async function runPaymentsReconcile(db, deps) {
           logger?.info?.('reconcile_credited', { orderId: order.id });
         }
       } else {
-        try { await payClient.close(order.out_trade_no); } catch { /* 已关闭/已支付等：微信侧自洽 */ }
-        const { rowCount } = await db.query(
-          `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
-          [order.id]);
-        if (rowCount) closed += 1;
+        // 建议 6：关单失败若是「订单已支付」类错误（查单与关单之间用户恰好付款），
+        // 保持 created 等下一轮对账（后续通知或下轮查单会入账）；其他错误也不置 expired
+        let closeRejected = false;
+        try {
+          await payClient.close(order.out_trade_no);
+        } catch (err) {
+          closeRejected = true;
+          logger?.warn?.('reconcile_close_failed', { orderId: order.id, code: err?.code,
+            message: String(err?.message ?? err).slice(0, 200) });
+        }
+        if (!closeRejected) {
+          const { rowCount } = await db.query(
+            `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
+            [order.id]);
+          if (rowCount) closed += 1;
+        }
       }
     } catch (err) {
       logger?.warn?.('reconcile_order_failed', { orderId: order.id, code: err?.code,
@@ -302,11 +341,14 @@ export function safeReturnTo(value) {
     ? value : '/wallet';
 }
 
-/** 无状态签名 state：`ts.returnTo(base64url).HMAC(apiV3Key, userId.ts.returnTo)`——防 CSRF 且不落存储。 */
+/** state 签名密钥：从 APIv3 密钥派生（建议 5：一把密钥一种用途，避免 apiV3Key 直接双用途）。 */
+const oauthStateKey = (apiV3Key) => createHmac('sha256', apiV3Key).update('oauth-state').digest();
+
+/** 无状态签名 state：`ts.returnTo(base64url).HMAC(派生密钥, userId.ts.returnTo)`——防 CSRF 且不落存储。 */
 export function buildOauthState({ userId, returnTo }, { apiV3Key, now = () => Date.now() }) {
   const ts = Math.floor(now() / 1000);
   const ret = Buffer.from(returnTo, 'utf8').toString('base64url');
-  const mac = createHmac('sha256', apiV3Key).update(`${userId}.${ts}.${returnTo}`).digest('base64url');
+  const mac = createHmac('sha256', oauthStateKey(apiV3Key)).update(`${userId}.${ts}.${returnTo}`).digest('base64url');
   return `${ts}.${ret}.${mac}`;
 }
 
@@ -318,32 +360,21 @@ export function verifyOauthState(state, { userId }, { apiV3Key, now = () => Date
   if (!Number.isSafeInteger(ts) || Math.abs(Math.floor(now() / 1000) - ts) > OAUTH_STATE_TTL_SECONDS) return null;
   let returnTo;
   try { returnTo = Buffer.from(ret, 'base64url').toString('utf8'); } catch { return null; }
-  const expected = createHmac('sha256', apiV3Key).update(`${userId}.${tsRaw}.${returnTo}`).digest('base64url');
+  const expected = createHmac('sha256', oauthStateKey(apiV3Key)).update(`${userId}.${tsRaw}.${returnTo}`).digest('base64url');
   const a = Buffer.from(mac);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
   return safeReturnTo(returnTo);
 }
 
-/** code 换 openid 并绑定当前用户（每用户一条；同一微信已绑其他账号时 409）。
- * 上游换 code 失败按固定中文转 VALIDATION_FAILED（建议 4：errcode 原文不透给用户）。 */
-export async function bindWechatOpenid(db, { oauth, code, userId, logger }) {
-  let openid;
-  try {
-    ({ openid } = await oauth.openidByCode(code));
-  } catch (err) {
-    logger?.warn?.('oauth_code_exchange_failed', { code: err?.code,
-      message: String(err?.message ?? err).slice(0, 200) });
-    throw appError('VALIDATION_FAILED', '微信授权失败，请重新发起');
-  }
-  try {
-    await db.query(
-      `INSERT INTO user_wechat (user_id, appid, openid) VALUES ($1, $2, $3)
-       ON CONFLICT (user_id) DO UPDATE SET appid = $2, openid = $3`,
-      [userId, oauth.appid, openid]);
-  } catch (err) {
-    if (err?.code === '23505') throw appError('WECHAT_OPENID_REQUIRED', '该微信已绑定其他账号');
-    throw err;
-  }
+/** code 换 openid 并绑定当前用户（每用户一条 upsert；同一微信可绑多个账号——
+ * openid 只用于付款、不是账号身份，复审必改 1 已去掉 UNIQUE(appid, openid)）。
+ * 换 code 失败抛错由回调路由统一 302 处理（原因只进日志，不给用户看 JSON）。 */
+export async function bindWechatOpenid(db, { oauth, code, userId }) {
+  const { openid } = await oauth.openidByCode(code);
+  await db.query(
+    `INSERT INTO user_wechat (user_id, appid, openid) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id) DO UPDATE SET appid = $2, openid = $3`,
+    [userId, oauth.appid, openid]);
   return { openid };
 }

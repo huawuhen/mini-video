@@ -4,7 +4,6 @@ import { Router } from 'express';
 import { requireAuth } from '../auth/session.js';
 import { asyncHandler } from '../http/middleware.js';
 import { Fields } from '../http/validate.js';
-import { appError } from '../http/errors.js';
 import {
   buildOauthState, bindWechatOpenid, createRechargeOrder, getRechargeOptions,
   getRechargeOrder, listRechargeOrders, safeReturnTo, serializeOrder, verifyOauthState,
@@ -44,27 +43,45 @@ export function rechargeRoutes({ db, logger, payments }) {
     res.json(await listRechargeOrders(db, { userId: req.user.id, cursor, limit: limit ?? 20 }));
   }));
 
-  // ── 公众号静默授权（snsapi_base）：仅在微信内置浏览器走（前端判断）──
-  router.get('/wechat/oauth/start', requireAuth, (req, res, next) => {
-    try {
-      if (!payments.oauth) throw appError('PAYMENT_UNAVAILABLE', '在线充值暂不可用，可使用兑换码');
-      const returnTo = safeReturnTo(typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined);
-      const state = buildOauthState({ userId: req.user.id, returnTo }, payments);
-      const base = payments.config.payments.webBaseUrl.replace(/\/+$/, '');
-      const redirectUri = `${base}/api/v1/wechat/oauth/callback`;
-      res.redirect(payments.oauth.authorizeUrl({ redirectUri, state }));
-    } catch (err) { next(err); }
+  // ── 公众号静默授权（snsapi_base）：浏览器整页跳转，任何失败一律 302（不给 JSON）──
+  const webBase = () => payments.config.payments.webBaseUrl.replace(/\/+$/, '');
+  const withFailed = (path) => `${path}${path.includes('?') ? '&' : '?'}wechatAuth=failed`;
+
+  router.get('/wechat/oauth/start', (req, res) => {
+    const returnTo = safeReturnTo(typeof req.query.returnTo === 'string' ? req.query.returnTo : undefined);
+    if (!req.user) return res.redirect(`/login?redirect=${encodeURIComponent(returnTo)}`);
+    if (!payments.oauth) {
+      logger?.warn?.('oauth_start_unavailable', {});
+      return res.redirect(webBase() + withFailed(returnTo));
+    }
+    const state = buildOauthState({ userId: req.user.id, returnTo }, payments);
+    const redirectUri = `${webBase()}/api/v1/wechat/oauth/callback`;
+    res.redirect(payments.oauth.authorizeUrl({ redirectUri, state }));
   });
 
-  router.get('/wechat/oauth/callback', requireAuth, asyncHandler(async (req, res) => {
-    const returnTo = verifyOauthState(req.query.state, { userId: req.user.id }, payments);
-    if (!returnTo) throw appError('VALIDATION_FAILED', '授权状态无效或已过期，请重新发起');
-    if (typeof req.query.code !== 'string' || !req.query.code) {
-      throw appError('VALIDATION_FAILED', '微信未返回授权码');
+  router.get('/wechat/oauth/callback', asyncHandler(async (req, res) => {
+    // state 用登录用户 id 签名：未登录时无法验证，一律视为无效 → 目标回 /wallet（API §3.1 复审口径）
+    const stateReturnTo = req.user
+      ? verifyOauthState(req.query.state, { userId: req.user.id }, payments) : null;
+    const returnTo = stateReturnTo ?? '/wallet';
+    if (!req.user) {
+      logger?.warn?.('oauth_callback_unauthenticated', {});
+      return res.redirect(`/login?redirect=${encodeURIComponent(returnTo)}`);
     }
-    await bindWechatOpenid(db, { oauth: payments.oauth, code: req.query.code, userId: req.user.id, logger });
-    const base = payments.config.payments.webBaseUrl.replace(/\/+$/, '');
-    res.redirect(base + returnTo);
+    if (!payments.oauth || !stateReturnTo || typeof req.query.code !== 'string' || !req.query.code) {
+      logger?.warn?.('oauth_callback_rejected', { stateValid: Boolean(stateReturnTo),
+        hasCode: Boolean(req.query.code) });
+      return res.redirect(webBase() + withFailed(returnTo));
+    }
+    try {
+      await bindWechatOpenid(db, { oauth: payments.oauth, code: req.query.code, userId: req.user.id });
+    } catch (err) {
+      // 换 code 失败等：原因只进日志，用户回到页面看到「授权失败，请重试」提示
+      logger?.warn?.('oauth_callback_bind_failed', { code: err?.code,
+        message: String(err?.message ?? err).slice(0, 200) });
+      return res.redirect(webBase() + withFailed(returnTo));
+    }
+    res.redirect(webBase() + returnTo);
   }));
 
   return router;

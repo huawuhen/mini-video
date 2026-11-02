@@ -7,10 +7,30 @@ import { createWechatPayClient } from './wechat-pay.js';
 import { createWechatOAuth } from './wechat-oauth.js';
 import { resolveScenes } from './scenes.js';
 
-export function createPaymentsContext({ config, http, now = () => Date.now() }) {
+/** 缺哪项就点名哪项（只写变量名、不写值——密钥内容绝不进日志）。 */
+function missingConfigKeys(config) {
+  const p = config.payments;
+  const missing = [];
+  if (!p.mchid) missing.push('WXPAY_MCHID');
+  if (!p.privateKey) missing.push('WXPAY_PRIVATE_KEY');
+  if (!p.certSerial) missing.push('WXPAY_CERT_SERIAL');
+  if (!p.apiV3Key) missing.push('WXPAY_APIV3_KEY');
+  if (!p.platformPublicKey) missing.push('WXPAY_PUBLIC_KEY');
+  if (!p.platformPublicKeyId) missing.push('WXPAY_PUBLIC_KEY_ID');
+  if (typeof p.notifyUrl !== 'string' || !p.notifyUrl.startsWith('https://')) missing.push('PAYMENTS_NOTIFY_URL');
+  if (!config.wechatMp?.appid) missing.push('WECHAT_MP_APPID');
+  return missing;
+}
+
+export function createPaymentsContext({ config, http, now = () => Date.now(), logger }) {
   const scenes = resolveScenes(config);
   const base = { scenes, appid: config.wechatMp.appid, apiV3Key: config.payments.apiV3Key, config };
-  if (!scenes.length) return { ...base, payClient: null, oauth: null };
+  if (!scenes.length) {
+    // 建议 4：生产排查友好——启动时点名缺失项（只写变量名）；每进程只提示一次
+    const missing = missingConfigKeys(config);
+    logger?.warn?.('payments_disabled_missing_config', { missing });
+    return { ...base, payClient: null, oauth: null };
+  }
   let payClient;
   let oauth;
   try {
@@ -27,7 +47,8 @@ export function createPaymentsContext({ config, http, now = () => Date.now() }) 
     });
     oauth = createWechatOAuth({ appid: config.wechatMp.appid, secret: config.wechatMp.secret,
       ...(http ? { http } : {}) });
-  } catch {
+  } catch (err) {
+    logger?.warn?.('payments_disabled_config_invalid', { message: String(err?.message ?? err).slice(0, 200) });
     return { ...base, scenes: [], payClient: null, oauth: null }; // 配置不完整/非法：整体关闭
   }
   return { ...base, payClient, oauth };

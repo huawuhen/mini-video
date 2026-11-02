@@ -349,9 +349,15 @@ describe('M3-PAY-02：在线充值（微信支付）', () => {
     const evilState = new URL(res.headers.get('location')).searchParams.get('state');
     // 外站 returnTo 被回退到 /wallet（callback 后验证）
 
-    // callback：state 无效 → 400
+    // callback：state 无效 → 302 回 /wallet 带 wechatAuth=failed（不给 JSON，复审必改 2）
     res = await authed(base, '/wechat/oauth/callback?code=good_code&state=broken', { cookie: user.cookie, redirect: 'manual' });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), 'https://example.com/wallet?wechatAuth=failed');
+    // 未登录 → 302 /login?redirect=…（不再 401 JSON）
+    res = await authed(base, `/wechat/oauth/callback?code=good_code&state=${encodeURIComponent(state)}`,
+      { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.ok(res.headers.get('location').startsWith('/login?redirect='));
     // state 有效 + code 有效 → 绑定 + 302 回 returnTo
     res = await authed(base, `/wechat/oauth/callback?code=good_code&state=${encodeURIComponent(state)}`,
       { cookie: user.cookie, redirect: 'manual' });
@@ -359,12 +365,13 @@ describe('M3-PAY-02：在线充值（微信支付）', () => {
     assert.equal(res.headers.get('location'), 'https://example.com/wallet/recharge');
     const bound = await ctx.db.query(`SELECT openid FROM user_wechat WHERE user_id = $1`, [user.id]);
     assert.equal(bound.rows[0].openid, 'oPay02MockOpenid0001');
-    // 坏 code → 400（微信 errcode 转固定中文）
+    // 坏 code → 302 returnTo 带 wechatAuth=failed（原因只进日志）
     const state2 = new URL((await authed(base, '/wechat/oauth/start?returnTo=/wallet',
       { cookie: user.cookie, redirect: 'manual' })).headers.get('location')).searchParams.get('state');
     res = await authed(base, `/wechat/oauth/callback?code=bad_code&state=${encodeURIComponent(state2)}`,
       { cookie: user.cookie, redirect: 'manual' });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), 'https://example.com/wallet?wechatAuth=failed');
     // 外站 returnTo 的 state：绑定成功后只回站内（/wallet）
     const state3 = new URL((await authed(base, '/wechat/oauth/start?returnTo=https://evil.example',
       { cookie: user.cookie, redirect: 'manual' })).headers.get('location')).searchParams.get('state');
@@ -372,6 +379,45 @@ describe('M3-PAY-02：在线充值（微信支付）', () => {
       { cookie: user.cookie, redirect: 'manual' });
     assert.equal(res.status, 302);
     assert.equal(res.headers.get('location'), 'https://example.com/wallet', 'returnTo 只允许站内路径');
+  });
+
+  test('两个账号绑同一个 openid 都能用 jsapi 下单（openid 不是账号身份，复审必改 1）', async () => {
+    await resetCreateRateLimit();
+    await ctx.db.query(`UPDATE payment_orders SET status = 'failed' WHERE status = 'created'`);
+    // 用户二登录并绑定与 user 相同的 openid
+    const second = await signUp(base, provider, '15800000102');
+    await ctx.db.query(
+      `INSERT INTO user_wechat (user_id, appid, openid) VALUES ($1, $2, 'oSharedOpenid0001'),
+       ($3, $2, 'oSharedOpenid0001') ON CONFLICT (user_id) DO UPDATE SET appid = $2, openid = 'oSharedOpenid0001'`,
+      [user.id, APPID, second.body.user.id]);
+    for (const [label, account] of [['用户一', user], ['用户二', second]]) {
+      await resetCreateRateLimit();
+      const res = await authed(base, '/wallet/recharge', { cookie: account.cookie,
+        csrf: account.body.csrfToken, method: 'POST',
+        body: { amountFen: 5000, scene: 'jsapi', idempotencyKey: `pay02-share-${label}` } });
+      assert.equal(res.status, 201, `${label} 用同一 openid 下单应成功`);
+      const body = await res.json();
+      assert.equal(body.pay.type, 'jsapi');
+      assert.ok(body.pay.params.paySign);
+    }
+  });
+
+  test('GET 轮询兜底：created 超 10 秒时主动查单，已支付就地入账（建议 7）', async () => {
+    await resetCreateRateLimit();
+    await ctx.db.query(`UPDATE payment_orders SET status = 'failed' WHERE status = 'created'`);
+    const { body: order } = await createOrder({ key: 'poll1' });
+    const before = await walletFen();
+    // 刚下单（<10s）：GET 不查单，仍 created
+    let detail = await (await authed(base, `/wallet/recharge/${order.id}`, { cookie: user.cookie })).json();
+    assert.equal(detail.status, 'created');
+    // 模拟支付（不发通知）+ 时间倒退 11 秒 → GET 主动查单并入账
+    gateway.simulatePayment(order.id);
+    await ctx.db.query(
+      `UPDATE payment_orders SET created_at = now() - interval '11 seconds' WHERE id = $1`, [order.id]);
+    detail = await (await authed(base, `/wallet/recharge/${order.id}`, { cookie: user.cookie })).json();
+    assert.equal(detail.status, 'paid', '回调丢失时 GET 轮询也能拿到 paid');
+    assert.equal(await walletFen(), before + 5000);
+    assert.ok(detail.wallet, 'paid 附带最新钱包');
   });
 
   test('未配置支付（scenes=[]）→ options 空、下单 502；回调 503', async () => {

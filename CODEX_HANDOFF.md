@@ -87,7 +87,7 @@
 | M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | ✅ 完成（Lead 二轮复审通过并合并，2026-11-02） | 2026-11-02 |
 | M1-WEB-02 | — | — | — | 待认领 | — |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
-| M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | 待审查（充值订单 + OAuth + 回调入账 + 对账完成，440/440，模拟网关零真实费用，见 §7） | 2026-11-02 |
+| M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | 复审必改已修复待复审（openid 多账号绑定、OAuth 回调全 302、下单按 appid 过滤；建议 4~7 全做；442/442） | 2026-11-02 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -221,6 +221,17 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-02 · BE-Core · M3-PAY-02 复审必改修复（openid 多账号 / OAuth 回调全 302 / 下单按 appid）+ 建议 4~7
+
+- **背景**：Lead 复审（§6 2026-11-02）2 必改 + 1 小必改 + 建议 4~7；同分支，已合并 main `318f606`（Lead 已同步修正 API §3.1 与 ARCHITECTURE 的 user_wechat 口径）。
+- **必改 1（同一微信可绑多个账号）**：迁移 012（尚未合并，直接改）`DROP CONSTRAINT user_wechat_appid_openid_key`（011 实际生成的名字）+ 建普通索引 `idx_user_wechat_appid_openid (appid, openid)`；`bindWechatOpenid` 删除 23505「已绑定其他账号」分支（openid 只用于付款、不是账号身份——家人共用微信/换号重注册合法，旧约束会把用户永久卡死且前端 409 重跳授权会死循环）。测试：两账号绑同一 openid 都能 jsapi 下单（201 + paySign）；user_wechat 迁移用例改为「同 openid 可绑多用户、主键仍唯一」。
+- **必改 2（授权回调浏览器友好）**：`/wechat/oauth/start|callback` 不再抛 JSON——任何失败一律 302：state 无效/过期或未登录无法验证 → 目标 `/wallet`；state 有效但换 code 失败/缺 code/未配置 → 回 `returnTo` 带 `?wechatAuth=failed`（前端据此提示「授权失败，请重试」）；未登录 → 302 `/login?redirect=<returnTo>`；原因只进日志（`oauth_callback_rejected`/`oauth_callback_bind_failed`）。测试改为断言 302 + Location。
+- **必改 3（下单按当前公众号过滤 openid）**：`createRechargeOrder` 的 jsapi 查询加 `AND appid = $2`——换服务号后 options 与下单口径一致，旧 openid 不再拿去微信必然 502。
+- **建议 4~7 全部顺手做了**：④ `createPaymentsContext` 缺配置时 `payments_disabled_missing_config` warn 点名缺失变量（只写变量名不写值）；⑤ OAuth state 的 HMAC 改用派生密钥 `HMAC(apiV3Key, 'oauth-state')`（一把密钥一种用途）；⑥ 对账关单失败（如查单与关单之间用户恰好付款、微信回 TRADE_STATE_ERROR）不再置 expired——保持 created 等下一轮对账或后续通知入账；⑦ GET 轮询兜底：created 且下单 >10s 的订单节流主动查单（进程内每单每 10s 至多一次，Map 含过期清理），已支付就地入账——用户付款后若回调延迟/丢失，结果页轮询约 10~20 秒可见 paid，不必等 ~35 分钟对账。新增测试覆盖⑦（不发通知、created_at 倒退 11s → GET 变 paid 且入账、附最新钱包）。
+- **验证**：`npm run test:server` **442/442**（+2：双账号同 openid、GET 轮询兜底；OAuth 断言全部改 302/Location）、`check`、`build` 通过。零真实费用、零真实微信调用；真实正确性仍待真实联调（同前条口径）。
+
+### 2026-11-02 · BE-Core · M3-PAY-02 充值订单 + 公众号授权 + 支付回调 + 对账（零真实费用）
 
 ### 2026-11-02 · BE-Core · M3-PAY-02 充值订单 + 公众号授权 + 支付回调 + 对账（零真实费用）
 
