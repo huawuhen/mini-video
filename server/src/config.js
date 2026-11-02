@@ -34,6 +34,13 @@ export function loadConfig(env = process.env) {
       maxPerPhonePerDay: int(env.SMS_MAX_PER_PHONE_PER_DAY, 10),
       maxVerifyAttempts: int(env.SMS_MAX_VERIFY_ATTEMPTS, 5),
       loginMaxPerHour: int(env.SMS_LOGIN_MAX_PER_HOUR, 20),
+      // 阿里云短信（M3-SMS-01，SMS_PROVIDER=aliyun）：RAM 子账号建议只授短信权限
+      aliyun: {
+        accessKeyId: env.ALIYUN_SMS_ACCESS_KEY_ID || '',
+        accessKeySecret: env.ALIYUN_SMS_ACCESS_KEY_SECRET || '',
+        signName: env.ALIYUN_SMS_SIGN_NAME || '',
+        templateCode: env.ALIYUN_SMS_TEMPLATE_CODE || '',
+      },
     },
     // 上传（M1-BE-04）：图片单张 10MB、故事文件 2MB（API.md §4 写死）；未引用图片按用户限量防刷存储
     uploads: {
@@ -155,6 +162,17 @@ export function loadConfig(env = process.env) {
     if (!config.allowedOrigins.length) throw new Error('生产环境必须设置 ALLOWED_ORIGINS');
     // console 仅开发/测试；'log' 为 M3 真实短信接入前的显式占位（M2-OPS-01，验证码进容器日志，上线前必须替换）
     if (config.sms.provider === 'console') throw new Error('生产环境必须配置真实短信 provider（SMS_PROVIDER；接入前的占位用 SMS_PROVIDER=log）');
+    // M3-SMS-01：选了 aliyun 就必须配齐（RAM 子账号建议只授短信权限）
+    if (config.sms.provider === 'aliyun') {
+      const a = config.sms.aliyun;
+      const missing = [
+        ['ALIYUN_SMS_ACCESS_KEY_ID', a.accessKeyId],
+        ['ALIYUN_SMS_ACCESS_KEY_SECRET', a.accessKeySecret],
+        ['ALIYUN_SMS_SIGN_NAME', a.signName],
+        ['ALIYUN_SMS_TEMPLATE_CODE', a.templateCode],
+      ].filter(([, value]) => !value).map(([name]) => name);
+      if (missing.length) throw new Error(`SMS_PROVIDER=aliyun 缺少配置：${missing.join('、')}`);
+    }
   }
   return Object.freeze(config);
 }
