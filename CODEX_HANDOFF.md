@@ -93,6 +93,7 @@
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
 | M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
+| M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | 进行中（462/462；**真实短信联调前置本任务审查合并**，§3 2026-11-03） | 2026-11-03 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -247,6 +248,18 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-03 · BE-Core · M3-SMS-02 阿里云短信错误码按官方文档校正 + 本地小时频控
+
+- **背景**：TASKS M3-SMS-02（Lead 2026-11-03 按官方 OpenAPI 元数据 Dysmsapi 2017-05-25 核对 `sms-aliyun.js` 后的 5 项小修）；分支 `agent/be/M3-SMS-02-sms-errors`（基于 main `f12eab0`）。**零真实发送**——真实短信联调授权（§3 2026-11-03）明确前置本任务审查合并。
+- **① 错误码映射校正**（`sms-aliyun.js`）：删除官方不存在的 `isv.SIGN_NOT_EXISTS`、`isv.TEMPLATE_NOT_EXISTS`、`InvalidPhoneNumbers`；新增官方码——签名/模板类 `isv.SMS_SIGNATURE_ILLEGAL`、`isv.SMS_TEMPLATE_ILLEGAL`、`isv.SMS_SIGNATURE_SCENE_ILLEGAL`、`isv.TEMPLATE_PARAMS_ILLEGAL`、`isv.SMS_SIGN_ILLEGAL`，账号类 `isv.OUT_OF_SERVICE`、`isv.ACCOUNT_ABNORMAL`、`isv.ACCOUNT_NOT_EXISTS`、`isv.PRODUCT_UN_SUBSCRIPT`、`isv.PRODUCT_UNSUBSCRIBE`、`isv.SECURITY_FROZEN_ACCOUNT`，网关鉴权/时间戳 `SignatureDoesNotMatch`、`InvalidAccessKeyId.NotFound`、`InvalidTimeStamp.Expired`，内容类 `isv.BLACK_KEY_CONTROL_LIMIT`、`isv.SMS_CONTENT_ILLEGAL`——统一用户文案「短信服务暂时不可用，请稍后再试或联系客服」；余额 `isv.AMOUNT_NOT_ENOUGH` 保留更具体的「余额不足」文案；频控四码保留（官方存在的 `isv.SIGN_NAME_ILLEGAL`、`isv.TEMPLATE_MISSING_PARAMETERS` 也保留，改用统一文案）。
+- **② Throttling 前缀匹配**：新增导出 `resolveAliyunSmsUserMessage()`——`Throttling` 前缀（官方实际返回 `Throttling.User`/`Throttling.Api` 等带后缀形式）统一「发送太频繁了，请稍后再试」；映射表删除裸 `Throttling` 键。
+- **③ RequestId 透出**：拒绝错误带 `err.requestId`（阿里响应 RequestId），`sms.js` 的 `sms_send_failed`（error 级）日志随 `err` 记 `requestId`，便于拿去阿里云提工单；新增导出 `ALIYUN_SMS_CONFIG_ERROR_CODES`（签名/模板/AccessKey/账号/余额集合）作为运维口径；provider 失败路径不重复打日志（仍由 sms.js 统一记）。成功日志 `sms_aliyun_sent` 同时记 `bizId` 与 `requestId`。
+- **④ 本地小时频控**：`config.js` 新增 `SMS_MAX_PER_PHONE_PER_HOUR`（默认 5，对齐阿里云验证码默认限额「同号 5 条/小时」）；`sms.js` 发码事务内在冷却通过后、每日上限前计数（`rate_counters` 键 `sms:hourly:<phone>`），超限 429「发送太频繁，请一小时后再试」且**不再打到阿里云**；被冷却拦下的请求不消耗小时/每日次数（与每日上限同口径）。`server/.env.example`、`deploy/.env.production.example` 同步（含注释）。
+- **⑤ 测试**（15 用例，净增 6）：**官方文档固定向量**（testId/testSecret、中文签名/XML/OutId/官方 nonce → `zJDF+Lrzhj/ThnlvIToysFRq6t4=`，M3-SMS-01 遗留建议，锁算法——为此把升序拼串+HMAC 抽成导出纯函数 `signRpcParams`，`buildAliyunSmsRequest` 复用）；删除的三码断言不在映射表；`Throttling.User`/`Throttling.Api` 前缀命中；配置类映射四例（签名/模板/账号/AccessKey）+ 内容黑名单；`HOUR_LIMIT_CONTROL`「一小时」；成功日志含 BizId+RequestId 且**无手机号明文**；`OUT_OF_SERVICE` 拒绝错误带 `requestId` 且 provider 不重复打 error 日志；端到端小时频控（同号第 3 次 429 RATE_LIMITED、网关仍只收到 2 次、被拦自增随事务回滚 `count=2`）。
+- **验证**：`npm run test:server` **462/462**（+6）、`check`、`build` 通过。现有用例每手机号发码 ≤2 次/小时，新频控无误伤。
+- **未验证（如实）**：真实阿里云网关对上述错误码的实际返回口径与到达率——待 §3 授权的真实短信联调顺带验证（联调前置：本任务 Lead 审查合并）。
+- 局域网预览：`http://192.168.10.249:5173`（分支 `agent/be/M3-SMS-02-sms-errors` 推送后启动；纯前端无变化，与 main 界面一致）。
 
 ### 2026-11-03 · Web · M3-ADM-01 三轮：③ 暂存路由重构为独立可写状态
 

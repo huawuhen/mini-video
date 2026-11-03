@@ -1,4 +1,4 @@
-// 短信验证码：发放（冷却 + 每日上限）、校验（错误次数上限）与登录注册。
+// 短信验证码：发放（冷却 + 小时/每日上限）、校验（错误次数上限）与登录注册。
 // provider 可注入（docs/TASKS.md M1-BE-01）；console provider 把验证码打印到控制台，仅限开发/测试。
 import { createHash, randomBytes, randomInt } from 'node:crypto';
 import { newId } from '../db/ids.js';
@@ -67,6 +67,14 @@ export async function sendSmsCode({ db, config, logger, provider, phone }) {
         }
       }
     }
+    // M3-SMS-02 ④：小时频控（同号 5 条/小时，对齐阿里云验证码默认限额），
+    // 与每日上限一样在冷却通过后计数——被冷却拦下的请求不消耗小时/每日次数
+    await hitRateLimit(t, {
+      key: `sms:hourly:${phone}`,
+      windowSeconds: 3_600,
+      max: config.sms.maxPerPhonePerHour,
+      message: '发送太频繁，请一小时后再试',
+    });
     // 每日上限在冷却通过后计数：被冷却拦下的请求不消耗当日次数；达上限抛错连同本次自增一起回滚，计数只反映实际发出的验证码
     await hitRateLimit(t, {
       key: `sms:daily:${phone}`,
@@ -90,7 +98,7 @@ export async function sendSmsCode({ db, config, logger, provider, phone }) {
     // 手机号脱敏。日志不落验证码与完整手机号。
     await db.query(`DELETE FROM sms_codes WHERE id = $1 AND consumed_at IS NULL`, [smsRowId]);
     logger.error('sms_send_failed', { phone: maskPhone(phone),
-      err: { code: err?.code, message: String(err?.message ?? err).slice(0, 300) } });
+      err: { code: err?.code, message: String(err?.message ?? err).slice(0, 300), requestId: err?.requestId } });
     throw appError('UPSTREAM_FAILED', err?.userMessage || '验证码发送失败，请稍后再试');
   }
   logger.info('sms_code_sent', { phone: maskPhone(phone), provider: provider.id });

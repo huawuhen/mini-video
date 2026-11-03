@@ -1,6 +1,6 @@
-// M3-SMS-01：阿里云短信 provider——dysmsapi SendSms 自实现签名（RPC 签名 V1.0 HMAC-SHA1）
+// M3-SMS-01/02：阿里云短信 provider——dysmsapi SendSms 自实现签名（RPC 签名 V1.0 HMAC-SHA1）
 // 与错误映射，全部走本地模拟网关（本文件内**独立实现**验签，与 src 实现分离，避免自证），
-// 零真实发送（用户阿里云账号未申请，TASKS 明确真实发送前需另行授权）。
+// 零真实发送（真实发送需用户另行授权并写明条数上限，§3 决策）。
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
 import { after, before, describe, test } from 'node:test';
@@ -8,7 +8,8 @@ import { createApp } from '../src/app.js';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
 import {
-  aliyunSmsProvider, buildAliyunSmsRequest, ALIYUN_SMS_ERROR_MAP, percentEncode,
+  aliyunSmsProvider, buildAliyunSmsRequest, ALIYUN_SMS_CONFIG_ERROR_CODES, ALIYUN_SMS_ERROR_MAP,
+  percentEncode, resolveAliyunSmsUserMessage, signRpcParams,
 } from '../src/auth/sms-aliyun.js';
 import { createTestDb } from './helpers/db.js';
 
@@ -117,6 +118,28 @@ describe('buildAliyunSmsRequest：签名与参数（固定向量）', () => {
     // URL 尾部带编码后的签名
     assert.ok(fixed.url.endsWith(`Signature=${percentEncode(fixed.signature)}`));
   });
+
+  test('M3-SMS-01 遗留建议：官方文档固定向量（testId/testSecret，锁算法不锁参数集）', () => {
+    // 阿里云官方「RPC API 签名」文档 SendSms 示例（含中文签名/XML/OutId），期望签名值出自官方文档
+    const officialParams = {
+      AccessKeyId: 'testId',
+      Action: 'SendSms',
+      Format: 'XML',
+      OutId: '123',
+      PhoneNumbers: '15300000001',
+      RegionId: 'cn-hangzhou',
+      SignName: '阿里云短信测试专用',
+      SignatureMethod: 'HMAC-SHA1',
+      SignatureNonce: '45e25e9b-0a6f-4070-8c85-2956eda1b466',
+      SignatureVersion: '1.0',
+      TemplateCode: 'SMS_71390007',
+      TemplateParam: '{"customer":"test"}',
+      Timestamp: '2017-07-12T02:42:19Z',
+      Version: '2017-05-25',
+    };
+    const { signature } = signRpcParams(officialParams, 'testSecret');
+    assert.equal(signature, 'zJDF+Lrzhj/ThnlvIToysFRq6t4=', '与官方文档示例签名一致');
+  });
 });
 
 describe('aliyunSmsProvider：模拟网关回环', () => {
@@ -130,25 +153,42 @@ describe('aliyunSmsProvider：模拟网关回环', () => {
     assert.equal(gateway.seen[0].SignName, SIGN_NAME);
   });
 
-  test('验签失败（密钥不符）：mock 网关拒绝 → provider 抛错（我们的签名实现会被真实网关同款拒绝）', async () => {
+  test('验签失败（密钥不符）：mock 网关拒绝 → provider 抛错（映射为配置类固定中文）', async () => {
     const gateway = createMockAliyunSmsGateway({ secret: 'wrong-secret' });
     const provider = aliyunSmsProvider(okConfig(), silentLogger, { http: gateway.asHttp });
     await assert.rejects(() => provider.send({ phone: '13800001234', code: '123456' }),
-      (err) => err.code === 'SignatureDoesNotMatch' && /发送失败/.test(err.userMessage));
+      (err) => err.code === 'SignatureDoesNotMatch'
+        && err.userMessage === '短信服务暂时不可用，请稍后再试或联系客服');
   });
 
-  test('错误码映射中文：频控 / 余额不足 / 号码无效 / 未知码默认 / HTTP 400 Throttling', async () => {
+  test('错误码映射中文：频控 / 余额不足 / 号码无效 / 配置类 / 未知码默认 / Throttling 后缀前缀命中', async () => {
     const cases = [
       { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.BUSINESS_LIMIT_CONTROL', Message: '触发分钟级流控' }) }),
         code: 'isv.BUSINESS_LIMIT_CONTROL', match: /频繁/ },
       { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.DAY_LIMIT_CONTROL', Message: '触发天级流控' }) }),
         code: 'isv.DAY_LIMIT_CONTROL', match: /明天/ },
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.HOUR_LIMIT_CONTROL', Message: '触发小时级流控' }) }),
+        code: 'isv.HOUR_LIMIT_CONTROL', match: /一小时/ },
       { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.AMOUNT_NOT_ENOUGH', Message: '余额不足' }) }),
         code: 'isv.AMOUNT_NOT_ENOUGH', match: /余额不足/ },
       { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.MOBILE_NUMBER_ILLEGAL', Message: '非法手机号' }) }),
         code: 'isv.MOBILE_NUMBER_ILLEGAL', match: /手机号无效/ },
+      // M3-SMS-02 ①：配置类（签名/账号/AccessKey/内容黑名单）统一「短信服务暂时不可用」
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.SMS_SIGNATURE_ILLEGAL', Message: '签名不存在' }) }),
+        code: 'isv.SMS_SIGNATURE_ILLEGAL', match: /短信服务暂时不可用/ },
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.SMS_TEMPLATE_ILLEGAL', Message: '模板不存在' }) }),
+        code: 'isv.SMS_TEMPLATE_ILLEGAL', match: /短信服务暂时不可用/ },
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.ACCOUNT_ABNORMAL', Message: '账号异常' }) }),
+        code: 'isv.ACCOUNT_ABNORMAL', match: /短信服务暂时不可用/ },
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'InvalidAccessKeyId.NotFound', Message: 'AK 不存在' }) }),
+        code: 'InvalidAccessKeyId.NotFound', match: /短信服务暂时不可用/ },
+      { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.BLACK_KEY_CONTROL_LIMIT', Message: '黑名单管控' }) }),
+        code: 'isv.BLACK_KEY_CONTROL_LIMIT', match: /短信服务暂时不可用/ },
       { respond: () => ({ status: 400, text: JSON.stringify({ Code: 'Throttling', Message: '请求被限流' }) }),
         code: 'Throttling', match: /频繁/ },
+      // M3-SMS-02 ②：官方实际返回 Throttling.User 等带后缀的形式
+      { respond: () => ({ status: 400, text: JSON.stringify({ Code: 'Throttling.User', Message: '请求被限流' }) }),
+        code: 'Throttling.User', match: /频繁/ },
       { respond: () => ({ status: 200, text: JSON.stringify({ Code: 'isv.SOMETHING_NEW', Message: '未知错误' }) }),
         code: 'isv.SOMETHING_NEW', match: /验证码发送失败/ },
     ];
@@ -161,6 +201,50 @@ describe('aliyunSmsProvider：模拟网关回环', () => {
     }
     // 错误映射表本身可被调用方引用（如文档生成）
     assert.ok(ALIYUN_SMS_ERROR_MAP['isv.BUSINESS_LIMIT_CONTROL'].length > 0);
+  });
+
+  test('M3-SMS-02 ①②：官方不存在的码已删除；resolveAliyunSmsUserMessage 前缀/默认口径', () => {
+    for (const gone of ['isv.SIGN_NOT_EXISTS', 'isv.TEMPLATE_NOT_EXISTS', 'InvalidPhoneNumbers', 'Throttling']) {
+      assert.ok(!(gone in ALIYUN_SMS_ERROR_MAP), `${gone} 应已从映射表删除（官方不存在）`);
+    }
+    assert.equal(resolveAliyunSmsUserMessage('Throttling.User'), '发送太频繁了，请稍后再试');
+    assert.equal(resolveAliyunSmsUserMessage('Throttling.Api'), '发送太频繁了，请稍后再试');
+    assert.equal(resolveAliyunSmsUserMessage('isv.TEMPLATE_PARAMS_ILLEGAL'),
+      '短信服务暂时不可用，请稍后再试或联系客服');
+    assert.equal(resolveAliyunSmsUserMessage('isv.UNKNOWN_NEW'), '验证码发送失败，请稍后再试');
+    // 配置类集合里的码在映射表统一为配置类文案（③的 error 日志口径与用户口径对齐）；
+    // 例外：余额 isv.AMOUNT_NOT_ENOUGH 保留更具体的「余额不足」文案（在集合里只为带 RequestId 日志）
+    for (const code of ALIYUN_SMS_CONFIG_ERROR_CODES) {
+      if (code === 'isv.AMOUNT_NOT_ENOUGH') continue;
+      assert.equal(ALIYUN_SMS_ERROR_MAP[code], '短信服务暂时不可用，请稍后再试或联系客服', `${code}`);
+    }
+    assert.match(ALIYUN_SMS_ERROR_MAP['isv.AMOUNT_NOT_ENOUGH'], /余额不足/);
+  });
+
+  test('M3-SMS-02 ③：成功日志带 BizId+RequestId；拒绝错误透出 RequestId；日志无手机号明文', async () => {
+    const calls = [];
+    const spy = {
+      debug: () => {}, warn: () => {},
+      info: (event, fields) => calls.push({ event, fields }),
+      error: (event, fields) => calls.push({ event, fields }),
+    };
+    const gateway = createMockAliyunSmsGateway({});
+    const provider = aliyunSmsProvider(okConfig(), spy, { http: gateway.asHttp });
+    await provider.send({ phone: '13800001234', code: '123456' });
+    const sent = calls.find((c) => c.event === 'sms_aliyun_sent');
+    assert.ok(sent, '成功有 sms_aliyun_sent 日志');
+    assert.equal(sent.fields.bizId, 'biz-mock-0001');
+    assert.equal(sent.fields.requestId, 'req-mock');
+    assert.ok(!JSON.stringify(calls).includes('13800001234'), '日志无手机号明文');
+
+    // 配置类错误：err 带 RequestId；provider 不重复打 error 日志（sms_send_failed 在 sms.js 统一记）
+    calls.length = 0;
+    gateway.respond = () => ({ status: 200, text: JSON.stringify({ Code: 'isv.OUT_OF_SERVICE',
+      Message: '服务未开通', RequestId: 'req-err-1' }) });
+    await assert.rejects(() => provider.send({ phone: '13800001234', code: '123456' }),
+      (err) => err.code === 'isv.OUT_OF_SERVICE' && err.requestId === 'req-err-1'
+        && err.userMessage === ALIYUN_SMS_ERROR_MAP['isv.OUT_OF_SERVICE']);
+    assert.equal(calls.length, 0, 'provider 失败路径不重复打日志（由 sms.js 记 error 带 requestId）');
   });
 
   test('网络类失败：固定中文 userMessage，原始错误只在 message（供日志）', async () => {
@@ -238,6 +322,38 @@ describe('M3-SMS-01：配置校验与端到端（真实 HTTP 栈 + 模拟网关�
       assert.equal(dead.rows[0].n, 0);
     } finally {
       await new Promise((resolve) => server.close(resolve));
+    }
+  });
+
+  test('M3-SMS-02 ④：本地小时频控——同号超 SMS_MAX_PER_PHONE_PER_HOUR 直接 429，不再打到阿里云', async () => {
+    const gateway = createMockAliyunSmsGateway({});
+    const config = loadConfig({ NODE_ENV: 'test' });
+    config.sms.sendCooldownSeconds = 0;   // 关冷却，连续发送只为触发小时计数
+    config.sms.maxPerPhonePerHour = 2;
+    const app = createApp({ config, db: ctx.db, logger: silentLogger,
+      smsProvider: aliyunSmsProvider(okConfig(), silentLogger, { http: gateway.asHttp }) });
+    const hourlyServer = app.listen(0, '127.0.0.1');
+    await new Promise((resolve) => hourlyServer.once('listening', resolve));
+    const hourlyBase = `http://127.0.0.1:${hourlyServer.address().port}/api/v1`;
+    try {
+      const send = () => fetch(`${hourlyBase}/auth/sms`, { method: 'POST',
+        headers: { 'Content-Type': 'application/json', Origin: 'http://localhost:5173' },
+        body: JSON.stringify({ phone: '13700007777' }) });
+      assert.equal((await send()).status, 200);
+      assert.equal((await send()).status, 200);
+      assert.equal(gateway.seen.length, 2, '前两次真实打到网关');
+      const third = await send();
+      assert.equal(third.status, 429);
+      const body = await third.json();
+      assert.equal(body.code, 'RATE_LIMITED');
+      assert.equal(body.message, '发送太频繁，请一小时后再试');
+      assert.equal(gateway.seen.length, 2, '超限后不再打到阿里云');
+      // 计数只反映实际发出的验证码：被拦的第三次自增随事务回滚
+      const counter = await ctx.db.query(
+        `SELECT count::int FROM rate_counters WHERE key = 'sms:hourly:13700007777'`);
+      assert.equal(counter.rows[0]?.count, 2);
+    } finally {
+      await new Promise((resolve) => hourlyServer.close(resolve));
     }
   });
 });
