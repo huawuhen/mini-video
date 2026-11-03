@@ -48,7 +48,7 @@ nano deploy/.env        # 或 vi；只改下面列出的行，其余保持默认
 | `STORY_LLM_API_KEY` | 智谱密钥（`STORY_LLM_BASE_URL`/`MODEL` 已预填） |
 | `ALLOWED_ORIGINS` | 你的站点地址，如 `https://video.example.com`（没域名先填 `http://服务器IP:8080`） |
 | `COOKIE_SECURE` | **用 IP + HTTP 内测阶段保持 `false`**（填 true 浏览器在 http 下不回传 Cookie，会登录不上）；**启用 HTTPS 后必须改成 `true`**（见第 8 步），否则会话 Cookie 可经明文传输 |
-| 微信支付（`WXPAY_*` 等 11 项）与阿里云短信（`ALIYUN_SMS_*` 4 项） | 全部开通与逐项填写指引见 **[PAY-SETUP.md](./PAY-SETUP.md)**（写给非程序员）；配齐前在线充值自动整体关闭、短信仍走 `log` 占位。**所有密钥只放服务器上的 `deploy/.env`，绝不提交进仓库或经聊天工具传输** |
+| 微信支付（`WXPAY_*`/`WECHAT_MP_*`）与阿里云短信（`ALIYUN_SMS_*` 4 项） | 全部开通与逐项填写指引见 **[PAY-SETUP.md](./PAY-SETUP.md)**（写给非程序员）。支付 8 项必填（`WXPAY_MCHID`/`PRIVATE_KEY`/`CERT_SERIAL`/`APIV3_KEY`/`PUBLIC_KEY`/`PUBLIC_KEY_ID`/`PAYMENTS_NOTIFY_URL`/`WECHAT_MP_APPID`），缺任一在线充值整体关闭；只缺 `WECHAT_MP_SECRET` 时仅关闭微信内支付；`WEB_BASE_URL` 用于微信授权回跳。短信未配齐前仍走 `log` 占位。**所有密钥只放服务器上的 `deploy/.env`，绝不提交进仓库或经聊天工具传输** |
 
 保持默认即可的重点（勿删）：`NODE_ENV=production`、`TRUST_PROXY_HOPS=1`（前面加了一层外部代理/CDN 时要调大，见第 8 步）、`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`、`PROJECTS_VIDEO_DOWNLOAD_TIMEOUT_MS=1200000`（渠道结果下载跨境较慢，5 分钟缺省不够）、`SMS_PROVIDER=log`（短信通道上线前的占位，验证码会打进日志，**正式上线前必须接入真实短信**）。
 
