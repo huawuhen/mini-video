@@ -8,7 +8,12 @@ export type Ratio = '9:16' | '16:9' | '1:1';
 // ── §1 认证与用户 ──
 export type TipKey = 'story_review' | 'cast_review' | 'delivery';
 export interface Onboarding { tourCompletedAt: string | null; tipsSeen: TipKey[] }
-export interface User { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding }
+export interface Consents {
+  terms: string | null;   // 已同意的《用户协议》《隐私政策》版本（登录 agreeTerms 记录）
+  photo: string | null;   // 已同意的照片使用说明版本（人脸/儿童照片单独同意）
+  current: { terms: string; photo: string };  // 服务端当前版本（判断「已同意」的唯一依据，前端不自带常量）
+}
+export interface User { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding; consents: Consents }
 export interface Session { user: User; csrfToken: string }
 export interface LoginResult extends Session { isNewUser: boolean }
 
@@ -149,6 +154,8 @@ export interface MivApi {
   login(phone: string, code: string): Promise<LoginResult>;
   logout(): Promise<void>;
   updateOnboarding(patch: { tourCompleted?: true; tipSeen?: TipKey }): Promise<{ onboarding: Onboarding }>;
+  // §1 同意记录（M3-LEGAL-01）：照片单独同意；返回最新 consents
+  photoConsent(version: string): Promise<{ consents: Consents }>;
   // §2
   catalog(): Promise<Catalog>;
   voices(category?: VoiceCategory): Promise<{ items: Voice[] }>;

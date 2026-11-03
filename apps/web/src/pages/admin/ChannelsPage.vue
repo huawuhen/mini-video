@@ -290,7 +290,7 @@ async function saveForm() {
 <template>
   <div class="admin-page">
     <header class="topbar">
-      <div class="brand"><span class="logo">▶</span>Mini AI Video · 运营后台</div>
+      <div class="brand"><span class="logo">▶</span>剧优兔AI · 运营后台</div>
       <nav>
         <span class="nav current">渠道管理</span>
         <span v-if="alertCount" class="dot" :title="`${alertCount} 个渠道异常`">{{ alertCount }}</span>

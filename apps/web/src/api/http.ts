@@ -51,6 +51,7 @@ export const httpApi: MivApi = {
   login: async (phone, code) => remember(await request<LoginResult>('POST', '/auth/login', { phone, code, agreeTerms: true })),
   logout: async () => { await request('POST', '/auth/logout'); csrfToken = ''; },
   updateOnboarding: (patch) => request('PATCH', '/me/onboarding', patch),
+  photoConsent: (version) => request('POST', '/me/consents', { kind: 'photo', version }),
 
   catalog: () => request('GET', '/catalog'),
   voices: (category) => request('GET', `/voices${qs({ category })}`),

@@ -106,7 +106,15 @@ function emptyState(): MockState {
 function load(): MockState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...emptyState(), ...(JSON.parse(raw) as MockState) };
+    if (raw) {
+      const state = { ...emptyState(), ...(JSON.parse(raw) as MockState) };
+      // M3-LEGAL-01：旧演示数据没有 consents 字段——补默认（视为未同意照片说明）
+      if (state.session?.user && !state.session.user.consents) {
+        state.session.user.consents = { terms: 'terms-v1', photo: null,
+          current: { terms: 'terms-v1', photo: 'photo-v1' } };
+      }
+      return state;
+    }
   } catch { /* 隐私模式等：退回内存 */ }
   return emptyState();
 }
@@ -452,7 +460,11 @@ export const mockApi: MivApi = {
     }
     state.session = {
       csrfToken: uid('csrf'),
-      user: { id: uid('usr'), phoneMasked: `${phone.slice(0, 3)}****${phone.slice(7)}`, nickname: `用户${phone.slice(7)}`, onboarding: isNewUser ? { tourCompletedAt: null, tipsSeen: [] } : state.session?.user.onboarding ?? { tourCompletedAt: iso(), tipsSeen: [] } },
+      // M3-LEGAL-01：登录 agreeTerms 即记录协议版本；照片同意沿用该浏览器之前的记录
+      user: { id: uid('usr'), phoneMasked: `${phone.slice(0, 3)}****${phone.slice(7)}`, nickname: `用户${phone.slice(7)}`,
+        onboarding: isNewUser ? { tourCompletedAt: null, tipsSeen: [] } : state.session?.user.onboarding ?? { tourCompletedAt: iso(), tipsSeen: [] },
+        consents: { terms: 'terms-v1', photo: state.session?.user?.consents?.photo ?? null,
+          current: { terms: 'terms-v1', photo: 'photo-v1' } } },
     };
     tick();
     return { ...clone(state.session), isNewUser };
@@ -464,6 +476,14 @@ export const mockApi: MivApi = {
     if (patch.tipSeen && !s.user.onboarding.tipsSeen.includes(patch.tipSeen)) s.user.onboarding.tipsSeen.push(patch.tipSeen as TipKey);
     save();
     return { onboarding: clone(s.user.onboarding) };
+  },
+  async photoConsent(version) {
+    await wait(80);
+    const user = requireLogin().user; // requireLogin 抛错保证会话存在
+    if (version !== 'photo-v1') fail(400, 'VALIDATION_FAILED', '同意版本已更新，请重新阅读后同意');
+    user.consents.photo = version;
+    save();
+    return { consents: clone(user.consents) };
   },
 
   async catalog() { await wait(80); return clone(CATALOG); },
@@ -569,7 +589,8 @@ export const mockApi: MivApi = {
     return { title: file.name.replace(/\.[^.]+$/, ''), text: (await file.text()).slice(0, CATALOG.limits.maxStoryChars) };
   },
   async uploadImage(file) {
-    requireLogin();
+    // M3-LEGAL-01：与后端同形——未同意当前版本的照片使用说明返回 403（演示弹层链路）
+    if (requireLogin().user.consents.photo !== 'photo-v1') fail(403, 'PHOTO_CONSENT_REQUIRED', '上传照片前需要先同意照片使用说明');
     if (!/^image\/(jpeg|png|webp)$/.test(file.type)) fail(400, 'UPLOAD_TYPE_INVALID', '请上传 jpg、png 或 webp 图片');
     const result = { uploadId: uid('upl'), url: await shrinkImage(file) };
     pendingUploads.set(result.uploadId, result.url);

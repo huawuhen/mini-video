@@ -1,13 +1,16 @@
 <script setup lang="ts">
 // 新建数字人（PRD 4.1）：昵称、标签、0~5 张照片或文字描述、默认声音；可选立即生成一个风格的形象（收费，先报价）。
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, nextTick, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { useAuthStore } from '@/stores/auth';
 import { showToast, type UploaderFileListItem } from 'vant';
 import { api } from '@/api';
 import StylePicker from '@/components/StylePicker.vue';
 import VoicePicker from '@/components/VoicePicker.vue';
 import { useCharge } from '@/composables/useCharge';
 import { useCatalogStore } from '@/stores/catalog';
+import { usePhotoConsent } from '@/composables/usePhotoConsent';
+import PhotoConsentSheet from '@/components/PhotoConsentSheet.vue';
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
@@ -23,7 +26,32 @@ const valid = computed(() => form.name.trim() && (photos.value.length > 0 || for
 
 onMounted(async () => { const c = await catalogStore.load(); form.styleId = c.styles[0]?.id || ''; });
 
+const auth = useAuthStore();
+const { visible: consentVisible, ensurePhotoConsent, onDecided, consented } = usePhotoConsent();
+
+// M3-LEGAL-01 复审建议 a：未同意时拦截上传区点击（capture 阶段阻止），先弹同意层，
+// 「同意并上传」后再打开系统文件选择器——比「选完才弹」更符合「选照片前告知」；
+// afterRead 兜底保留（多选粘贴等路径）。
+const pickerArmed = ref(false);
+async function onUploaderClick(event: Event) {
+  if (pickerArmed.value || consented()) { pickerArmed.value = false; return; }
+  event.preventDefault();
+  event.stopPropagation();
+  if (await ensurePhotoConsent()) {
+    pickerArmed.value = true;
+    await nextTick();
+    document.querySelector<HTMLInputElement>('.upload-guard input[type=file]')?.click();
+  }
+}
+
+// M3-LEGAL-01：选照片入口前确保照片同意（「不同意」不上传且不留本地预览——双端走查抓到
+// 此前只 return、预览仍显示已选，与「不同意不上传」承诺不符）；上传返回 403 时补弹（版本升级等）
 async function afterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
+  if (!(await ensurePhotoConsent())) {
+    const picked = Array.isArray(item) ? item : [item];
+    photos.value = photos.value.filter((p) => !picked.includes(p as UploaderFileListItem));
+    return; // 未同意：移除待上传项，不发起上传
+  }
   for (const it of Array.isArray(item) ? item : [item]) {
     if (!it.file) continue;
     it.status = 'uploading';
@@ -31,6 +59,18 @@ async function afterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
       uploadIds.set(it, (await api.uploadImage(it.file)).uploadId);
       it.status = 'done';
     } catch (e) {
+      if ((e as { code?: string }).code === 'PHOTO_CONSENT_REQUIRED') {
+        it.status = 'failed';
+        it.message = '需先同意照片使用说明';
+        // 复审建议 b：本地快照可能过期（版本升级/多端），收到 403 先刷新一次再判断
+        try { await auth.check(); } catch { /* 刷新失败继续弹层 */ }
+        if (await ensurePhotoConsent()) {
+          it.status = 'uploading';
+          try { uploadIds.set(it, (await api.uploadImage(it.file)).uploadId); it.status = 'done'; continue; } catch (e2) { it.status = 'failed'; it.message = '上传失败'; }
+        }
+        showToast('未同意照片使用说明，照片未上传');
+        continue;
+      }
       it.status = 'failed';
       it.message = '上传失败';
       showToast((e as Error).message);
@@ -69,7 +109,9 @@ async function save(withLook: boolean) {
 
     <section class="miv-card">
       <div class="miv-section-title">照片 <span class="miv-hint">1~{{ maxPhotos }} 张清晰正脸照，效果更像</span></div>
-      <van-uploader v-model="photos" :max-count="maxPhotos" multiple accept="image/jpeg,image/png,image/webp" :after-read="afterRead" />
+      <div class="upload-guard" @click.capture="onUploaderClick">
+        <van-uploader v-model="photos" :max-count="maxPhotos" multiple accept="image/jpeg,image/png,image/webp" :after-read="afterRead" />
+      </div>
       <van-field v-model="form.description" type="textarea" rows="2" autosize label="外貌描述" :placeholder="photos.length ? '可选，补充发型、穿着等' : '没有照片时必填，如：5 岁小女孩，短发，爱穿黄色裙子'" maxlength="200" />
       <p class="miv-hint">照片只用于生成你自己的数字人，永久保存在你的账号下，仅你本人可见。</p>
     </section>
@@ -90,6 +132,7 @@ async function save(withLook: boolean) {
     </div>
   </div>
   <VoicePicker v-model:show="showVoices" :voices="catalogStore.voices" :selected-id="form.defaultVoiceId" allow-none title="选择默认声音" @select="form.defaultVoiceId = $event ?? undefined" />
+  <PhotoConsentSheet v-model="consentVisible" @decided="onDecided" />
 </template>
 
 <style scoped>

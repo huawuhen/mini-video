@@ -6,6 +6,7 @@ import { Fields } from '../http/validate.js';
 import { hitRateLimit } from './ratelimit.js';
 import { loginWithSmsCode, maskPhone, sendSmsCode } from './sms.js';
 import { serializeOnboarding, serializeUser } from './session.js';
+import { TERMS_VERSION, consentPhoto, getConsents, recordConsent } from './consents.js';
 
 const PHONE_RE = /^1[3-9]\d{9}$/;
 const TIP_KEYS = ['story_review', 'cast_review', 'delivery'];
@@ -40,9 +41,16 @@ export function buildAuthRoutes({ config, db, logger, provider, requireAuth, set
       message: '尝试次数太多，请一小时后再试',
     });
     const { user, isNewUser, token, csrfToken } = await loginWithSmsCode({ db, config, phone, code });
+    // M3-LEGAL-01：勾选「我已阅读并同意」= 记录 terms 当前版本。
+    // 复审建议 d：仅当最新一条版本不同才追加（版本升级时重新留痕；重复登录不再堆行）
+    const beforeLogin = await getConsents(db, user.id);
+    if (beforeLogin.terms !== TERMS_VERSION) {
+      await recordConsent(db, { userId: user.id, kind: 'terms', version: TERMS_VERSION, ip: req.ip });
+    }
     setSessionCookie(res, token);
     logger.info('user_login', { userId: user.id, isNewUser, phone: maskPhone(phone) });
-    res.json({ user: serializeUser(user, { urlFor }), csrfToken, isNewUser });
+    res.json({ user: { ...serializeUser(user, { urlFor }),
+      consents: await getConsents(db, user.id) }, csrfToken, isNewUser });
   }));
 
   // 审查意见 4：logout 不要求登录态（API.md §1 未要求）——有会话则删除并记日志，无会话（含已过期）也清 Cookie，统一返回 ok
@@ -55,9 +63,21 @@ export function buildAuthRoutes({ config, db, logger, provider, requireAuth, set
     res.json({ ok: true });
   }));
 
-  routes.get('/auth/me', requireAuth, (req, res) => {
-    res.json({ user: serializeUser(req.user, { urlFor }), csrfToken: req.session.csrfToken });
+  routes.get('/auth/me', requireAuth, async (req, res) => {
+    res.json({ user: { ...serializeUser(req.user, { urlFor }),
+      consents: await getConsents(db, req.user.id) }, csrfToken: req.session.csrfToken });
   });
+
+  // M3-LEGAL-01（API §1）：人脸/儿童照片单独同意——版本必须等于服务端当前版本
+  routes.post('/me/consents', requireAuth, asyncHandler(async (req, res) => {
+    const f = new Fields(req.body);
+    const kind = f.string('kind', { required: true });
+    const version = f.string('version', { required: true, max: 64 });
+    f.done();
+    if (kind !== 'photo') throw appError('VALIDATION_FAILED', 'kind 只能是 photo');
+    const consents = await consentPhoto(db, { userId: req.user.id, version, ip: req.ip });
+    res.json({ consents });
+  }));
 
   routes.patch('/me/onboarding', requireAuth, asyncHandler(async (req, res) => {
     const f = new Fields(req.body);

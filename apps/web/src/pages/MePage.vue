@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useRouter } from 'vue-router';
-import { showConfirmDialog } from 'vant';
+import { showConfirmDialog, showToast } from 'vant';
 import { useAuthStore } from '@/stores/auth';
 
 const router = useRouter();
@@ -9,6 +9,19 @@ async function logout() {
   try { await showConfirmDialog({ title: '退出登录？' }); } catch { return; }
   await auth.logout();
   router.replace('/');
+}
+/** 联系客服（M3-LEGAL-01）：点按复制邮箱（可粘贴到邮件 App），长按/桌面右键也可直接打开邮件客户端。 */
+const SUPPORT_EMAIL = 'help@redith.cn';
+async function contactSupport() {
+  try {
+    await navigator.clipboard.writeText(SUPPORT_EMAIL);
+    showConfirmDialog({ title: '联系客服', message: `邮箱已复制：${SUPPORT_EMAIL}\n\n也可以现在打开邮件应用写给我们。`,
+      confirmButtonText: '写邮件', cancelButtonText: '关闭' })
+      .then(() => { window.location.href = `mailto:${SUPPORT_EMAIL}`; })
+      .catch(() => undefined);
+  } catch {
+    showToast(`客服邮箱：${SUPPORT_EMAIL}`);
+  }
 }
 </script>
 
@@ -33,9 +46,9 @@ async function logout() {
       <van-cell title="重新查看新手引导" icon="guide-o" is-link :to="{ path: '/', query: { tour: '1' } }" />
     </van-cell-group>
     <van-cell-group inset class="group">
-      <van-cell title="用户协议" icon="description-o" is-link />
-      <van-cell title="隐私政策" icon="shield-o" is-link />
-      <van-cell title="联系客服" icon="service-o" is-link />
+      <van-cell title="用户协议" icon="description-o" is-link to="/legal/terms" />
+      <van-cell title="隐私政策" icon="shield-o" is-link to="/legal/privacy" />
+      <van-cell title="联系客服" icon="service-o" is-link label="help@redith.cn" @click="contactSupport" />
     </van-cell-group>
     <van-button v-if="auth.user" block plain class="logout" @click="logout">退出登录</van-button>
   </div>

@@ -87,6 +87,7 @@
 | M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | ✅ 完成（Lead 二轮复审通过并合并，2026-11-02） | 2026-11-02 |
 | M1-WEB-02 | Web（本机开发 Agent） | `agent/web/M1-WEB-02-polish` | `apps/web/src/{layouts/AppLayout.vue,pages/{WalletPage,RechargePage}.vue}` `docs/m1-web02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
 | M2-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-02-retention` | `server/test/cron.test.js`（+2 用例） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
+| M3-LEGAL-01 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-LEGAL-01-legal` | `server/{migrations/013-user-consents.sql,src/auth/consents.js,src/auth/routes.js,src/api/uploads.js,src/db/ids.js,src/http/errors.js}` `server/test/{legal-consents.test.js,assets.test.js}` `apps/web/src/{utils/legal.ts,composables/usePhotoConsent.ts,components/PhotoConsentSheet.vue,pages/{LegalPage,LoginPage,MePage,WalletPage,AssetNewPage}.vue,api/{types,http,mock},router,vite.config.ts,env.d.ts,styles/tokens.css}` `docs/m3-legal01/` `CODEX_HANDOFF.md` | 待审查（协议页/登录抽屉/照片同意全链/客服入口 + ⑥品牌改名剧优兔AI；463/463、check/build 过，见 §7） | 2026-11-03 |
 | M3-ADM-01 | Web（本机开发 Agent） | `agent/web/M3-ADM-01-channels-ui` | `apps/web/src/{api/admin.ts,api/adminMock.ts,api/index.ts,pages/admin/*,styles/tokens.css,router}` `docs/m3-adm01/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 三轮复审通过并合并，2026-11-03；真实管理端联调待 Ubuntu 栈） | 2026-11-03 |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
@@ -249,6 +250,40 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-03 · BE-Core + Web · M3-LEGAL-01 复审必改修复（5 必改 + 建议 a~d）
+
+- **背景**：Lead 复审（§6 @ main `c6ffe0c`）5 必改 + 建议 a~d（e 等用户）。同分支 merge main 后修复。
+- **必改**：① **Docker 构建失败**（`?raw` 导入 `docs/legal/*.md` 但 `.dockerignore` 排除了 docs）——`.dockerignore` 加 `!docs/legal`（⚠️ 两处坑：Dockerfile 与 .dockerignore 都**不支持行内注释**，`#` 后内容会被当路径/模式，已移独立行）、`Dockerfile.web` build 阶段 `COPY docs/legal docs/legal`；**本地 `docker build -f deploy/Dockerfile.web .` 跑通**（`✓ built in` + naming done）。② **登录抽屉正文右对齐**——van-popup 从 `van-field #button` 插槽移到 `.login` 根节点下（并清理游离 `</template>`），PC `@media≥480px` 限宽 760 居中（`left:50%; translateX(-50%)`）。③ **钱包退款提示逐条重复**——从 `van-cell #value` 移到「明细」卡片底部 `<p class="foot">` 只显示一次（空列表也显示）。④ **`consents.current`**——服务端 `getConsents` 返回 `current:{terms,photo}`；前端 `usePhotoConsent.consented()` 改 `consents.photo === consents.current?.photo`、`PhotoConsentSheet` 提交用 `consents.current.photo`，**删除前端版本常量**（`utils/legal.ts` 的 TERMS_VERSION/PHOTO_CONSENT_VERSION），types/mock 同步；测试断言响应含 current。⑤ **有序列表序号**——三处 `.doc`（LegalPage/PhotoConsentSheet/LoginPage）补 `.doc :deep(ol){list-style:decimal}`。
+- **建议**：a **选照片前拦截**——`upload-guard` 容器 `@click.capture` 未同意时阻止默认并弹层，「同意并上传」后置 armed 标志并代触发文件选择器（afterRead 兜底保留）；b **403 补弹前先 `auth.check()` 刷新**本地快照（版本升级/多端场景本地可能过期）；c 照片弹窗底部补《隐私政策》链接（`router-link target=_blank` 至 `/legal/privacy`）；d **登录仅版本不同才追加 terms**（`getConsents` 比对后 `recordConsent`；测试更新为同版本不追加 + 版本变化追加两条断言）。
+- **photo-consent.md（Lead 已改）核对**：正文只含用户可见文字 ✓——弹窗渲染无「弹窗文案/按钮：」等开发说明残留。
+- **双端走查**（新规 AGENTS §6）：**375（触屏+iPhone UA 断言后）**——抽屉正文对齐 `start` ✓、ol `decimal` ✓（抽屉+terms 两处）、手机号保留 ✓、钱包提示 1 次/2 条明细 ✓、**建议 a 三链**（未同意点上传区先弹层 ✓ / 同意后上传 ✓ / 已同意不弹 ✓）；**1280**——抽屉对齐 start + 限宽 760 居中（left 260=(1280-760)/2 ✓）、提示 1 次 ✓、a 三链 ✓、ol decimal ✓、协议页限宽 760 ✓。截图已更新（375-01/03/04/05/07、1280-01/02/04/05/06/08）。MicroMessenger：无微信行为页面，不适用。
+- **验证**：`test:server` **463/463**（consents 测试按建议 d 新语义更新）、`check`、`build`、`docker build -f deploy/Dockerfile.web` 全部通过。
+
+### 2026-11-03 · Web · M3-LEGAL-01 补充：AGENTS §6 新规双端仿真走查（375 真仿真 + PC1280）
+
+- **背景**：用户 2026-11-03 新规（AGENTS §6 / main `2bfb66e`）：走查必须移动端仿真（375×812、**触屏 + iPhone Safari UA**，只缩窗口不算）+ PC 1280 各走一遍同样流程；截图带宽度前缀；只走一端退回。本分支原走查为 375 视口（无触屏/UA 仿真）+ PC 仅 2 步，按新规重走。
+- **走查方式**：ego-browser CDP 三要素仿真（`setDeviceMetricsOverride(375×812,mobile)` + `setTouchEmulationEnabled` + `setEmitTouchEventsForMouse` + iPhone Safari `setUserAgentOverride`），进页面先断言 `ontouchstart`/UA/innerWidth 再走流程；PC 1280×800 显式仿真并断言。
+- **双端步骤与结果**（截图 `docs/m3-legal01/` 重拍：375×10 + 1280×9）：
+  - **375（触屏+iPhoneUA）**：登录品牌/slogan（375-09）→ 协议抽屉开/关后**手机号保留 ✓**（375-03）→ terms/privacy 渲染、表格不撑爆（375-01/02）→ 登录 → 照片同意三链：弹层（375-04）→「不同意」**本地预览清空 ✓** →「同意并上传」成功（375-05）→ 第二张**不再弹 ✓** → 我的客服（375-06）→ 钱包退款邮箱（375-07）→ 客服弹窗（375-08）→ 首页品牌无旧名（375-10）。
+  - **1280（同流程）**：协议两页（01/04）→ 登录品牌（03）→ 抽屉+保留 ✓（02）→ 照片同意三链全 ✓（05/06）→ 我的客服（07）→ 钱包（08）→ 首页品牌（09）。
+  - **MicroMessenger UA**：LEGAL-01 无微信内行为页面（支付/授权属 M3-PAY 系列）——不适用，PAY-03 起执行。
+- **走查抓到并修复 2 个问题**：① **「不同意」后本地预览未清**（`AssetNewPage.vue` 注释承诺「移除待上传项」但只 return）——decline 分支从 `photos` 过滤本次选中项，双端复验清零 ✓；② **PC 协议页未限宽**（§7 曾记录「PC 居中限宽 760」但 1280 实测 1265）——`LegalPage.vue` 补 `max-width:760px; margin:0 auto`，复测 760 ✓ 且 375 无回归（legalW=375、无横向溢出）。
+- **验证**：`test:server` **463/463**、`check`、`build` 通过。
+
+### 2026-11-03 · BE-Core + Web · M3-LEGAL-01 协议页 / 登录链接 / 照片单独同意 / 客服入口
+
+- **背景**：TASKS「其他」M3-LEGAL-01（用户 2026-11-03 决定）；分支 `agent/be/M3-LEGAL-01-legal`（基于 main `20babe4`，正文三篇由 Lead 先行提交 docs/legal/）。API §1/§7 契约 Lead 已定义，未提 §5。
+- **① 协议正文与页面**：`utils/legal.ts` 轻量 Markdown 渲染器（仅覆盖正文语法：标题/引用块/粗体/表格/列表/段落；先转义再放行 strong，**不引入通用 Markdown 依赖**）；正文经 Vite `?raw` 构建时导入 `docs/legal/*.md`（**唯一来源不手抄**；相对路径 rollup 不解析 → vite.config 加 `@legal` 绝对路径别名）。`/legal/terms`、`/legal/privacy` 无需登录：375 阅读排版（行高 1.75、表格横向滚动）、PC 居中限宽 760。
+- **② 登录页链接**：《用户协议》《隐私政策》改为可点链接，**底部抽屉**打开（不离开登录页，手机号/验证码不丢失——走查验证保留）。
+- **③ 照片单独同意**：迁移 013 `user_consents`（kind `terms|photo`、version、ip，**只追加**；「已同意」= 最新一条 version 等于当前版本）；`auth/consents.js` 常量 `TERMS_VERSION='terms-v1'`/`PHOTO_CONSENT_VERSION='photo-v1'`（与 docs/legal 头部、前端常量三处同步，注释写明）；登录 `agreeTerms` 记 terms；`POST /me/consents`（仅 photo、版本必须等于当前否则 400）；`User.consents`（login/me 响应）；`POST /uploads/image` 读文件前检查 photo 同意 → 403 `PHOTO_CONSENT_REQUIRED`（errors 登记）。前端 `usePhotoConsent` + `PhotoConsentSheet`（正文来自 photo-consent.md）：所有选照片入口（新建数字人 van-uploader 的 afterRead）之前 `ensurePhotoConsent`——「不同意」不上传，「同意并上传」写记录后继续；**上传 403 时补弹再重试**；已同意当前版本不再弹。mock 同步（login 记 terms、photoConsent、uploadImage 403 守卫、**旧演示数据迁移补 consents 默认**——走查中抓到的兼容 bug）。
+- **④ 客服入口**：「我的」页「联系客服」（help@redith.cn，点击复制 + 可选 mailto；无剪贴板权限时降级 toast 显示邮箱）；「用户协议」「隐私政策」cells 接通 /legal 页；钱包页页脚「充值如需退款或对订单有疑问，请联系客服 help@redith.cn」。
+- **⑥ 品牌改名**（合并 main `210cd6a` 后补做，用户 2026-11-03 定名）：用户可见「Mini AI Video」全部改「剧优兔AI」——`index.html`（标题/description/`application-name=JoyoTo`/og 元信息）、`router` 的 `document.title` 后缀、AppLayout 顶栏、登录页（品牌 + **slogan「剧优兔，一键出好剧，轻松赚收益」**，PRD §13）、运营后台两页、aiide 驱动 `materialsPurpose`「剧优兔AI 参考素材」（素材库过审文案）；内部标识（包名、`miv_*` Cookie、`--miv-*` 令牌、库名）未动；Logo 仍用 ▶ 占位（素材到货再换）。走查：登录页品牌/slogan/标题、首页顶栏 `▶剧优兔AI`、title「首页 · 剧优兔AI」、全站无 Mini AI Video 残留（截图 375-09/10）。
+- **测试**（`legal-consents.test.js` 5 用例，463/463）：登录记版本 + 二次登录追加（只追加）；未勾选 400；consents 接口版本不符 400 / 正确写入 / 重复同意追加；上传——未同意 403、**旧版本视为未同意 403**、同意当前版本后成功；me 返回 consents。assets 套件 signUp 补 photo 同意（与新用户流程一致）。
+- **走查**（`docs/m3-legal01/` 10 截图）：375 —— 协议两页（渲染/表格滚动）、登录抽屉（关闭后手机号保留 158…9266 ✔）、照片同意弹层、「不同意」不上传、同意后上传、已同意不再弹、我的页客服、钱包邮箱 + 客服弹窗降级；1280 —— 隐私政策（正文限宽 760）、登录抽屉。
+- **验证**：`test:server` **463/463**（+5）、`check`、`build` 通过。
+- **备注**：版本升级流程 = Lead 更新 docs/legal/*.md → 同步 server 常量与前端常量（旧版本自动视为未同意，照片上传会再弹、协议在下次登录重新记录）。
+- 局域网预览：`http://192.168.10.249:5173`（分支 agent/be/M3-LEGAL-01-legal）。
+
 
 ### 2026-11-03 · BE-Core · M3-SMS-02 阿里云短信错误码按官方文档校正 + 本地小时频控
 

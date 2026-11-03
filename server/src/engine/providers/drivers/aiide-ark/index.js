@@ -53,7 +53,7 @@ export const DEFAULT_PARAMS = Object.freeze({
   requestTimeoutMs: 180_000,
   materialsPollIntervalMs: 2_000,
   materialsPollTimeoutMs: 180_000,
-  materialsPurpose: 'Mini AI Video 参考素材',
+  materialsPurpose: '剧优兔AI 参考素材',
 });
 
 export default {
