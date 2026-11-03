@@ -32,6 +32,8 @@ export function loadConfig(env = process.env) {
       codeTtlSeconds: int(env.SMS_CODE_TTL_SECONDS, 300),
       sendCooldownSeconds: int(env.SMS_SEND_COOLDOWN_SECONDS, 60),
       maxPerPhonePerDay: int(env.SMS_MAX_PER_PHONE_PER_DAY, 10),
+      // M3-SMS-02 ④：本地小时频控对齐阿里云验证码默认限额（同号 5 条/小时），超限不打到阿里云
+      maxPerPhonePerHour: int(env.SMS_MAX_PER_PHONE_PER_HOUR, 5),
       maxVerifyAttempts: int(env.SMS_MAX_VERIFY_ATTEMPTS, 5),
       loginMaxPerHour: int(env.SMS_LOGIN_MAX_PER_HOUR, 20),
       // 阿里云短信（M3-SMS-01，SMS_PROVIDER=aliyun）：RAM 子账号建议只授短信权限
