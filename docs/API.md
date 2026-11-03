@@ -35,9 +35,15 @@
 | POST | `/auth/logout` | – | `{ ok: true }` |
 | GET | `/auth/me` | – | `{ user: User, csrfToken }`；未登录 401 `UNAUTHENTICATED` |
 | PATCH | `/me/onboarding` | `{ tourCompleted?: true, tipSeen?: TipKey }` | `{ onboarding: Onboarding }` |
+| POST | `/me/consents` | `{ kind: 'photo', version: string }` | `{ consents: Consents }`（人脸/儿童照片单独同意，M3-LEGAL-01；`version` 必须等于服务端当前版本，否则 400 `VALIDATION_FAILED`） |
 
 ```ts
-type User = { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding };
+type User = { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding; consents: Consents };
+type Consents = {
+  terms: string | null;   // 已同意的《用户协议》《隐私政策》版本（登录时 agreeTerms 记录服务端当前版本，如 'terms-v1'）
+  photo: string | null;   // 已同意的照片单独同意版本（如 'photo-consent-v1'）；与当前版本不一致时视为未同意
+  current: { terms: string; photo: string };  // 服务端当前版本，前端据此判断是否需要（重新）征求同意
+};
 type TipKey = 'story_review' | 'cast_review' | 'delivery';
 type Onboarding = {
   tourCompletedAt: string | null;   // 主引导完成或跳过的时间；null 表示首页要自动开始主引导
@@ -47,6 +53,7 @@ type Onboarding = {
 
 - 首次登录（新注册）时 `onboarding.tourCompletedAt = null`。「完成」和「跳过」都调用 `{ tourCompleted: true }`。
 - 「我的 → 重新查看新手引导」只在前端重播，不修改服务端状态。
+- 同意记录（M3-LEGAL-01，PRD §11）：登录 `agreeTerms: true` 时服务端写入 `terms` 当前版本与时间；照片同意通过 `POST /me/consents` 写入。每次同意都追加一条记录（用户、类型、版本、时间、IP），不覆盖历史。协议正文以 `docs/legal/*.md` 为准，版本号变更时同步改服务端常量。
 
 ## 2. 目录（无需登录）
 
@@ -168,7 +175,7 @@ type RechargeOrder = {
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
 | POST | `/uploads/story` | multipart `file`（txt/docx，≤2MB） | `{ title, text }`（只提取文字，不保存文件） |
-| POST | `/uploads/image` | multipart `file`（jpg/png/webp，≤10MB） | `{ uploadId, url }` |
+| POST | `/uploads/image` | multipart `file`（jpg/png/webp，≤10MB） | `{ uploadId, url }`；未同意当前版本的照片单独同意时 403 `PHOTO_CONSENT_REQUIRED`（M3-LEGAL-01） |
 
 上传的图片只在被 `characters` 引用后才长期保存；24 小时内未被引用的自动清理。
 
@@ -361,6 +368,7 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 | 400 | `VALIDATION_FAILED` | 参数错误（`details.fields` 列出字段） |
 | 400 | `STORY_TOO_SHORT` / `STORY_TOO_LONG` | 故事字数超出范围 |
 | 400 | `UPLOAD_TYPE_INVALID` / `UPLOAD_TOO_LARGE` | 上传文件不符合要求 |
+| 403 | `PHOTO_CONSENT_REQUIRED` | 上传照片前需要先同意照片使用说明 |
 | 401 | `UNAUTHENTICATED` | 未登录 |
 | 403 | `CSRF_INVALID` | CSRF 或 Origin 校验失败 |
 | 409 | `WECHAT_OPENID_REQUIRED` | 微信内充值需要先完成静默网页授权获取 openid |
