@@ -119,6 +119,10 @@ export const adminMock: AdminApi = {
   },
   async setRoutes(kind, channelIds) {
     await wait(); requireLogin();
+    // 与后端同口径：渠道列表有重复直接拒绝（VALIDATION_FAILED）
+    if (new Set(channelIds).size !== channelIds.length) {
+      throw fail(400, 'VALIDATION_FAILED', '渠道列表有重复');
+    }
     state.routes[kind] = [...channelIds];
     return adminMock.routes(kind);
   },

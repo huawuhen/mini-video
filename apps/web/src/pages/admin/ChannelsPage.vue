@@ -3,7 +3,7 @@
 // 列表（状态/健康/在途/掩码凭证/成本对比）、按驱动 configSchema 渲染的新增/编辑表单、
 // 软删除、测试连接/试生成（二次确认，试生成有真实费用警示）、路由排序与一键主用、启停、
 // 重新加载配置（重拉 drivers/channels/routes）、告警红点（驱动缺失 / 高失败率）。
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'vant';
 import { adminApi, useMock } from '@/api';
@@ -72,7 +72,6 @@ onMounted(() => {
   }
   void reload(true);
 });
-
 async function logout() {
   await adminApi.logout().catch(() => undefined);
   router.replace('/admin/login');
@@ -80,42 +79,56 @@ async function logout() {
 
 // ── 路由排序与一键主用 ──
 const routeKind = computed<ChannelKind>(() => (kindFilter.value || 'video') as ChannelKind);
-// 建议 a：后端返回该 kind 全部 capability 的路由行，这里只取通用路由（capability='*'）——
-// 专用路由（如 video.720p）将来出现时同一渠道会重复，保存也会被「渠道列表有重复」拒绝
-const routeChannels = computed(() => routesByKind[routeKind.value].filter((r) => r.capability === '*'));
+// 暂存路由是独立可写的响应式状态（③ 复审：此前操作的是 computed 返回的临时数组，
+// 加入/移出后 joinable 与保存内容都不对）。加载、保存、切换类型时从后端结果重建；
+// 排序 / 设主用 / 移出 / 加入只改这份暂存，点保存统一 PUT。
+const routeDraft = ref<RouteRow[]>([]);
+const routeChannels = computed(() => routeDraft.value);
 const routeDirty = ref(false);
+
+/** 后端返回该 kind 全部 capability 的路由行，只取通用路由（capability='*'）——
+ * 专用路由（如 video.720p）将来出现时同一渠道会重复，保存也会被「渠道列表有重复」拒绝。 */
+function syncRouteDraft(kind: ChannelKind) {
+  routeDraft.value = routesByKind[kind].filter((r) => r.capability === '*');
+  routeDirty.value = false;
+}
+
+// 切换类型或后端路由数据刷新（reload/save 后重写 routesByKind）时，暂存从后端结果重建
+// （未保存的暂存改动随之丢弃，路由区文案已说明只暂存）
+watch([routeKind, () => routesByKind[routeKind.value]], ([kind]) => syncRouteDraft(kind), { immediate: true });
+
 function moveRoute(index: number, delta: -1 | 1) {
-  const list = routeChannels.value;
+  const list = routeDraft.value;
   const target = index + delta;
   if (target < 0 || target >= list.length) return;
   [list[index], list[target]] = [list[target], list[index]];
   routeDirty.value = true;
 }
 function makePrimary(index: number) {
-  const list = routeChannels.value;
+  const list = routeDraft.value;
   const [row] = list.splice(index, 1);
   list.unshift(row);
   routeDirty.value = true;
 }
 function removeFromRoute(index: number) {
-  routeChannels.value.splice(index, 1);
+  routeDraft.value.splice(index, 1);
   routeDirty.value = true;
 }
 /** 同类型、启用中、暂存路由之外的渠道——「加入路由」候选（③：新建/启用渠道不会自动入路由）。 */
 const joinable = computed(() => channels.value.filter((c) => c.kind === routeKind.value
-  && c.status === 'active' && !routeChannels.value.some((r) => r.id === c.id)));
+  && c.status === 'active' && !routeDraft.value.some((r) => r.id === c.id)));
 function joinRoute(id: string) {
   const channel = channels.value.find((c) => c.id === id);
   if (!channel) return;
-  routeChannels.value.push({ capability: '*', rank: routeChannels.value.length,
+  routeDraft.value.push({ capability: '*', rank: routeDraft.value.length,
     id: channel.id, name: channel.name, status: channel.status, driver: channel.driver });
   routeDirty.value = true;
 }
 async function saveRoutes() {
   try {
-    const { items } = await adminApi.setRoutes(routeKind.value, routeChannels.value.map((r) => r.id));
+    const { items } = await adminApi.setRoutes(routeKind.value, routeDraft.value.map((r) => r.id));
     routesByKind[routeKind.value] = items;
-    routeDirty.value = false;
+    syncRouteDraft(routeKind.value); // 后端结果为准重建暂存（顺带清脏）
     showSuccessToast('路由已保存');
   } catch (e) { showFailToast((e as Error).message); }
 }
@@ -292,7 +305,7 @@ async function saveForm() {
       <section class="bar miv-card">
         <div class="tabs">
           <button v-for="k in (['', 'video', 'image', 'llm'] as const)" :key="k" type="button"
-            :class="{ on: kindFilter === k }" @click="kindFilter = k; routeDirty = false">
+            :class="{ on: kindFilter === k }" @click="kindFilter = k">
             {{ k === '' ? '全部' : KIND_LABEL[k] }}
           </button>
         </div>
@@ -487,7 +500,7 @@ tr.retired td { opacity: 0.55; }
 code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--miv-bg); padding: 1px 5px; border-radius: 4px; }
 .remark { max-width: 180px; white-space: normal; }
 .tag { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
-.tag.active { background: var(--miv-success-soft); color: var(--miv-success); }
+.tag.active { background: var(--miv-success-soft); color: var(--miv-success-strong); }
 .tag.disabled { background: var(--miv-bg); color: var(--miv-text-3); }
 .tag.retired { background: var(--miv-bg); color: var(--miv-text-3); text-decoration: line-through; }
 .health-ok { color: var(--miv-success); } .health-warn { color: var(--miv-warning); }

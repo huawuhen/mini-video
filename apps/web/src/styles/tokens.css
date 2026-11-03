@@ -14,6 +14,7 @@
   --miv-border: #e6eaef;
   --miv-success: #22c55e;
   --miv-success-soft: #e8f7ee;
+  --miv-success-strong: #15803d; /* 深一档的绿，配浅绿底做文字（对比度） */
   --miv-warning: #f59e0b;
   --miv-danger: #ef4444;
   --miv-danger-soft: #fef2f2;
