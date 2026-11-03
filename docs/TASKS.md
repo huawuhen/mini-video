@@ -70,6 +70,7 @@
 ②**登录页**：现有「我已阅读并同意《用户协议》和《隐私政策》」中两个书名改为可点链接（新开或抽屉打开，返回后不丢失已填手机号）。
 ③**照片单独同意**：新增迁移 `user_consents`（用户、kind `terms|photo`、version、ip、created_at，只追加）；登录 `agreeTerms` 时记 `terms` 当前版本；`POST /me/consents`；`User.consents`（见 API.md §1）；`POST /uploads/image` 未同意当前照片版本返回 403 `PHOTO_CONSENT_REQUIRED`。前端在**首次选择照片前**（新建角色、更新参考照片等所有入口）弹出 `photo-consent.md` 的弹窗：「不同意」关闭不上传，「同意并上传」调接口后继续选图；已同意当前版本则不再弹；收到 403 时补弹。mock 同步实现。
 ④**客服入口**：「我的」页新增「联系客服」（显示 help@redith.cn，点击可复制邮箱并可 `mailto:` 打开），现有「用户协议」单元格接通并新增「隐私政策」；钱包页「退款」相关说明处给出客服邮箱。
+⑥**品牌改名**（用户 2026-11-03）：用户可见的「Mini AI Video」全部改为「剧优兔AI」（`index.html` 标题与 description、`router` 的 `document.title` 后缀、AppLayout 顶栏、LoginPage、运营后台两页、aiide 驱动 `materialsPurpose`「剧优兔AI 参考素材」），登录页品牌下方显示 slogan；英文名 JoyoTo 用于 `index.html` 的 `application-name`/`og:site_name` 等元信息。内部标识（包名、`miv_*` Cookie、`--miv-*` 令牌、库名）不改。Logo 仍用现有占位，美术素材到货后再换。
 ⑤测试：同意记录只追加、版本不一致视为未同意、上传 403、登录未勾选仍 400；前端 check/build；375 与 1280 走查截图放 `docs/m3-legal01/`。
 
 **M3-ADM-01 运营后台·渠道管理页**（Web，依赖 M2-BE-03）：渠道列表（状态 / 健康度 / 在途数 / 掩码凭证）、按驱动 `configSchema` 渲染的新增 / 编辑表单、软删除、测试连接 / 试生成（二次确认）、路由排序与一键切换、启停、重新加载配置、告警红点；PC 优先。UI 完成前用 API 操作。
