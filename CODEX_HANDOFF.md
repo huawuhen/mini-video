@@ -52,7 +52,7 @@
 | 阶段 | M2 收尾 + M3 开工：真实渠道（aiide 视频/图片、智谱 LLM）已端到端验证；生产 Docker、Mac 内测栈、微信支付客户端已合并 |
 | `main` 最新可用 | 完整生成流水线（理解→形象→分段生成→合成交付，含重试耗尽兜底与 unknown 冻结）；渠道层（DB 管理、加密凭证、local-mock 零费用联调）；兑换码充值；微信支付充值后端（下单/公众号静默授权/回调验签入账/对账，模拟网关验证，未真实联调） |
 | 测试基线 | `npm run test:server` 456 通过；`npm run check`、`npm run build` 通过；Lead playwright-cli 真实浏览器走查（iPhone 15）通过到确认角色/制作/失败重试/待核对取消 |
-| 下一步 | M3-PAY-04（HTTPS 回调与开通手册，含 H5 支付域名 / redirect_url）→ M1-WEB-02（引导与文案打磨，含钱包冻结文案、PC 侧边栏高亮） |
+| 下一步 | M1-WEB-02（引导与文案打磨，含钱包冻结文案、PC 侧边栏高亮） |
 | 阻塞项 | 上线前用户侧：ICP 备案、服务号认证、微信支付商户号与密钥、阿里云短信签名模板；中文产品名、C 端定价待定 |
 
 ## 2. 认领表
@@ -90,7 +90,7 @@
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
-| M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | 复审 3 必改已修复待复审（授权目录改顶级域名、模板 5 分钟、4c 关联 AppID；建议 4~5 全做） | 2026-11-03 |
+| M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -174,6 +174,7 @@
 
 | 日期 | 分支 / 任务 | 结论 | 问题清单 / 备注 |
 |---|---|---|---|
+| 2026-11-03 | `agent/ops/M3-PAY-04-pay-ops` @ `9fb55f5`（M3-PAY-04 复审） | ✅ 通过并合并 | 3 条必改到位：JSAPI 支付授权目录改为顶级域名目录 `https://你的域名/`（写明单页应用 + iOS 首次入口页校验的原因），常见问题同步；短信模板改 `您的验证码为${code}，5分钟内有效…`，注明改 `SMS_CODE_TTL_SECONDS` 要同步改模板并重新审核；新增 4c「商户号关联 AppID」（商户平台发起 → 公众平台确认，两边「已关联」才算完成），常见问题加「appid 和 mch_id 不匹配」行。建议 4、5 也做了（必填项按代码口径：8 项缺任一整体关闭、只缺 AppSecret 仅关微信内支付、`WEB_BASE_URL` 用于授权回跳；ICP 后 30 天内公安联网备案、备案号挂页脚）。本轮只改文档，无代码变动。**M3 支付与短信的代码与手册全部就绪**，剩余为用户侧手续（ICP 备案、服务号认证、商户号、阿里云短信）与授权后的真实联调。 |
 | 2026-11-03 | `agent/ops/M3-PAY-04-pay-ops` @ `9057ca0`（M3-PAY-04 支付上线配置与开通手册） | 🔁 需修改（3 条必改，均为手册文字） | 只改文档与 `nginx.conf`，无业务代码。Lead 核对：手册里的变量名、`\n` 私钥写法、日志关键字 `payments_disabled_missing_config` / `sms_aliyun_provider_ready`、回调失败返回 `{"code":"FAIL"}` 均与代码一致 ✔；`nginx.conf` 新增回调 location 用 `nginx:1.27-alpine` 实测 `nginx -t` 通过 ✔；外层代理「回调路径原样透传」与微信校验文件放置说明清楚 ✔；手册结构（总览 → 逐步 → 填配置对照表 → 不花钱自检 → 常见问题 → 授权铁律）适合非程序员 ✔。<br>**必须修改**<br>1. **JSAPI 支付授权目录写错，按现写法上线后微信里点支付会报「URL 未注册」**（PAY-SETUP §4b）。微信规则：授权目录取的是发起支付页面 URL 的**目录**（最后一个 `/` 之前），`https://域名/wallet/recharge` 的目录是 `https://域名/wallet/`；而且我们是单页应用，iOS 微信常按**首次进入的页面**校验，用户从首页进来再点到充值页就对不上。请改为：填**顶级域名目录** `https://你的域名/`（微信规定设为顶级域名时只校验域名、不校验后缀，最稳），删掉「带不带 `/` 都试一次」；常见问题表同步。<br>2. **短信模板示例不合法且时长不符**（§7）：`${30}分钟` 不是合法变量（阿里云会驳回或原样显示），而我们验证码有效期是 `SMS_CODE_TTL_SECONDS=300` 即 **5 分钟**。请改为 `您的验证码为${code}，5分钟内有效，请勿泄露于他人。`，并注明「若改了 SMS_CODE_TTL_SECONDS，模板里的分钟数要一起改（模板需重新审核）」。<br>3. **缺少「商户号关联 AppID」这一步**（§3/§4）：现在只写了注册商户号时在经营场景填 AppID，但真正让服务号能用这个商户号收款，需要在商户平台「产品中心 → AppID 账号管理 → 关联 AppID」发起，再到公众平台「微信支付 → 商户号管理」点确认。漏了这步，下单会报「appid 和 mch_id 不匹配」，在线充值直接不可用。请在 §4 加 4c 小节，并在常见问题表加这一行（现象：充值页能显示，点支付提示支付暂不可用、日志里有 appid/mchid 不匹配）。<br>**建议（不阻塞）**<br>4. 「十一项全部配齐前在线充值整体关闭」与代码口径不符：实际是 8 项必填（`WXPAY_MCHID`/`PRIVATE_KEY`/`CERT_SERIAL`/`APIV3_KEY`/`PUBLIC_KEY`/`PUBLIC_KEY_ID`、https 的 `PAYMENTS_NOTIFY_URL`、`WECHAT_MP_APPID`）缺任一才整体关闭；只缺 `WECHAT_MP_SECRET` 时仅关闭微信内支付（PC 扫码仍可用）；`WEB_BASE_URL` 是微信授权回跳要用的。请按这个口径改写 `.env.production.example` 与 README 那一行。<br>5. ICP 备案通过后 30 天内还要做**公安联网备案**（全国互联网安全管理服务平台），建议在 §1 末尾加一句提醒。 |
 | 2026-11-02 | `agent/be/M3-SMS-01-aliyun-sms` @ `3d8c4d1`（M3-SMS-01） | ✅ 通过并合并 | Lead 复跑 456/456、check/build 过。**签名用阿里云官方文档示例核对**（testId/testSecret、SendSms 示例参数、Timestamp 2017-07-12T02:42:19Z）：用本分支 `percentEncode` + 同一算法算出 `zJDF+Lrzhj/ThnlvIToysFRq6t4=`，与官方示例签名一致 ✔——比测试里的「独立重写」更硬的证据（同一作者重写只能证明自洽）。参数口径（Version 2017-05-25、Timestamp UTC 秒级、TemplateParam `{"code":…}`、SignatureVersion 1.0）正确；不引入 SDK；缺配置构造即报错并点名变量（只写名不写值），生产 loadConfig 同样拦；阿里原始错误只进日志、手机号脱敏、用户只看映射中文；发送失败删记录不留死码。<br>**建议（不阻塞，可随下次涉及 auth 的任务做）**<br>1. 把上面的官方示例作为固定向量写进测试（Format=XML、OutId=123、PhoneNumbers=15300000001、SignName=阿里云短信测试专用、TemplateCode=SMS_71390007、TemplateParam={"customer":"test"}、SignatureNonce=45e25e9b-0a6f-4070-8c85-2956eda1b466 → `zJDF+Lrzhj/ThnlvIToysFRq6t4=`），锁住算法。<br>2. 阿里网关限流码常带后缀（`Throttling.User`、`Throttling.Api` 等），映射改为按前缀 `Throttling` 匹配。<br>3. 失败日志带上阿里返回的 `RequestId`，真实环境出问题时可直接提工单。<br>4. 频控类失败（`isv.*_LIMIT_CONTROL`/Throttling）现在返回 502 `UPSTREAM_FAILED`；可考虑 429 `RATE_LIMITED`，前端提示更一致。<br>**未验证**：真实网关接受度、真实错误码全集与到达率——待用户阿里云账号就绪并授权条数上限（建议 ≤5 条）。 |
 | 2026-11-02 | `agent/web/M3-PAY-03-recharge-ui` @ `8cde54c`（M3-PAY-03 复审） | ✅ 通过并合并 | 2 条必改到位：① `submit` 捕获 409 `WECHAT_OPENID_REQUIRED`——未带 `wechatAuth=failed` 自动去授权，带了则提示不再自动跳；微信内未授权时主按钮换成「先完成微信授权」、授权卡片常显（文案「立即授权/重新授权」）；mock 加演示开关模拟未授权与 409。② H5 跳转拼 `redirect_url` 指回结果页（域名须与商户后台 H5 支付域名一致，写进 M3-PAY-04 手册）。建议 3~6 全做（提示条可换行 + 去兑换、删错位提示、`--miv-qr-bg` 令牌、§7 重复标题——合并时 Lead 又删掉一处合并产生的重复标题）。后端自上轮无改动（上轮 445/445），本轮 check/build 过。**Lead 走查（iPhone 15 + 模拟微信 UA + 未授权开关）**：`?wechatAuth=failed` → 提示条完整换行显示 + 「重新授权」卡片 + 主按钮「先完成微信授权」、不自动跳 ✔；不带 failed 打开 → 自动跳 `/api/v1/wechat/oauth/start?returnTo=%2Fwallet%2Frecharge` ✔。遗留（不阻塞）：服务端说已授权但下单仍 409 且 URL 带 failed 时，toast 让点「重新授权」但该卡片只在 needAuth 时显示——极少见，M1-WEB-02 顺手处理（409 时把 needAuth 置真即可）。**未验证**：真实微信桥调起、真实授权回跳、H5 收银台回跳（待 M3-PAY-04 真实联调）。 |
@@ -240,8 +241,6 @@
 - **建议 4（必填项按代码口径）**：`.env.production.example` 与 README 从「11 项全配齐才开」改为：**8 项必填**（WXPAY_MCHID/PRIVATE_KEY/CERT_SERIAL/APIV3_KEY/PUBLIC_KEY/PUBLIC_KEY_ID/PAYMENTS_NOTIFY_URL(https)/WECHAT_MP_APPID）缺任一在线充值整体关闭；**只缺 WECHAT_MP_SECRET 时仅关闭微信内支付**（PC 扫码可用）；WEB_BASE_URL 用于微信授权回跳（缺了授权流程走不通，建议必填）。
 - **建议 5**：§1 末尾新增「**ICP 备案通过后 30 天内做公安联网备案**（beian.mps.gov.cn，备案号挂页脚）」。
 - **验证**：`test:server` **456/456**、`check`、`build` 通过（纯文档；首轮失败为本机 Docker Desktop 未运行致测试库不可达，重启后全绿）。
-
-### 2026-11-02 · Ops · M3-PAY-04 支付上线配置与开通手册（纯文档/配置，零代码）
 
 ### 2026-11-02 · Ops · M3-PAY-04 支付上线配置与开通手册（纯文档/配置，零代码）
 
