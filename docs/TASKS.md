@@ -65,6 +65,13 @@
 
 ### 其他
 
+**M3-SMS-02 阿里云短信错误码按官方文档校正**（BE-Core，小修；依据 Lead 2026-11-03 核对的官方 OpenAPI 元数据 Dysmsapi 2017-05-25）：
+①`ALIYUN_SMS_ERROR_MAP` 删除官方不存在的 `isv.SIGN_NOT_EXISTS`、`isv.TEMPLATE_NOT_EXISTS`、`InvalidPhoneNumbers`；改用官方码：`isv.SMS_SIGNATURE_ILLEGAL`（找不到签名）、`isv.SMS_TEMPLATE_ILLEGAL`（找不到模板）、`isv.SMS_SIGNATURE_SCENE_ILLEGAL`（签名与模板类型不一致）、`isv.TEMPLATE_PARAMS_ILLEGAL`（变量类型不匹配）、`isv.SMS_SIGN_ILLEGAL`；账号类 `isv.OUT_OF_SERVICE`、`isv.ACCOUNT_ABNORMAL`、`isv.ACCOUNT_NOT_EXISTS`、`isv.PRODUCT_UN_SUBSCRIPT`、`isv.PRODUCT_UNSUBSCRIBE`、`isv.SECURITY_FROZEN_ACCOUNT`，以及 `SignatureDoesNotMatch`、`InvalidAccessKeyId.NotFound`、`InvalidTimeStamp.Expired` —— 这些都是运维配置问题，用户统一看到「短信服务暂时不可用，请稍后再试或联系客服」；`isv.BLACK_KEY_CONTROL_LIMIT`、`isv.SMS_CONTENT_ILLEGAL` 同上。保留 `isv.MINUTE_LIMIT_CONTROL`/`HOUR`/`DAY`/`BUSINESS_LIMIT_CONTROL`。
+②`Throttling` 改为前缀匹配（官方实际返回 `Throttling.User` 等）。
+③配置类错误（签名/模板/AccessKey/账号/余额）记 `error` 级日志并带 `RequestId`，便于运维排查；成功日志同时记 `BizId` 与 `RequestId`。
+④本地频控对齐阿里云验证码默认限额（同号 1 条/分钟、5 条/小时、10 条/天）：新增 `SMS_MAX_PER_PHONE_PER_HOUR`（默认 5），超限提示「发送太频繁，请一小时后再试」，避免请求打到阿里云才被拒；`.env.example`、`deploy/.env.production.example` 同步。
+⑤测试：每类映射至少 1 例、Throttling 前缀、小时上限、日志含 RequestId 且无手机号明文；加入官方签名示例向量测试（M3-SMS-01 遗留建议）。
+
 **M3-LEGAL-01 用户协议 / 隐私政策 / 照片单独同意 / 客服入口**（BE-Core + Web，同一 Agent 串行；用户 2026-11-03 决定）：
 ①**正文**以 `docs/legal/{user-agreement,privacy-policy,photo-consent}.md` 为唯一来源（Lead 维护）。前端新增 `/legal/terms`、`/legal/privacy` 两个无需登录的页面，移动端阅读排版（标题、加粗、表格在 375px 下可横向滚动），PC 居中限宽；渲染方式自定，但不得手抄改写正文，优先在构建时从 `docs/legal/*.md` 导入（如 Vite `?raw` + 轻量 Markdown 渲染，新增依赖需在 §7 说明）。
 ②**登录页**：现有「我已阅读并同意《用户协议》和《隐私政策》」中两个书名改为可点链接（新开或抽屉打开，返回后不丢失已填手机号）。
