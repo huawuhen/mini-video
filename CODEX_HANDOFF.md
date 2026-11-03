@@ -85,7 +85,7 @@
 | M2-OPS-01（生产 Docker 部署） | Ops（本机开发 Agent） | `agent/ops/M2-OPS-01-docker` | `deploy/**` `Dockerfile*` `server/.env.example` `server/test/wiring-regression.test.js`（遗留 a） `server/src/engine/providers/drivers/local-mock/**`（遗留 b） `apps/web/src/pages/WalletPage.vue`（遗留 d） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并） | 2026-10-29 |
 | M2-OPS-03（Mac 本机内测） | Ops（本机开发 Agent，含 BE 配合：redeem:create） | `agent/ops/M2-OPS-03-mac-beta` | `deploy/**`（MAC-BETA.md、Mac 侧 compose 覆盖） `server/scripts/redeem-create.js` `server/package.json` `server/test/**`（兑换码） `server/.data/ops03-cost-ledger.json`（本地） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并；内测栈保留，暂停新增真实费用） | 2026-10-31 |
 | M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | ✅ 完成（Lead 二轮复审通过并合并，2026-11-02） | 2026-11-02 |
-| M1-WEB-02 | — | — | — | 待认领 | — |
+| M1-WEB-02 | Web（本机开发 Agent） | `agent/web/M1-WEB-02-polish` | `apps/web/src/{layouts/AppLayout.vue,pages/{WalletPage,RechargePage}.vue}` `docs/m1-web02/`（走查截图） `CODEX_HANDOFF.md` | 待审查（三项遗留修复 + tabbar 受控修复 + 引导全量走查 14 截图；456/456、check/build 过，见 §7） | 2026-11-03 |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
@@ -232,6 +232,19 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-03 · Web · M1-WEB-02 新手引导走查打磨 + 三项遗留修复（含 tabbar 真 bug）
+
+- **背景**：TASKS M1-WEB-02（引导打磨：定位、自动避让、键盘与焦点、减少动态效果、场景小提示；手机/PC 各走一遍主引导与 3 个小提示）+ 用户指定的三项 §6 积累；分支 `agent/web/M1-WEB-02-polish`（基于 main `24762b3`）。
+- **引导走查结论（先查后改）**：SpotlightTour/useTour 的避让（四方位择优+钳位）、键盘（←/→/Esc + Tab 焦点锁定）、`prefers-reduced-motion`、scrollIntoView+ResizeObserver、主引导完成登记与「我的→重新查看」重放在手机 390 与 PC 1280 均验证正确，**引导本体无需修改**；走查覆盖主引导 5 步（自动开始→步进→完成→重进不弹→PC 重放）与三个场景小提示（story_review 确认故事 / cast_review 最终价格 / delivery 保存作品「保存 3 个月」与 retentionDays 联动），**每步每提示均有截图**（`docs/m1-web02/` 14 张：390-01~03 主引导、390-04~06 三提示、390-07 tabbar、390-08 充值 409；1280-01~03 高亮/冻结文案/主引导重放、1280-04~06 三提示）。
+- **三项遗留修复**：
+  1. 钱包页冻结文案 → 「冻结 ¥X（制作中或待核对）」（M2-BE-04 建议 3；作品取消但结果待核对时同一文案同样准确，详情页「客服核对」文案已准确未动）。
+  2. PC 侧边栏 `/wallet` 与充值页高亮「钱包」（active 映射按 `isDesktop` 分流；手机底栏 `/wallet→我的` 保持不变——M3-PAY-03 建议 7）。
+  3. 充值页「options 就绪但下单 409 且带 `wechatAuth=failed`」→ `openidMismatch` 置位强制 `needAuth`，「重新授权」卡片亮出（M3-PAY-03 复审遗留；mock 演示开关下验证 409→卡片出现，截图 390-08）。
+- **走查中抓到并修复一个真 bug**：`van-tabbar` 同时带 `route` 与 `:model-value` 时 route 自匹配优先，`/wallet` 匹配不到任何 tab **回退亮「首页」**（M2-BE-04④ 的映射修复实际一直没生效）——去掉 `route` 改为完全受控 `model-value`；修复后五路径回归验证（/ →首页、/projects→作品、/assets→资产库、/wallet→我的、充值页 hideTabbar 无栏，截图 390-07）。
+- **验证**：`npm run test:server` **456/456**、`check`、`build` 通过。走查环境：vite dev + mock（ego-browser；CDP UA/视口覆盖在每次导航后需重设）。
+
+### 2026-11-03 · Ops · M3-PAY-04 复审必改修复（授权目录 / 短信模板 / 关联 AppID / 必填项口径）
 
 ### 2026-11-03 · Ops · M3-PAY-04 复审必改修复（授权目录 / 短信模板 / 关联 AppID / 必填项口径）
 
