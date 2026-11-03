@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { loadConfig } from '../src/config.js';
 import { silentLogger } from '../src/logger.js';
+import { getCatalog } from '../src/catalog/service.js';
+import { listProjects } from '../src/projects/service.js';
 import { createScheduler, runAuthSweep, runJobsCleanup, runProjectsExpireSweep, runProjectsFailedSweep,
   runUploadsSweep, windowStart } from '../src/queue/cron.js';
 import { createPriceAuditHandler, expectedModelPresence } from '../src/queue/price-audit.js';
@@ -291,6 +293,69 @@ describe('cron（M1-BE-03）', () => {
     await db.query(`DELETE FROM project_events WHERE project_id IN ('prj_f1', 'prj_f2')`);
     await db.query(`DELETE FROM wallets WHERE user_id = 'usr_cron00000001'`);
     await db.query(`DELETE FROM projects WHERE id IN ('prj_f1', 'prj_f2')`);
+  });
+
+  test('M2-BE-02 补充：failed 自动取消时 unknown 片段冻结保留（金额精确断言、零退款流水）', async () => {
+    const db = ctx.db;
+    await db.query(
+      `INSERT INTO wallets (user_id, available_fen, frozen_fen) VALUES ('usr_cron00000001', 4000, 3000)
+        ON CONFLICT (user_id) DO UPDATE SET available_fen = 4000, frozen_fen = 3000`);
+    await insertProject(db, 'prj_f3', 'failed', null);
+    await db.query(`UPDATE projects SET updated_at = now() - interval '8 days' WHERE id = 'prj_f3'`);
+    // 两段：一段 30 秒 succeeded（已结算、冻结归零），一段 30 秒 unknown（结果未知、冻结保留待核对）
+    await insertSegment(db, 'seg_f3a', 'prj_f3', 0);
+    await insertSegment(db, 'seg_f3b', 'prj_f3', 1);
+    await db.query(`UPDATE segments SET duration_seconds = 30 WHERE project_id = 'prj_f3'`);
+    await insertTake(db, 'take_f3a', 'prj_f3', 'users/x/f3a.mp4');
+    await db.query(
+      `INSERT INTO segment_takes (id, segment_id, status) VALUES ('take_f3b', 'seg_f3b', 'unknown')`);
+    // 账本：succeeded 段 reserve+settle（冻结贡献 0）；unknown 段仅 reserve（冻结贡献 3000 = 30s×100 分/秒）
+    const insertLedger = (id, kind, amountFen, frozenDelta, idem) => db.query(
+      `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key)
+       VALUES ($1, 'usr_cron00000001', $2, $3, $4, '测试', 'project', 'prj_f3', $5)`,
+      [id, kind, amountFen, frozenDelta, idem]);
+    await insertLedger('led_f3r1', 'reserve', -3000, 3000, 'test:f3r1');
+    await insertLedger('led_f3s1', 'settle', 0, -3000, 'test:f3s1');
+    await insertLedger('led_f3r2', 'reserve', -3000, 3000, 'test:f3r2');
+
+    const result = await runProjectsFailedSweep(db, { cancelDays: 7, batchSize: 10, logger: silentLogger });
+    assert.deepEqual(result, { canceled: 1 });
+    assert.equal((await db.query(`SELECT status FROM projects WHERE id = 'prj_f3'`)).rows[0].status, 'canceled');
+    const wallet = (await db.query(
+      `SELECT available_fen, frozen_fen FROM wallets WHERE user_id = 'usr_cron00000001'`)).rows[0];
+    assert.equal(Number(wallet.available_fen), 4000, 'unknown 冻结不退：可用余额一分不变');
+    assert.equal(Number(wallet.frozen_fen), 3000, 'unknown 段冻结保留待客服核对（30s × 100 分）');
+    const refunds = await db.query(
+      `SELECT count(*)::int AS n FROM ledger WHERE ref_id = 'prj_f3' AND kind = 'refund'`);
+    assert.equal(refunds.rows[0].n, 0, '可退为 0 时不写退款流水');
+    // 清理
+    await db.query(`DELETE FROM ledger WHERE ref_id = 'prj_f3'`);
+    await db.query(`DELETE FROM segment_takes WHERE id IN ('take_f3a', 'take_f3b')`);
+    await db.query(`DELETE FROM segments WHERE project_id = 'prj_f3'`);
+    await db.query(`DELETE FROM project_events WHERE project_id = 'prj_f3'`);
+    await db.query(`DELETE FROM wallets WHERE user_id = 'usr_cron00000001'`);
+    await db.query(`DELETE FROM projects WHERE id = 'prj_f3'`);
+  });
+
+  test('M2-BE-02 补充：到期提醒数据口径——done 列表带 expiresAt、catalog 带 expiryRemindDays（前端据此算 7 天窗口）', async () => {
+    const db = ctx.db;
+    await db.query(
+      `INSERT INTO wallets (user_id) VALUES ('usr_cron00000001') ON CONFLICT (user_id) DO NOTHING`);
+    await insertProject(db, 'prj_r1', 'delivered', new Date(Date.now() + 5 * 86_400_000));   // 窗口内（<7 天）
+    await insertProject(db, 'prj_r2', 'delivered', new Date(Date.now() + 30 * 86_400_000));  // 窗口外（同样返回）
+    try {
+      const page = await listProjects(db, { userId: 'usr_cron00000001', group: 'done', limit: 20 });
+      const items = Object.fromEntries(page.items.map((p) => [p.id, p]));
+      assert.ok(items.prj_r1?.expiresAt, '窗口内作品带 expiresAt');
+      assert.ok(items.prj_r2?.expiresAt, '窗口外作品同样带 expiresAt（窗口由前端按提醒天数计算）');
+      const daysLeft = (Date.parse(items.prj_r1.expiresAt) - Date.now()) / 86_400_000;
+      assert.ok(daysLeft > 4 && daysLeft < 6, `expiresAt 数值正确（约 5 天，实际 ${daysLeft.toFixed(1)}）`);
+      const catalog = await getCatalog(db);
+      assert.equal(typeof catalog.limits.expiryRemindDays, 'number');
+      assert.ok(catalog.limits.expiryRemindDays > 0, `提醒窗口天数来自运营配置（当前 ${catalog.limits.expiryRemindDays} 天）`);
+    } finally {
+      await db.query(`DELETE FROM projects WHERE id IN ('prj_r1', 'prj_r2')`);
+    }
   });
 
   test('providers.price_audit：mock 跳过；real 模式按生效渠道目录校验、模型缺失报警（M2-BE-03 渠道层）', async () => {
