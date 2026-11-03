@@ -4,7 +4,6 @@
 import { ref } from 'vue';
 import { api } from '@/api';
 import { useAuthStore } from '@/stores/auth';
-import { PHOTO_CONSENT_VERSION } from '@/utils/legal';
 
 const visible = ref(false);
 let resolver: ((agreed: boolean) => void) | null = null;
@@ -12,8 +11,12 @@ let resolver: ((agreed: boolean) => void) | null = null;
 export function usePhotoConsent() {
   const auth = useAuthStore();
 
-  /** 当前登录用户是否已同意当前照片版本（User.consents 由登录 / me / 接口返回同步）。 */
-  const consented = () => auth.user?.consents?.photo === PHOTO_CONSENT_VERSION;
+  /** 是否已同意当前照片版本——版本号以服务端返回的 consents.current 为准（复审必改④：
+   *  前端不再自带版本常量，避免与服务端/正文三处不同步）。 */
+  const consented = () => {
+    const c = auth.user?.consents;
+    return !!c?.current?.photo && c.photo === c.current.photo;
+  };
 
   function openSheet(): Promise<boolean> {
     visible.value = true;

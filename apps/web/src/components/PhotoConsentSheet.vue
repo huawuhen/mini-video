@@ -4,7 +4,10 @@
 import { computed, ref } from 'vue';
 import { showFailToast } from 'vant';
 import { api } from '@/api';
-import { PHOTO_CONSENT_VERSION, photoConsentText, renderLegalMarkdown } from '@/utils/legal';
+import { photoConsentText, renderLegalMarkdown } from '@/utils/legal';
+import { useAuthStore } from '@/stores/auth';
+
+const auth = useAuthStore();
 
 const visible = defineModel<boolean>({ required: true });
 const deciding = ref(false);
@@ -15,7 +18,10 @@ async function agree() {
   if (deciding.value) return;
   deciding.value = true;
   try {
-    await api.photoConsent(PHOTO_CONSENT_VERSION);
+    // 提交版本以服务端 consents.current 为准（复审必改④：前端不再自带版本常量）
+    const version = auth.user?.consents?.current?.photo;
+    if (!version) throw new Error('无法获取当前协议版本，请稍后再试');
+    await api.photoConsent(version);
     visible.value = false;
     emit('decided', true);
   } catch (e) {
@@ -38,7 +44,7 @@ function decline() {
     </div>
     <div class="scroll">
       <article class="doc" v-html="html" />
-      <p class="miv-hint">不同意不会上传任何照片；同意仅针对上方说明所列用途，可随时删除照片。</p>
+      <p class="miv-hint">不同意不会上传任何照片；同意仅针对上方说明所列用途，可随时删除照片。<router-link class="legal-link" to="/legal/privacy" target="_blank">《隐私政策》</router-link></p>
     </div>
     <div class="actions">
       <van-button block plain type="default" @click="decline">不同意</van-button>
@@ -49,6 +55,7 @@ function decline() {
 
 <style scoped>
 .sheet { display: flex; flex-direction: column; background: var(--miv-surface); }
+.legal-link { color: var(--miv-primary); }
 .head { display: flex; align-items: center; justify-content: space-between; padding: var(--miv-space-3) var(--miv-space-4) 0; }
 .head strong { font-size: 16px; }
 .close { border: 0; background: transparent; font-size: 22px; line-height: 1; color: var(--miv-text-3); cursor: pointer; padding: 4px 8px; }
@@ -60,6 +67,7 @@ function decline() {
 .doc :deep(blockquote) { margin: 0.6em 0; padding: 0.5em 0.8em; background: var(--miv-primary-soft);
   border-left: 3px solid var(--miv-primary); font-size: 12.5px; color: var(--miv-text-2); }
 .doc :deep(ul), .doc :deep(ol) { margin: 0.5em 0; padding-left: 1.3em; }
+.doc :deep(ol) { list-style: decimal; }  /* M3-LEGAL-01 必改⑤：保留条款序号 */
 .doc :deep(li) { margin: 0.25em 0; }
 .doc :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse;
   margin: 0.6em 0; font-size: 12.5px; white-space: nowrap; }

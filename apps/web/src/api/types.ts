@@ -11,6 +11,7 @@ export interface Onboarding { tourCompletedAt: string | null; tipsSeen: TipKey[]
 export interface Consents {
   terms: string | null;   // 已同意的《用户协议》《隐私政策》版本（登录 agreeTerms 记录）
   photo: string | null;   // 已同意的照片使用说明版本（人脸/儿童照片单独同意）
+  current: { terms: string; photo: string };  // 服务端当前版本（判断「已同意」的唯一依据，前端不自带常量）
 }
 export interface User { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding; consents: Consents }
 export interface Session { user: User; csrfToken: string }

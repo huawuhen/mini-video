@@ -17,13 +17,15 @@ export async function recordConsent(t, { userId, kind, version, ip }) {
   );
 }
 
-/** 各 kind 最新一条的版本：{ terms: string|null, photo: string|null }。 */
+/** 各 kind 最新一条的版本 + 服务端当前版本（API.md §1：`current` 供前端判断是否需再同意——
+ * 前端不得自带版本常量，避免与服务端/正文三处不同步，M3-LEGAL-01 复审必改④）。 */
 export async function getConsents(db, userId) {
   const { rows } = await db.query(
     `SELECT DISTINCT ON (kind) kind, version FROM user_consents
       WHERE user_id = $1 ORDER BY kind, created_at DESC, id DESC`, [userId]);
   const found = Object.fromEntries(rows.map((r) => [r.kind, r.version]));
-  return { terms: found.terms ?? null, photo: found.photo ?? null };
+  return { terms: found.terms ?? null, photo: found.photo ?? null,
+    current: { terms: TERMS_VERSION, photo: PHOTO_CONSENT_VERSION } };
 }
 
 /** 照片同意写入（POST /me/consents）：版本必须等于服务端当前版本。 */

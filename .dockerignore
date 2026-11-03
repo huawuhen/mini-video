@@ -6,7 +6,9 @@
 **/.data
 **/node_modules
 **/dist
+# M3-LEGAL-01 必改①：协议正文 ?raw 构建时导入，web 构建镜像需要 docs/legal（其余 docs 不进镜像）
 docs
+!docs/legal
 *.md
 CODEX_HANDOFF.md
 .git

@@ -38,6 +38,7 @@ header.bar { position: sticky; top: 0; z-index: 5; }
   border-left: 3px solid var(--miv-primary); border-radius: 0 var(--miv-radius-sm) var(--miv-radius-sm) 0;
   font-size: 13.5px; color: var(--miv-text-2); }
 .doc :deep(ul), .doc :deep(ol) { margin: 0.6em 0; padding-left: 1.4em; }
+.doc :deep(ol) { list-style: decimal; }  /* M3-LEGAL-01 必改⑤：保留条款序号 */
 .doc :deep(li) { margin: 0.3em 0; }
 /* 表格横向滚动（375px 下宽表不挤爆版式） */
 .doc :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse;

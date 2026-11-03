@@ -110,7 +110,8 @@ function load(): MockState {
       const state = { ...emptyState(), ...(JSON.parse(raw) as MockState) };
       // M3-LEGAL-01：旧演示数据没有 consents 字段——补默认（视为未同意照片说明）
       if (state.session?.user && !state.session.user.consents) {
-        state.session.user.consents = { terms: 'terms-v1', photo: null };
+        state.session.user.consents = { terms: 'terms-v1', photo: null,
+          current: { terms: 'terms-v1', photo: 'photo-v1' } };
       }
       return state;
     }
@@ -462,7 +463,8 @@ export const mockApi: MivApi = {
       // M3-LEGAL-01：登录 agreeTerms 即记录协议版本；照片同意沿用该浏览器之前的记录
       user: { id: uid('usr'), phoneMasked: `${phone.slice(0, 3)}****${phone.slice(7)}`, nickname: `用户${phone.slice(7)}`,
         onboarding: isNewUser ? { tourCompletedAt: null, tipsSeen: [] } : state.session?.user.onboarding ?? { tourCompletedAt: iso(), tipsSeen: [] },
-        consents: { terms: 'terms-v1', photo: state.session?.user?.consents?.photo ?? null } },
+        consents: { terms: 'terms-v1', photo: state.session?.user?.consents?.photo ?? null,
+          current: { terms: 'terms-v1', photo: 'photo-v1' } } },
     };
     tick();
     return { ...clone(state.session), isNewUser };

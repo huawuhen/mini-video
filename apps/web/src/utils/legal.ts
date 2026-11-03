@@ -9,9 +9,8 @@ export const termsText = termsMarkdown;
 export const privacyText = privacyMarkdown;
 export const photoConsentText = photoConsentMarkdown;
 
-// ⚠️ 版本常量与两处同步：docs/legal/*.md 头部版本行、服务端 server/src/auth/consents.js。
-export const TERMS_VERSION = 'terms-v1';
-export const PHOTO_CONSENT_VERSION = 'photo-v1';
+// 版本常量已删除（M3-LEGAL-01 复审必改④）：判断与提交一律用服务端返回的
+// consents.current（见 /api/v1/auth/me、login 响应），避免三处不同步。
 
 const escapeHtml = (text: string) => text
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

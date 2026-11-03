@@ -68,14 +68,22 @@ describe('M3-LEGAL-01：同意记录与照片上传守卫', () => {
     `SELECT version, created_at FROM user_consents WHERE user_id = $1 AND kind = $2 ORDER BY created_at, id`,
     [account.user.id, kind]).then((r) => r.rows);
 
-  test('登录 agreeTerms：记 terms 当前版本、User.consents 返回版本；再登录追加一条（只追加）', async () => {
+  test('登录 agreeTerms：记 terms 当前版本与 consents.current；同版本重复登录不追加、版本变化追加（建议 d）', async () => {
     assert.equal(account.user.consents.terms, TERMS_VERSION);
+    assert.equal(account.user.consents.current.terms, TERMS_VERSION, '复审必改④：current 返回服务端当前版本');
+    assert.equal(account.user.consents.current.photo, 'photo-v1');
     assert.equal(account.user.consents.photo, null);
     assert.equal((await consentRows('terms')).length, 1);
-    // 第二次登录（同账号）：再追加一条，历史不覆盖
+    // 第二次登录（同版本）：不追加（建议 d：防表无限增长）
     const again = await signUp('15800000777', { reusePhone: true });
     assert.equal(again.user.consents.terms, TERMS_VERSION);
-    assert.equal((await consentRows('terms')).length, 2, '每次同意都追加留痕');
+    assert.equal((await consentRows('terms')).length, 1, '同版本重复登录不追加');
+    // 版本升级（模拟）：服务端改版本后登录 → 追加新版本留痕
+    await ctx.db.query(`UPDATE user_consents SET version = 'terms-v0' WHERE user_id = $1 AND kind = 'terms'`,
+      [account.user.id]);
+    const third = await signUp('15800000777', { reusePhone: true });
+    assert.equal(third.user.consents.terms, TERMS_VERSION);
+    assert.equal((await consentRows('terms')).length, 2, '版本变化时重新追加留痕');
   });
 
   test('登录未勾选 agreeTerms → 400（不变）', async () => {
@@ -97,7 +105,8 @@ describe('M3-LEGAL-01：同意记录与照片上传守卫', () => {
     assert.equal(res.status, 400, 'kind 只能是 photo（terms 只随登录记录）');
     res = await post('/me/consents', { kind: 'photo', version: PHOTO_CONSENT_VERSION }, account);
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { consents: { terms: TERMS_VERSION, photo: PHOTO_CONSENT_VERSION } });
+    assert.deepEqual(await res.json(), { consents: { terms: TERMS_VERSION, photo: PHOTO_CONSENT_VERSION,
+      current: { terms: TERMS_VERSION, photo: PHOTO_CONSENT_VERSION } } });  // 复审必改④：响应含 current
     await post('/me/consents', { kind: 'photo', version: PHOTO_CONSENT_VERSION }, account);
     assert.equal((await consentRows('photo')).length, 2, '重复同意只追加新记录');
   });

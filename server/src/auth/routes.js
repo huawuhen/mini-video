@@ -41,8 +41,12 @@ export function buildAuthRoutes({ config, db, logger, provider, requireAuth, set
       message: '尝试次数太多，请一小时后再试',
     });
     const { user, isNewUser, token, csrfToken } = await loginWithSmsCode({ db, config, phone, code });
-    // M3-LEGAL-01：勾选「我已阅读并同意」= 记录 terms 当前版本（每次登录都追加一条留痕）
-    await recordConsent(db, { userId: user.id, kind: 'terms', version: TERMS_VERSION, ip: req.ip });
+    // M3-LEGAL-01：勾选「我已阅读并同意」= 记录 terms 当前版本。
+    // 复审建议 d：仅当最新一条版本不同才追加（版本升级时重新留痕；重复登录不再堆行）
+    const beforeLogin = await getConsents(db, user.id);
+    if (beforeLogin.terms !== TERMS_VERSION) {
+      await recordConsent(db, { userId: user.id, kind: 'terms', version: TERMS_VERSION, ip: req.ip });
+    }
     setSessionCookie(res, token);
     logger.info('user_login', { userId: user.id, isNewUser, phone: maskPhone(phone) });
     res.json({ user: { ...serializeUser(user, { urlFor }),

@@ -65,10 +65,11 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
     <section class="miv-card">
       <div class="miv-section-title">明细</div>
       <van-cell v-for="item in ledger" :key="item.id" :title="item.title" :label="labelOf(item)">
-        <template #value><span :class="amountOf(item).cls">{{ amountOf(item).text }}</span>  <p class="miv-hint foot">充值如需退款或对订单有疑问，请联系客服 help@redith.cn</p>
-</template>
+        <template #value><span :class="amountOf(item).cls">{{ amountOf(item).text }}</span></template>
       </van-cell>
       <van-empty v-if="!ledger.length" description="暂无记录" image-size="64" />
+      <!-- M3-LEGAL-01 必改③：退款/客服提示只在明细卡片底部出现一次（原先写进每条明细的 #value 重复显示） -->
+      <p class="miv-hint foot">充值如需退款或对订单有疑问，请联系客服 help@redith.cn</p>
     </section>
   </div>
 </template>
