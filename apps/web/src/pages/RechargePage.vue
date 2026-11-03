@@ -21,9 +21,12 @@ const authJumped = ref(false); // 本次会话已自动跳过一次授权（防�
 
 const choice = computed(() => pickScene(options.value?.scenes ?? []));
 const amounts = computed(() => options.value?.amountsFen ?? []);
-/** 微信内走 jsapi 但还没有 openid：需要先静默授权（此时「立即支付」换成「先完成微信授权」） */
+/** 微信内走 jsapi 但还拿不到 openid：需要先静默授权（此时「立即支付」换成「先完成微信授权」）。
+ * openidMismatch：options 显示已授权、下单却被服务端 409 推翻（如更换服务号）且 URL 带
+ * wechatAuth=failed——此时也置 needAuth，把「重新授权」卡片亮出来（M1-WEB-02 遗留项 3） */
+const openidMismatch = ref(false);
 const needAuth = computed(() => isWechatBrowser && choice.value.scene === 'jsapi'
-  && options.value != null && !options.value.wechatOpenidReady);
+  && options.value != null && (!options.value.wechatOpenidReady || openidMismatch.value));
 
 function startOauth() {
   // 后端 302 整页跳转（snsapi_base 静默授权），returnTo 限站内
@@ -95,6 +98,7 @@ async function submit() {
         startOauth();
         return;
       }
+      openidMismatch.value = true; // 亮出「重新授权」卡片（options 的就绪态已不可信）
       showFailToast('请先点击「重新授权」完成微信授权');
       return;
     }

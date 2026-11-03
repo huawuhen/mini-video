@@ -17,8 +17,9 @@ const nav = [
 ];
 const tabs = nav.filter((n) => n.tab);
 const active = computed(() => {
-  // M2-BE-04④：钱包不是 Tabbar 项（入口在「我的」）——钱包页时高亮「我的」，此前错亮「首页」
-  const path = route.path.startsWith('/wallet') ? '/me' : route.path;
+  // 钱包高亮口径（M3-PAY-03 复审建议 7）：PC 侧边栏有「钱包」项——/wallet 与充值页直接
+  // 高亮「钱包」；手机 Tabbar 没有「钱包」（入口在「我的」）——映射到「我的」保持不变
+  const path = !isDesktop.value && route.path.startsWith('/wallet') ? '/me' : route.path;
   const hit = [...nav].reverse().find((n) => (n.to === '/' ? path === '/' : path.startsWith(n.to)));
   return hit?.to || '/';
 });
@@ -37,7 +38,8 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
     <main class="content">
       <router-view />
     </main>
-    <van-tabbar v-if="!isDesktop && !hideTabbar" :model-value="active" route safe-area-inset-bottom>
+    <!-- route 模式会按当前路径自匹配，/wallet 匹配不到任何 tab 而回退亮「首页」；去掉 route 完全受控（active 已含 /wallet→「我的」映射） -->
+    <van-tabbar v-if="!isDesktop && !hideTabbar" :model-value="active" safe-area-inset-bottom>
       <van-tabbar-item v-for="tab in tabs" :key="tab.to" :name="tab.to" :to="tab.to" :icon="tab.icon">{{ tab.short }}</van-tabbar-item>
     </van-tabbar>
   </div>
