@@ -245,6 +245,17 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-03 · Web · M3-LEGAL-01 补充：AGENTS §6 新规双端仿真走查（375 真仿真 + PC1280）
+
+- **背景**：用户 2026-11-03 新规（AGENTS §6 / main `2bfb66e`）：走查必须移动端仿真（375×812、**触屏 + iPhone Safari UA**，只缩窗口不算）+ PC 1280 各走一遍同样流程；截图带宽度前缀；只走一端退回。本分支原走查为 375 视口（无触屏/UA 仿真）+ PC 仅 2 步，按新规重走。
+- **走查方式**：ego-browser CDP 三要素仿真（`setDeviceMetricsOverride(375×812,mobile)` + `setTouchEmulationEnabled` + `setEmitTouchEventsForMouse` + iPhone Safari `setUserAgentOverride`），进页面先断言 `ontouchstart`/UA/innerWidth 再走流程；PC 1280×800 显式仿真并断言。
+- **双端步骤与结果**（截图 `docs/m3-legal01/` 重拍：375×10 + 1280×9）：
+  - **375（触屏+iPhoneUA）**：登录品牌/slogan（375-09）→ 协议抽屉开/关后**手机号保留 ✓**（375-03）→ terms/privacy 渲染、表格不撑爆（375-01/02）→ 登录 → 照片同意三链：弹层（375-04）→「不同意」**本地预览清空 ✓** →「同意并上传」成功（375-05）→ 第二张**不再弹 ✓** → 我的客服（375-06）→ 钱包退款邮箱（375-07）→ 客服弹窗（375-08）→ 首页品牌无旧名（375-10）。
+  - **1280（同流程）**：协议两页（01/04）→ 登录品牌（03）→ 抽屉+保留 ✓（02）→ 照片同意三链全 ✓（05/06）→ 我的客服（07）→ 钱包（08）→ 首页品牌（09）。
+  - **MicroMessenger UA**：LEGAL-01 无微信内行为页面（支付/授权属 M3-PAY 系列）——不适用，PAY-03 起执行。
+- **走查抓到并修复 2 个问题**：① **「不同意」后本地预览未清**（`AssetNewPage.vue` 注释承诺「移除待上传项」但只 return）——decline 分支从 `photos` 过滤本次选中项，双端复验清零 ✓；② **PC 协议页未限宽**（§7 曾记录「PC 居中限宽 760」但 1280 实测 1265）——`LegalPage.vue` 补 `max-width:760px; margin:0 auto`，复测 760 ✓ 且 375 无回归（legalW=375、无横向溢出）。
+- **验证**：`test:server` **463/463**、`check`、`build` 通过。
+
 ### 2026-11-03 · BE-Core + Web · M3-LEGAL-01 协议页 / 登录链接 / 照片单独同意 / 客服入口
 
 - **背景**：TASKS「其他」M3-LEGAL-01（用户 2026-11-03 决定）；分支 `agent/be/M3-LEGAL-01-legal`（基于 main `20babe4`，正文三篇由 Lead 先行提交 docs/legal/）。API §1/§7 契约 Lead 已定义，未提 §5。
