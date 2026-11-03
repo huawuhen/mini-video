@@ -102,6 +102,7 @@
 
 | 日期 | 决策 | 来源 |
 |---|---|---|
+| 2026-11-03 | **阿里云短信签名与模板审核通过**（用户告知）。Lead 按官方 OpenAPI 元数据（Dysmsapi 2017-05-25）核对 `sms-aliyun.js`：接口地址 `dysmsapi.aliyuncs.com`、Action/Version/参数名/返回字段（Code/Message/BizId/RequestId）、V1 签名全部一致；错误码映射有 3 个在官方列表里不存在、漏了若干常见码，转 **M3-SMS-02** 小修（见 TASKS「其他」）。回执消息（MNS 拉取 SmsReport）对登录验证码非必需，本期不做。真实发送仍需用户授权并写明条数上限。 | 用户 + Lead 核对 |
 | 2026-11-03 | **开发 Agent 浏览器走查必须移动端与 PC 端各走一遍**：用 ego-browser 核查时除 PC 1280 外，必须开启移动端仿真（375×812 或 390×844、触屏、iPhone UA）走同样流程；微信相关页面再用微信 UA 走一遍；截图带宽度前缀，§7 写明两端步骤；只走一端的审查退回。细则见 AGENTS.md §6。 | 用户 |
 | 2026-11-03 | **产品正式命名**：中文名「**剧优兔AI**」，英文名「**JoyoTo**」，slogan「剧优兔，一键出好剧，轻松赚收益」。用户可见处（页面标题、顶栏、登录页、运营后台、协议正文、上传到渠道的素材用途说明）一律改用正式名称；仓库名、npm 包名、数据库名、Cookie 名等内部标识保持 Mini AI Video / miv 不变。代码改动并入 M3-LEGAL-01 ⑥。 | 用户 |
 | 2026-11-03 | **用户协议与隐私政策**：运营主体为「**杭州红手印传媒有限公司**」，正文由 Lead 起草通用版（`docs/legal/user-agreement.md`、`privacy-policy.md`，v1.0）。**人脸/儿童照片单独同意**：采纳 Lead 建议，首次上传照片前弹出单独同意框（文案 `docs/legal/photo-consent.md`），同意记录按版本只追加保存。**客服**：邮箱 `help@redith.cn`，入口放「我的」页。任务见 TASKS「其他」M3-LEGAL-01，接口见 API.md §1（`/me/consents`、`User.consents`、`PHOTO_CONSENT_REQUIRED`）。 | 用户 |
