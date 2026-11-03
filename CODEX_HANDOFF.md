@@ -252,6 +252,19 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-03 · BE-Core · M3-SMS-02 真实短信联调（Mac 本机，授权 §3 同日）
+
+- **背景**：用户授权（§3 2026-11-03：Mac 本机、上限 10 条、只发用户本人手机号、同号小时 ≤5、验证码由用户本人输入）。前置满足：M3-SMS-02 已合并（main `52d4b83` 之后）。分支 `agent/be/M3-SMS-02-live-test`。
+- **环境**：API 仅 127.0.0.1:3000、前端仅 localhost:5173（vite `--host localhost`，双层 npm run 会吃掉 `--host` 参数需直跑 `npx vite`）；4 项阿里云配置与 `SMS_PROVIDER=aliyun` 由用户本人写入 `server/.env`，开发 Agent 仅 `grep -c` 确认变量名存在，未读取/打印任何密钥。本地库重新 migrate（Docker 重启后 56432 被清，applied 13）。
+- **三项测试（用户本人操作，结果）**：① 正常收码登录 ✓——收到短信验证码并登录成功（日志 `sms_code_sent` provider=aliyun + `user_login` 新用户）；② 60 秒内重发被拦截 ✓——前端提示操作频繁，**未产生发送**（`sms_aliyun_sent` 计数与请求成功数一致，拦截请求未到 provider）；③ 输错验证码 ✓——提示「验证码错误或已过期」，未登录。
+- **发送计数与回执**：真实发送 **3 条**（上限 10 条、同号小时 ≤5 均未触碰）：
+  1. `BizId 325712993695072411^0` / `RequestId 01A1A08E-C045-5114-AEB3-D8D470133227`
+  2. `BizId 558011793695197909^0` / `RequestId 01A1A090-AA9B-5DF3-AAAE-B03C6BFA2D8D`
+  3. `BizId 713711793695275825^0` / `RequestId 01A1A091-DB20-5666-8C22-6A27422FBF57`
+  （三条时间 08:37:52 / 08:39:58 / 08:41:15 UTC，间隔均 >60s 冷却；手机号不出现在本记录——日志中亦为掩码。）
+- **收尾**：`SMS_PROVIDER` 已改回 `log` 并重启验证（api 200、无 `sms_aliyun_provider_ready`），联调后端与前端已全部停止。
+- **结论**：真实链路（签名「杭州红手印…」+ 模板、V1 签名、发送、回执 BizId）全通；频控/冷却/错码口径与 M3-SMS-02 实现一致。费用：3 条 × 阿里云短信单价（分级别，由用户账户结算）。
+
 ### 2026-11-03 · BE-Core + Web · M3-LEGAL-01 复审必改修复（5 必改 + 建议 a~d）
 
 - **背景**：Lead 复审（§6 @ main `c6ffe0c`）5 必改 + 建议 a~d（e 等用户）。同分支 merge main 后修复。
