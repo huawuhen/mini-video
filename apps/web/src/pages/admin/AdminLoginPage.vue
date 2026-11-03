@@ -19,7 +19,7 @@ async function submit() {
     router.replace(typeof route.query.redirect === 'string' && route.query.redirect.startsWith('/')
       ? route.query.redirect : '/admin/channels');
   } catch (e) {
-    showFailToast((e as Error).message.replace(/^ADMIN_AUTH_REQUIRED: /, ''));
+    showFailToast((e as Error).message);
   } finally {
     submitting.value = false;
   }

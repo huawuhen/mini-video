@@ -87,7 +87,7 @@
 | M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | ✅ 完成（Lead 二轮复审通过并合并，2026-11-02） | 2026-11-02 |
 | M1-WEB-02 | Web（本机开发 Agent） | `agent/web/M1-WEB-02-polish` | `apps/web/src/{layouts/AppLayout.vue,pages/{WalletPage,RechargePage}.vue}` `docs/m1-web02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
 | M2-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-02-retention` | `server/test/cron.test.js`（+2 用例） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
-| M3-ADM-01 | Web（本机开发 Agent） | `agent/web/M3-ADM-01-channels-ui` | `apps/web/src/{api/admin.ts,api/adminMock.ts,api/index.ts,pages/admin/*,router}` `docs/m3-adm01/`（走查截图） `CODEX_HANDOFF.md` | 待审查（渠道管理页完成：列表/健康/掩码/表单/软删/二次确认/路由排序/启停/红点/重新加载；458/458、check/build 过，见 §7） | 2026-11-03 |
+| M3-ADM-01 | Web（本机开发 Agent） | `agent/web/M3-ADM-01-channels-ui` | `apps/web/src/{api/admin.ts,api/adminMock.ts,api/index.ts,pages/admin/*,styles/tokens.css,router}` `docs/m3-adm01/`（走查截图） `CODEX_HANDOFF.md` | 复审 5 必改已修复待复审（401/CSRF 守卫、路由加入移出、软删口径、令牌化；建议 a~e 全做；458/458） | 2026-11-03 |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
@@ -239,6 +239,18 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-03 · Web · M3-ADM-01 复审必改修复（401/CSRF 守卫、路由加入移出、软删口径、令牌化）
+
+- **背景**：Lead 复审（§6 2026-11-03）❌ 5 必改 + 建议 a~e；同分支，已合并 main `a8b0f42`。5 条必改与建议 a~e 全部完成：
+- **① 401 判断**：`reload()` 改按 `e.status === 401 || e.code === 'ADMIN_AUTH_REQUIRED'`（MivApiError.message 是中文文案不含错误码）；`adminMock` 的 `fail` 改抛 **MivApiError**（与真实后端同形）；登录页去掉 `replace(/^ADMIN_AUTH_REQUIRED: /)` 补丁。
+- **② CSRF 刷新死循环**：`ChannelsPage` 挂载时**非 mock 且 `!csrfOf()` 直接跳 `/admin/login?redirect=…`**（令牌只存内存；此前刷新后 Cookie 仍有效列表能加载，但所有写操作 403 CSRF_INVALID 且无解）。
+- **③ 路由加入/移出**：路由行加「移出」；下方新增「未加入路由（同类型 · 启用中）」候选区（同 kind、`active`、不在暂存路由），每项「加入路由」；两者都只改暂存、点「保存排序」统一 PUT——新建/启用的渠道不再无法入路由。走查闭环：移出（disabled 渠道不出现在候选 ✔）→ 启用 → 候选出现 → 加入 → 路由 #2 → 保存成功。
+- **④ 软删口径对齐后端**：确认文案改「删除后不能恢复，如需再用请重新新增」；已删除行去掉「恢复」按钮（后端 `setChannelStatus` 对 retired 拒绝，凭证在途清空后自动清除）；mock 同样拒绝 retired 变更。
+- **⑤ 令牌化**：新增 `--miv-success-soft`；`#ee0a24/#1d9e57/#b88900/#d8443c/#f0a020/#e8f7ee/#f4f4f5/#fff/rgba(...)` 全部改 `--miv-danger/--miv-success(-soft)/--miv-warning/--miv-danger-soft/--miv-on-primary` 等令牌；`confirmButtonColor` 改 `getComputedStyle` 取 `--miv-danger`（不写死）。
+- **建议 a~e 全做**：a. 路由列表只取 `capability === '*'`（专用路由出现时同渠道重复会被后端拒）；b. bool 参数按说明缺省值初始化（「缺省 true」→ 默认勾选）；c. 名称 placeholder 写明 1~40 字符不含空格；d. 顶栏「重新加载配置」统一 ghost 样式、状态列 `nowrap`、「显示已删除」勾选框同行对齐；e. 试生成 `ok:false` 用普通 toast（真实后端当前返回指引用冒烟脚本）。
+- **走查**（ego-browser + mock，新截图 1280-07 加入路由闭环 / 1280-08 软删文案；走查环境注：本机浏览器 Bitwarden 扩展会拦截密码框与部分按钮点击，改 DOM click 验证）。**验证**：`test:server` **458/458**、`check`、`build` 通过。
+- 局域网预览：`http://192.168.10.249:5173`（分支 agent/web/M3-ADM-01-channels-ui；管理后台 `/admin/login`，任意用户名 + 6 位以上密码）。
 
 ### 2026-11-03 · Web · M3-ADM-01 运营后台·渠道管理页（PC 优先，mock 可演示）
 

@@ -6,7 +6,8 @@
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'vant';
-import { adminApi } from '@/api';
+import { adminApi, useMock } from '@/api';
+import { csrfOf } from '@/api/admin';
 import type { Channel, ChannelKind, ChannelStatus, DriverInfo, RouteRow } from '@/api/admin';
 
 const route = useRoute();
@@ -18,6 +19,9 @@ const routesByKind = reactive<Record<string, RouteRow[]>>({ video: [], image: []
 const loading = ref(false);
 const kindFilter = ref<ChannelKind | ''>('');
 const includeRetired = ref(false);
+
+/** Vant 弹窗按钮色需要具体色值：从设计令牌取（不写死）。 */
+const dangerToken = () => getComputedStyle(document.documentElement).getPropertyValue('--miv-danger').trim() || undefined;
 
 const KIND_LABEL: Record<ChannelKind, string> = { video: '视频', image: '图片', llm: '文本' };
 const STATUS_LABEL: Record<ChannelStatus, string> = { active: '启用', disabled: '停用', retired: '已删除' };
@@ -49,7 +53,8 @@ async function reload(silent = false) {
     }
     if (!silent) showToast('已重新加载');
   } catch (e) {
-    if (String((e as Error).message).includes('ADMIN_AUTH_REQUIRED')) {
+    // ① 按状态码/错误码判断（MivApiError.message 是中文文案，不含错误码）
+    if ((e as { status?: number }).status === 401 || (e as { code?: string }).code === 'ADMIN_AUTH_REQUIRED') {
       router.replace({ path: '/admin/login', query: { redirect: route.fullPath } });
       return;
     }
@@ -58,7 +63,15 @@ async function reload(silent = false) {
     loading.value = false;
   }
 }
-onMounted(() => reload(true));
+// ② CSRF 令牌只存内存：非 mock 且本会话未登录过（刷新后）直接回登录页，
+// 否则列表能加载（Cookie 仍有效）但所有写操作都 403 CSRF_INVALID 且无解
+onMounted(() => {
+  if (!useMock && !csrfOf()) {
+    router.replace({ path: '/admin/login', query: { redirect: route.fullPath } });
+    return;
+  }
+  void reload(true);
+});
 
 async function logout() {
   await adminApi.logout().catch(() => undefined);
@@ -67,24 +80,40 @@ async function logout() {
 
 // ── 路由排序与一键主用 ──
 const routeKind = computed<ChannelKind>(() => (kindFilter.value || 'video') as ChannelKind);
-const routeChannels = computed(() => routesByKind[routeKind.value]);
+// 建议 a：后端返回该 kind 全部 capability 的路由行，这里只取通用路由（capability='*'）——
+// 专用路由（如 video.720p）将来出现时同一渠道会重复，保存也会被「渠道列表有重复」拒绝
+const routeChannels = computed(() => routesByKind[routeKind.value].filter((r) => r.capability === '*'));
 const routeDirty = ref(false);
 function moveRoute(index: number, delta: -1 | 1) {
-  const list = routesByKind[routeKind.value];
+  const list = routeChannels.value;
   const target = index + delta;
   if (target < 0 || target >= list.length) return;
   [list[index], list[target]] = [list[target], list[index]];
   routeDirty.value = true;
 }
 function makePrimary(index: number) {
-  const list = routesByKind[routeKind.value];
+  const list = routeChannels.value;
   const [row] = list.splice(index, 1);
   list.unshift(row);
   routeDirty.value = true;
 }
+function removeFromRoute(index: number) {
+  routeChannels.value.splice(index, 1);
+  routeDirty.value = true;
+}
+/** 同类型、启用中、暂存路由之外的渠道——「加入路由」候选（③：新建/启用渠道不会自动入路由）。 */
+const joinable = computed(() => channels.value.filter((c) => c.kind === routeKind.value
+  && c.status === 'active' && !routeChannels.value.some((r) => r.id === c.id)));
+function joinRoute(id: string) {
+  const channel = channels.value.find((c) => c.id === id);
+  if (!channel) return;
+  routeChannels.value.push({ capability: '*', rank: routeChannels.value.length,
+    id: channel.id, name: channel.name, status: channel.status, driver: channel.driver });
+  routeDirty.value = true;
+}
 async function saveRoutes() {
   try {
-    const { items } = await adminApi.setRoutes(routeKind.value, routesByKind[routeKind.value].map((r) => r.id));
+    const { items } = await adminApi.setRoutes(routeKind.value, routeChannels.value.map((r) => r.id));
     routesByKind[routeKind.value] = items;
     routeDirty.value = false;
     showSuccessToast('路由已保存');
@@ -107,9 +136,9 @@ async function toggleStatus(channel: Channel) {
 
 async function retire(channel: Channel) {
   try {
-    await showConfirmDialog({ title: '删除渠道（软删除）',
-      message: `「${channel.name}」将标记为已删除：不再出现在用户侧路由里；在途任务继续轮询直到清空，随后自动清除已存凭证。此操作可回退（重新启用）。`,
-      confirmButtonText: '删除', confirmButtonColor: '#ee0a24' });
+    await showConfirmDialog({ title: '删除渠道',
+      message: `「${channel.name}」将删除：不再出现在用户侧路由里；在途任务继续轮询直到清空，随后自动清除已存凭证。删除后不能恢复，如需再用请重新新增。`,
+      confirmButtonText: '删除', confirmButtonColor: dangerToken() });
   } catch { return; }
   try {
     await adminApi.retireChannel(channel.id);
@@ -137,11 +166,11 @@ async function trialChannel(channel: Channel) {
   try {
     await showConfirmDialog({ title: '⚠️ 试生成（产生真实费用）',
       message: `将对「${channel.name}」（${KIND_LABEL[channel.kind]}）执行一次最小成本的真实生成以验证端到端可用。\n\n此操作按渠道成本真实计费（如图片约 ¥0.4~0.7、视频按秒计费），并写入管理审计。确定继续吗？`,
-      confirmButtonText: '确认试生成', confirmButtonColor: '#ee0a24' });
+      confirmButtonText: '确认试生成', confirmButtonColor: dangerToken() });
   } catch { return; }
   try {
     const result = await adminApi.trialChannel(channel.id, channel.kind);
-    showToast(result.message);
+    if (result.ok) showSuccessToast(result.message); else showToast(result.message);
   } catch (e) { showFailToast((e as Error).message); }
 }
 
@@ -173,9 +202,18 @@ function openCreate() {
   editing.value = true;
 }
 
+/** 建议 b：bool 参数按说明里的缺省值初始化（如「缺省 true」→ 勾选），避免误读。 */
+function defaultParams(schema?: Record<string, string>): Record<string, string | number | boolean> {
+  const params: Record<string, string | number | boolean> = {};
+  for (const [key, hint] of Object.entries(schema ?? {})) {
+    if (/^bool/.test(hint) && /缺省\s*true/.test(hint)) params[key] = true;
+  }
+  return params;
+}
+
 function selectDriver(driverId: string) {
   form.driver = driverId;
-  form.params = {};
+  form.params = defaultParams(drivers.value.find((d) => d.id === driverId)?.configSchema.params);
 }
 
 function openEdit(channel: Channel) {
@@ -245,7 +283,7 @@ async function saveForm() {
         <span v-if="alertCount" class="dot" :title="`${alertCount} 个渠道异常`">{{ alertCount }}</span>
       </nav>
       <div class="actions">
-        <button type="button" :disabled="loading" @click="reload()">{{ loading ? '加载中…' : '重新加载配置' }}</button>
+        <button type="button" class="ghost" :disabled="loading" @click="reload()">{{ loading ? '加载中…' : '重新加载配置' }}</button>
         <button type="button" class="ghost" @click="logout">退出</button>
       </div>
     </header>
@@ -279,10 +317,18 @@ async function saveForm() {
               <button type="button" :disabled="index === 0" @click="moveRoute(index, -1)">↑</button>
               <button type="button" :disabled="index === routeChannels.length - 1" @click="moveRoute(index, 1)">↓</button>
               <button type="button" :disabled="index === 0" @click="makePrimary(index)">设为主用</button>
+              <button type="button" class="danger" @click="removeFromRoute(index)">移出</button>
             </span>
           </li>
         </ol>
-        <p v-else class="miv-hint">该类型暂无路由渠道——在下方列表启用渠道后即可加入路由。</p>
+        <p v-else class="miv-hint">该类型暂无路由渠道——从下方候选加入，或保存后由渠道列表加入。</p>
+        <div v-if="joinable.length" class="joinable">
+          <span class="miv-hint">未加入路由（同类型 · 启用中）：</span>
+          <span v-for="channel in joinable" :key="channel.id" class="join-item">
+            {{ channel.name }} <code>{{ channel.driver }}</code>
+            <button type="button" @click="joinRoute(channel.id)">加入路由</button>
+          </span>
+        </div>
       </section>
 
       <section class="miv-card table-wrap">
@@ -320,7 +366,7 @@ async function saveForm() {
                   <button type="button" @click="toggleStatus(channel)">{{ channel.status === 'active' ? '停用' : '启用' }}</button>
                   <button type="button" class="danger" @click="retire(channel)">删除</button>
                 </template>
-                <button v-else type="button" @click="toggleStatus(channel)">恢复</button>
+                <span v-else class="miv-hint">已删除（不能恢复）</span>
               </td>
             </tr>
           </tbody>
@@ -348,7 +394,7 @@ async function saveForm() {
                 <option v-for="d in driverOptions" :key="d.id" :value="d.id">{{ d.id }}</option>
               </select>
             </label>
-            <label><span>名称</span><input v-model="form.name" placeholder="如 aiide" /></label>
+            <label><span>名称</span><input v-model="form.name" placeholder="1~40 字符、不含空格，如 aiide" /></label>
             <label>
               <span>接口地址</span>
               <input v-model="form.baseUrl" :placeholder="formDriver?.configSchema.baseUrl?.replace(/^url（?/, '').replace(/）?$/, '') || 'https://…'" />
@@ -397,7 +443,7 @@ async function saveForm() {
 nav { display: flex; align-items: center; gap: var(--miv-space-3); flex: 1; }
 .nav { color: var(--miv-text-2); font-size: 14px; }
 .nav.current { color: var(--miv-text); font-weight: 600; }
-.dot { background: var(--van-danger, #ee0a24); color: #fff; border-radius: 999px; min-width: 20px; height: 20px;
+.dot { background: var(--miv-danger); color: var(--miv-on-primary); border-radius: 999px; min-width: 20px; height: 20px;
   display: inline-flex; align-items: center; justify-content: center; font-size: 12px; padding: 0 6px; }
 .actions { display: flex; gap: var(--miv-space-2); }
 main { max-width: 1200px; margin: 0 auto; padding: var(--miv-space-4); display: flex; flex-direction: column; gap: var(--miv-space-3); }
@@ -406,12 +452,18 @@ main { max-width: 1200px; margin: 0 auto; padding: var(--miv-space-4); display: 
 .tabs button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 999px;
   padding: 6px 16px; font: inherit; font-size: 14px; cursor: pointer; color: var(--miv-text-2); }
 .tabs button.on { border-color: var(--miv-primary); color: var(--miv-primary-strong); background: var(--miv-primary-soft); }
-.check { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--miv-text-2); white-space: nowrap; }
+.check { display: inline-flex; flex-direction: row; align-items: center; gap: 6px; font-size: 13px;
+  color: var(--miv-text-2); white-space: nowrap; }
+.joinable { display: flex; flex-wrap: wrap; align-items: center; gap: var(--miv-space-2); margin-top: var(--miv-space-2);
+  padding-top: var(--miv-space-2); border-top: 1px dashed var(--miv-border); }
+.join-item { display: inline-flex; align-items: center; gap: 6px; font-size: 13px;
+  padding: 4px 10px; border: 1px solid var(--miv-border); border-radius: 999px; }
+.join-item button { border: 0; background: transparent; color: var(--miv-primary); font: inherit; font-size: 13px; cursor: pointer; }
 button.primary { background: var(--miv-primary); color: var(--miv-on-primary); border: 0; border-radius: var(--miv-radius-sm);
   padding: 8px 16px; font: inherit; cursor: pointer; }
 button.primary.small { padding: 5px 12px; font-size: 13px; }
 button.primary:disabled { opacity: 0.5; cursor: default; }
-button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px solid var(--miv-border); }
+button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px solid var(--miv-border); border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; }
 .section-head { display: flex; align-items: baseline; gap: var(--miv-space-3); }
 .section-head .miv-hint { flex: 1; }
 .route-list { list-style: none; margin: var(--miv-space-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -435,18 +487,21 @@ tr.retired td { opacity: 0.55; }
 code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--miv-bg); padding: 1px 5px; border-radius: 4px; }
 .remark { max-width: 180px; white-space: normal; }
 .tag { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
-.tag.active { background: #e8f7ee; color: #1d9e57; }
+.tag.active { background: var(--miv-success-soft); color: var(--miv-success); }
 .tag.disabled { background: var(--miv-bg); color: var(--miv-text-3); }
-.tag.retired { background: #f4f4f5; color: var(--miv-text-3); text-decoration: line-through; }
-.health-ok { color: #1d9e57; } .health-warn { color: #b88900; } .health-bad { color: #d8443c; font-weight: 600; } .health-none { color: var(--miv-text-3); }
+.tag.retired { background: var(--miv-bg); color: var(--miv-text-3); text-decoration: line-through; }
+.health-ok { color: var(--miv-success); } .health-warn { color: var(--miv-warning); }
+.health-bad { color: var(--miv-danger); font-weight: 600; } .health-none { color: var(--miv-text-3); }
 .alert-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
 .alert-dot.ok, .alert-dot.none { background: transparent; }
-.alert-dot.warn { background: #f0a020; } .alert-dot.bad { background: #d8443c; box-shadow: 0 0 0 3px rgba(216, 68, 60, 0.15); }
+.alert-dot.warn { background: var(--miv-warning); }
+.alert-dot.bad { background: var(--miv-danger); box-shadow: 0 0 0 3px var(--miv-danger-soft); }
 td.ops { white-space: nowrap; }
 td.ops button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 6px;
   padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; margin: 2px 2px; }
 td.ops button:hover { border-color: var(--miv-primary); color: var(--miv-primary-strong); }
-td.ops button.danger { color: #d8443c; }
+td.ops button.danger { color: var(--miv-danger); }
+th:nth-child(7), td:nth-child(7) { white-space: nowrap; } /* 状态列 */
 .empty { padding: var(--miv-space-4); text-align: center; }
 .mask { position: fixed; inset: 0; background: var(--miv-overlay); display: flex; align-items: center; justify-content: center;
   z-index: 100; padding: var(--miv-space-4); overflow: auto; }

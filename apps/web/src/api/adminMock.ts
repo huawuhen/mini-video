@@ -1,5 +1,6 @@
 // 管理端 mock（M3-ADM-01 演示/走查用）：内存数据模拟 API.md §8，不连后端、不产生费用。
 // 管理员任意用户名 + 6 位密码可登录；试生成返回「演示模式不产生真实费用」。
+import { MivApiError } from './http';
 import type { AdminApi, Channel, DriverInfo, RouteRow } from './admin';
 
 const now = () => new Date().toISOString();
@@ -54,7 +55,8 @@ const state: { loggedIn: boolean; channels: Channel[]; routes: Record<string, st
 };
 
 const wait = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms));
-const fail = (status: number, code: string, message: string): never => { throw new Error(`${code}: ${message} (HTTP ${status})`); };
+// 与真实后端同形：抛 MivApiError（code/status），前端按 e.status/e.code 判断
+const fail = (status: number, code: string, message: string): never => { throw new MivApiError(status, { code, message }); };
 const requireLogin = () => { if (!state.loggedIn) fail(401, 'ADMIN_AUTH_REQUIRED', '请先登录管理后台'); };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 
@@ -124,6 +126,7 @@ export const adminMock: AdminApi = {
     await wait(); requireLogin();
     const channel = state.channels.find((c) => c.id === id);
     if (!channel) throw fail(404, 'CHANNEL_NOT_FOUND', '渠道不存在');
+    if (channel.status === 'retired') throw fail(400, 'VALIDATION_FAILED', '渠道已删除，不能变更状态（与后端一致）');
     channel.status = status;
     return clone(channel);
   },
