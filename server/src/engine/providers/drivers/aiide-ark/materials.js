@@ -59,7 +59,7 @@ export function assertMaterialUrl(url, type) {
  *        素材接口发生在计费提交之前，这里统一按「未提交、可重试」归一，交队列退避）
  */
 export function createMaterials({ http, logger, pollIntervalMs = 2_000, pollTimeoutMs = 180_000,
-  purpose = 'Mini AI Video 参考素材', cacheSize = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  purpose = '剧优兔AI 参考素材', cacheSize = 500, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   if (!http?.request) throw new ProviderError('素材库客户端缺少 HTTP 层。', { code: 'PROVIDER_CONFIG_INVALID', submitted: false });
   const cache = new Map(); // cacheKey → Promise<assetRef>
 

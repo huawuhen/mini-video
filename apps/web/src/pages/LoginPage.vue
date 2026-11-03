@@ -47,7 +47,8 @@ onBeforeUnmount(() => clearInterval(timer));
   <div class="login">
     <van-nav-bar left-arrow @click-left="router.back()" :border="false" class="nav" />
     <div class="panel miv-card">
-      <div class="brand"><span class="logo">▶</span><h1>登录 Mini AI Video</h1></div>
+      <div class="brand"><span class="logo">▶</span><h1>登录剧优兔AI</h1></div>
+      <p class="slogan">剧优兔，一键出好剧，轻松赚收益</p>
       <p class="miv-muted">未注册的手机号验证后自动创建账号</p>
       <van-field v-model="phone" type="tel" maxlength="11" placeholder="手机号" class="field" />
       <van-field v-model="code" type="digit" maxlength="6" placeholder="验证码" class="field">
@@ -98,4 +99,5 @@ h1 { font-size: 20px; }
 .doc :deep(table) { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6em 0; font-size: 12.5px; white-space: nowrap; }
 .doc :deep(th), .doc :deep(td) { border: 1px solid var(--miv-border); padding: 4px 8px; text-align: left; }
 .doc :deep(th) { background: var(--miv-bg); }
+.slogan { margin: var(--miv-space-1) 0 0; font-size: 13px; color: var(--miv-primary-strong); letter-spacing: 0.5px; }
 </style>

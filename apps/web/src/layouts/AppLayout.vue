@@ -29,7 +29,7 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
 <template>
   <div :class="['layout', isDesktop ? 'desktop' : 'mobile', { 'no-tabbar': hideTabbar }]">
     <aside v-if="isDesktop" class="sidebar">
-      <router-link to="/" class="brand"><span class="logo">▶</span>Mini AI Video</router-link>
+      <router-link to="/" class="brand"><span class="logo">▶</span>剧优兔AI</router-link>
       <router-link v-for="item in nav" :key="item.to" :to="item.to" :class="['nav-item', { on: active === item.to }]">
         <van-icon :name="item.icon" size="18" />{{ item.label }}
       </router-link>

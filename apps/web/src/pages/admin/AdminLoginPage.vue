@@ -29,7 +29,7 @@ async function submit() {
 <template>
   <div class="admin-login">
     <form class="card miv-card" @submit.prevent="submit">
-      <h1>Mini AI Video · 运营后台</h1>
+      <h1>剧优兔AI · 运营后台</h1>
       <p class="miv-hint">管理员账号由部署脚本创建（npm run admin:create），与用户账号相互独立</p>
       <label>
         <span>用户名</span>

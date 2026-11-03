@@ -48,5 +48,5 @@ router.beforeEach(async (to) => {
 });
 router.afterEach((to) => {
   stopAudio();
-  document.title = `${to.meta.title ? `${to.meta.title} · ` : ''}Mini AI Video`;
+  document.title = `${to.meta.title ? `${to.meta.title} · ` : ''}剧优兔AI`;
 });
