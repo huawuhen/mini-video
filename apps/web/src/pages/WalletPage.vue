@@ -65,7 +65,8 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
     <section class="miv-card">
       <div class="miv-section-title">明细</div>
       <van-cell v-for="item in ledger" :key="item.id" :title="item.title" :label="labelOf(item)">
-        <template #value><span :class="amountOf(item).cls">{{ amountOf(item).text }}</span></template>
+        <template #value><span :class="amountOf(item).cls">{{ amountOf(item).text }}</span>  <p class="miv-hint foot">充值如需退款或对订单有疑问，请联系客服 help@redith.cn</p>
+</template>
       </van-cell>
       <van-empty v-if="!ledger.length" description="暂无记录" image-size="64" />
     </section>
@@ -81,4 +82,5 @@ const date = (iso: string) => new Date(iso).toLocaleString('zh-CN');
 .minus { color: var(--miv-text); }
 .frozen-out { color: var(--miv-text-3); }
 .redeem .van-button { white-space: nowrap; min-width: 88px; flex-shrink: 0; } /* PC 宽下列宽过窄会把按钮文字竖排 */
+.foot { text-align: center; padding: var(--miv-space-2) var(--miv-space-3) var(--miv-space-4); }
 </style>

@@ -42,6 +42,7 @@ export const ERROR_CODES = {
   UPSTREAM_FAILED: [502, '生成服务暂时不可用，请稍后再试'],
   SUBMISSION_UNKNOWN: [502, '生成结果确认中，费用已冻结，请稍后查看'],
   PAYMENT_UNAVAILABLE: [502, '支付通道暂不可用，请稍后重试'],
+  PHOTO_CONSENT_REQUIRED: [403, '上传照片前需要先同意照片使用说明'],
 };
 
 /** 按错误码创建 AppError；message 省略时用默认中文提示。 */

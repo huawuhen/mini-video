@@ -26,7 +26,10 @@ async function signUp(base, provider, phone) {
   const res = await post(base, '/auth/login', { phone, code, agreeTerms: true });
   assert.equal(res.status, 200);
   const body = await res.json();
-  return { body, cookie: mivCookie(res), csrf: body.csrfToken, userId: body.user.id };
+  const account = { body, cookie: mivCookie(res), csrf: body.csrfToken, userId: body.user.id };
+  // M3-LEGAL-01：上传照片需要照片同意（与真实用户流程一致），测试账号登录后即同意
+  await post(base, '/me/consents', { kind: 'photo', version: 'photo-v1' }, account);
+  return account;
 }
 
 function post(base, path, body, opts = {}) {

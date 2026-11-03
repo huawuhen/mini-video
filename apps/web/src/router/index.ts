@@ -29,6 +29,9 @@ export const router = createRouter({
       ],
     },
     { path: '/login', component: () => import('@/pages/LoginPage.vue'), meta: { title: '登录' } },
+    // 协议正文（M3-LEGAL-01）：无需登录；正文构建时来自 docs/legal/*.md
+    { path: '/legal/terms', component: () => import('@/pages/LegalPage.vue'), meta: { title: '用户协议', hideTabbar: true } },
+    { path: '/legal/privacy', component: () => import('@/pages/LegalPage.vue'), meta: { title: '隐私政策', hideTabbar: true } },
     // 运营后台（M3-ADM-01）：独立于用户端布局与登录态（API.md §8）
     { path: '/admin/login', component: () => import('@/pages/admin/AdminLoginPage.vue'), meta: { title: '运营后台登录' } },
     { path: '/admin/channels', component: () => import('@/pages/admin/ChannelsPage.vue'), meta: { title: '渠道管理' } },

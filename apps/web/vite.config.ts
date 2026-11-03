@@ -4,7 +4,13 @@ import vue from '@vitejs/plugin-vue';
 
 export default defineConfig({
   plugins: [vue()],
-  resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+      // 协议正文（M3-LEGAL-01）：构建时从仓库 docs/legal 导入（?raw），rollup 需绝对路径别名
+      '@legal': fileURLToPath(new URL('../../docs/legal', import.meta.url)),
+    },
+  },
   server: {
     host: true,
     port: 5173,

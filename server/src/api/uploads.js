@@ -7,6 +7,7 @@ import { requireAuth } from '../auth/session.js';
 import { newId } from '../db/ids.js';
 import { ExtractError } from '../engine/extract/index.js';
 import { appError } from '../http/errors.js';
+import { PHOTO_CONSENT_VERSION, getConsents } from '../auth/consents.js';
 import { asyncHandler } from '../http/middleware.js';
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -54,6 +55,9 @@ export function uploadRoutes({ config, db, logger, storage, urlFor, extractText 
   const router = Router();
 
   router.post('/uploads/image', requireAuth, asyncHandler(async (req, res) => {
+    // M3-LEGAL-01：未同意当前版本的照片使用说明 → 403（在读取文件前尽早拒绝）
+    const consents = await getConsents(db, req.user.id);
+    if (consents.photo !== PHOTO_CONSENT_VERSION) throw appError('PHOTO_CONSENT_REQUIRED');
     const file = await readSingleFile(req, IMAGE_MAX_BYTES);
     const mime = detectImageMime(file.buffer);
     if (!mime) throw appError('UPLOAD_TYPE_INVALID');

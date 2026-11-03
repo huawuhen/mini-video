@@ -8,6 +8,8 @@ import StylePicker from '@/components/StylePicker.vue';
 import VoicePicker from '@/components/VoicePicker.vue';
 import { useCharge } from '@/composables/useCharge';
 import { useCatalogStore } from '@/stores/catalog';
+import { usePhotoConsent } from '@/composables/usePhotoConsent';
+import PhotoConsentSheet from '@/components/PhotoConsentSheet.vue';
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
@@ -23,7 +25,11 @@ const valid = computed(() => form.name.trim() && (photos.value.length > 0 || for
 
 onMounted(async () => { const c = await catalogStore.load(); form.styleId = c.styles[0]?.id || ''; });
 
+const { visible: consentVisible, ensurePhotoConsent, onDecided } = usePhotoConsent();
+
+// M3-LEGAL-01：选照片入口前确保照片同意（「不同意」不上传）；上传返回 403 时补弹（版本升级等）
 async function afterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
+  if (!(await ensurePhotoConsent())) return; // 未同意：移除待上传项，不发起上传
   for (const it of Array.isArray(item) ? item : [item]) {
     if (!it.file) continue;
     it.status = 'uploading';
@@ -31,6 +37,16 @@ async function afterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
       uploadIds.set(it, (await api.uploadImage(it.file)).uploadId);
       it.status = 'done';
     } catch (e) {
+      if ((e as { code?: string }).code === 'PHOTO_CONSENT_REQUIRED') {
+        it.status = 'failed';
+        it.message = '需先同意照片使用说明';
+        if (await ensurePhotoConsent()) {
+          it.status = 'uploading';
+          try { uploadIds.set(it, (await api.uploadImage(it.file)).uploadId); it.status = 'done'; continue; } catch (e2) { it.status = 'failed'; it.message = '上传失败'; }
+        }
+        showToast('未同意照片使用说明，照片未上传');
+        continue;
+      }
       it.status = 'failed';
       it.message = '上传失败';
       showToast((e as Error).message);
@@ -90,6 +106,7 @@ async function save(withLook: boolean) {
     </div>
   </div>
   <VoicePicker v-model:show="showVoices" :voices="catalogStore.voices" :selected-id="form.defaultVoiceId" allow-none title="选择默认声音" @select="form.defaultVoiceId = $event ?? undefined" />
+  <PhotoConsentSheet v-model="consentVisible" @decided="onDecided" />
 </template>
 
 <style scoped>

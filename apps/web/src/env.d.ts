@@ -13,3 +13,6 @@ interface WeixinJSBridge {
   invoke(api: 'getBrandWCPayRequest', params: Record<string, string>, callback: (result: WeixinJSBridgePayResult) => void): void;
 }
 interface Window { WeixinJSBridge?: WeixinJSBridge }
+
+// 协议正文经 Vite ?raw 构建时导入（M3-LEGAL-01，docs/legal/*.md 为唯一来源）
+declare module '*.md?raw' { const content: string; export default content; }
