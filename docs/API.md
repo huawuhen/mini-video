@@ -41,7 +41,7 @@
 type User = { id: string; phoneMasked: string; nickname: string; avatarUrl?: string; onboarding: Onboarding; consents: Consents };
 type Consents = {
   terms: string | null;   // 已同意的《用户协议》《隐私政策》版本（登录时 agreeTerms 记录服务端当前版本，如 'terms-v1'）
-  photo: string | null;   // 已同意的照片单独同意版本（如 'photo-consent-v1'）；与当前版本不一致时视为未同意
+  photo: string | null;   // 已同意的照片单独同意版本（如 'photo-v1'）；与当前版本不一致时视为未同意
   current: { terms: string; photo: string };  // 服务端当前版本，前端据此判断是否需要（重新）征求同意
 };
 type TipKey = 'story_review' | 'cast_review' | 'delivery';
@@ -53,6 +53,7 @@ type Onboarding = {
 
 - 首次登录（新注册）时 `onboarding.tourCompletedAt = null`。「完成」和「跳过」都调用 `{ tourCompleted: true }`。
 - 「我的 → 重新查看新手引导」只在前端重播，不修改服务端状态。
+- 照片同意弹窗：正文为 `docs/legal/photo-consent.md` 全文（该文件只放用户可见文字），按钮「不同意」（次要，关闭不上传）｜「同意并上传」（主按钮）；当前版本 `photo-v1`，协议当前版本 `terms-v1`，正文实质变更时 Lead 升版本号。
 - 同意记录（M3-LEGAL-01，PRD §11）：登录 `agreeTerms: true` 时服务端写入 `terms` 当前版本与时间；照片同意通过 `POST /me/consents` 写入。每次同意都追加一条记录（用户、类型、版本、时间、IP），不覆盖历史。协议正文以 `docs/legal/*.md` 为准，版本号变更时同步改服务端常量。
 
 ## 2. 目录（无需登录）
