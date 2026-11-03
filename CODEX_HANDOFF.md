@@ -87,6 +87,7 @@
 | M2-BE-04（走查修复） | BE-Core + Web（本机开发 Agent） | `agent/be/M2-BE-04-walkthrough-fixes` | `server/src/{worker.js,projects/**,characters/**,dev-stub.js}` `server/src/api/**` `server/test/**` `apps/web/**` `docs/API.md`（Lead 已改） `CODEX_HANDOFF.md` | ✅ 完成（Lead 二轮复审通过并合并，2026-11-02） | 2026-11-02 |
 | M1-WEB-02 | Web（本机开发 Agent） | `agent/web/M1-WEB-02-polish` | `apps/web/src/{layouts/AppLayout.vue,pages/{WalletPage,RechargePage}.vue}` `docs/m1-web02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
 | M2-BE-02 | BE-Core（本机开发 Agent） | `agent/be/M2-BE-02-retention` | `server/test/cron.test.js`（+2 用例） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03） | 2026-11-03 |
+| M3-ADM-01 | Web（本机开发 Agent） | `agent/web/M3-ADM-01-channels-ui` | `apps/web/src/{api/admin.ts,api/adminMock.ts,api/index.ts,pages/admin/*,styles/tokens.css,router}` `docs/m3-adm01/`（走查截图） `CODEX_HANDOFF.md` | 三轮待复审（③ 重修：暂存路由改独立可写状态，Lead 场景复现通过；458/458） | 2026-11-03 |
 | M3-PAY-01 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-01-wechatpay` | `server/src/payments/**`（新增） `server/src/{config.js,db/ids.js}` `server/migrations/011-payments.sql` `server/.env.example` `server/test/payments/**`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并 `ce060a9`/`6cf8f99` 两轮） | 2026-11-01 |
 | M3-PAY-02 | BE-Core（本机开发 Agent） | `agent/be/M3-PAY-02-recharge` | `server/src/payments/**`（recharge/oauth-state/装配） `server/src/api/{recharge.js,wechat-notify.js}`（新增） `server/src/{app.js,worker.js}` `server/src/queue/cron.js` `server/src/wallet/service.js` `server/migrations/012-payments-idempotency.sql` `server/src/{config.js,http/errors.js}` `server/test/payments/**` `server/test/cron.test.js`（清单同步） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02；卡单问题转 M3-PAY-03 首个提交） | 2026-11-02 |
 | M3-PAY-03 | Web（本机开发 Agent，含 BE 侧 PAY-02 合并后必改） | `agent/web/M3-PAY-03-recharge-ui` | `server/src/payments/{recharge.js,mock-gateway.js}`（合并后必改） `server/test/payments/recharge.test.js` `apps/web/src/{api/types.ts,api/http.ts,api/mock/index.ts,utils/payEnv.ts,env.d.ts,styles/tokens.css,router,pages/{RechargePage.vue,RechargeResultPage.vue,WalletPage.vue}}` `apps/web/package.json`（qrcode） `docs/m3-pay03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-02） | 2026-11-02 |
@@ -239,6 +240,40 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+
+### 2026-11-03 · Web · M3-ADM-01 三轮：③ 暂存路由重构为独立可写状态
+
+- **背景**：Lead 复审（§6，main `ebd3a7b`）指出 ③ 的实现缺陷：`routeChannels` 是 `computed(filter(...))`，moveRoute/makePrimary/removeFromRoute/joinRoute 改的是**计算属性返回的临时数组**，joinable 不更新——实测加入 newch 后候选仍显示 newch、点两次保存路由出现 `aiide, miaowuai, newch, newch`。①②④⑤ 与建议 a~e 已通过。
+- **修复**：暂存路由改为**独立可写的响应式状态** `routeDraft`（`routeChannels` 直接指向它，joinable 依赖它）；`syncRouteDraft(kind)` 从后端结果按 `capability==='*'` 重建——**加载（reload 重写 routesByKind 后）、保存（用后端返回重建并清脏）、切换类型**三个时机统一由 `watch([routeKind, () => routesByKind[routeKind]])` 驱动重建；四个排序/加入/移出操作只改 `routeDraft`，保存统一 PUT。`adminMock.setRoutes` 补与后端一致的重复检查（`VALIDATION_FAILED`「渠道列表有重复」）。
+- **建议（对比度）**：tokens 新增 `--miv-success-strong`（深绿文字），「启用」标签浅绿底配深绿字。
+- **走查**（mock，完整复现 Lead 场景）：新建视频渠道 newch → 候选区出现 newch →「加入路由」→ **候选区 newch 即时消失（joinable 正常更新）** → 保存一次 → 路由「主用 aiide / #2 miaowuai（停用）/ #3 newch」**无重复** → 再次保存仍无重复（截图 `1280-09-join-no-dup.png`）。
+- **验证**：`test:server` **458/458**、`check`、`build` 通过。
+- 局域网预览：`http://192.168.10.249:5173`（分支 agent/web/M3-ADM-01-channels-ui；管理后台 `/admin/login`，任意用户名 + 6 位以上密码）。
+
+### 2026-11-03 · Web · M3-ADM-01 复审必改修复（401/CSRF 守卫、路由加入移出、软删口径、令牌化）
+
+- **背景**：Lead 复审（§6 2026-11-03）❌ 5 必改 + 建议 a~e；同分支，已合并 main `a8b0f42`。5 条必改与建议 a~e 全部完成：
+- **① 401 判断**：`reload()` 改按 `e.status === 401 || e.code === 'ADMIN_AUTH_REQUIRED'`（MivApiError.message 是中文文案不含错误码）；`adminMock` 的 `fail` 改抛 **MivApiError**（与真实后端同形）；登录页去掉 `replace(/^ADMIN_AUTH_REQUIRED: /)` 补丁。
+- **② CSRF 刷新死循环**：`ChannelsPage` 挂载时**非 mock 且 `!csrfOf()` 直接跳 `/admin/login?redirect=…`**（令牌只存内存；此前刷新后 Cookie 仍有效列表能加载，但所有写操作 403 CSRF_INVALID 且无解）。
+- **③ 路由加入/移出**：路由行加「移出」；下方新增「未加入路由（同类型 · 启用中）」候选区（同 kind、`active`、不在暂存路由），每项「加入路由」；两者都只改暂存、点「保存排序」统一 PUT——新建/启用的渠道不再无法入路由。走查闭环：移出（disabled 渠道不出现在候选 ✔）→ 启用 → 候选出现 → 加入 → 路由 #2 → 保存成功。
+- **④ 软删口径对齐后端**：确认文案改「删除后不能恢复，如需再用请重新新增」；已删除行去掉「恢复」按钮（后端 `setChannelStatus` 对 retired 拒绝，凭证在途清空后自动清除）；mock 同样拒绝 retired 变更。
+- **⑤ 令牌化**：新增 `--miv-success-soft`；`#ee0a24/#1d9e57/#b88900/#d8443c/#f0a020/#e8f7ee/#f4f4f5/#fff/rgba(...)` 全部改 `--miv-danger/--miv-success(-soft)/--miv-warning/--miv-danger-soft/--miv-on-primary` 等令牌；`confirmButtonColor` 改 `getComputedStyle` 取 `--miv-danger`（不写死）。
+- **建议 a~e 全做**：a. 路由列表只取 `capability === '*'`（专用路由出现时同渠道重复会被后端拒）；b. bool 参数按说明缺省值初始化（「缺省 true」→ 默认勾选）；c. 名称 placeholder 写明 1~40 字符不含空格；d. 顶栏「重新加载配置」统一 ghost 样式、状态列 `nowrap`、「显示已删除」勾选框同行对齐；e. 试生成 `ok:false` 用普通 toast（真实后端当前返回指引用冒烟脚本）。
+- **走查**（ego-browser + mock，新截图 1280-07 加入路由闭环 / 1280-08 软删文案；走查环境注：本机浏览器 Bitwarden 扩展会拦截密码框与部分按钮点击，改 DOM click 验证）。**验证**：`test:server` **458/458**、`check`、`build` 通过。
+- 局域网预览：`http://192.168.10.249:5173`（分支 agent/web/M3-ADM-01-channels-ui；管理后台 `/admin/login`，任意用户名 + 6 位以上密码）。
+
+### 2026-11-03 · Web · M3-ADM-01 运营后台·渠道管理页（PC 优先，mock 可演示）
+
+- **背景**：TASKS「其他」M3-ADM-01；分支 `agent/web/M3-ADM-01-channels-ui`（基于 main `e848bad`）。**API §8 经逐项核对已齐**（列表含状态/健康/在途/掩码、drivers 带 configSchema、增改删、test/trial(confirm)、routes 有序列表、enable/disable、health），**未提 §5 变更申请**；「重新加载配置」按渠道层「按次从库读」的实现口径落为页面级「重新加载」（重拉 drivers/channels/routes）。
+- **交付物**（纯前端）：
+  - `api/admin.ts`——独立管理 API 层（`/api/admin` + miv_admin Cookie + CSRF；会话令牌只存内存，刷新重登）；`api/adminMock.ts`——内存演示数据（任意用户名 + 6 位密码可登录、试生成返回「演示不产生真实费用」），`api/index.ts` 按 `useMock` 切换（美工预览可用）。
+  - `pages/admin/AdminLoginPage.vue`——管理员登录（独立于用户端账号，页面上写明 admin:create 创建）。
+  - `pages/admin/ChannelsPage.vue`（PC 优先，1280 设计、≥768 自适应）——**渠道列表**：状态 tag、健康口径（近 1h 成功/失败/平均排队；失败率>20% 且 total≥5 红、有失败黄、驱动缺失红）、在途数、`credentialMask` 掩码、成本 vs 价格、备注；**告警红点**（顶栏异常渠道计数）；**kind 筛选 + 显示已删除**；**路由顺序区**（主用/备次、↑↓、一键「设为主用」、暂存后保存 PUT routes）；**新增/编辑表单**：kind→driver 联动（kinds 过滤）、credential 编辑留空不改（只写不读）、模型映射按 kind 单字段、**params 按驱动 configSchema 文档型描述动态渲染**（int/float→数字框、bool→勾选、其余文本，描述作 placeholder/说明）、costFen JSON、备注；**操作全部二次确认**：测试连接（免费说明）、**试生成（红色警示真实计费与审计）**、启停（写明在途任务继续轮询）、软删除（写明凭证随在途清空清除、可恢复）；**重新加载配置**按钮（重拉全部数据）。
+  - 路由 `/admin/login`、`/admin/channels`（独立于 AppLayout/用户登录态）；401 自动跳管理登录带 redirect。
+- **走查**（ego-browser，1280；截图 `docs/m3-adm01/` 6 张）：登录 → 列表（健康/掩码/成本/在途）→ 视频 kind 路由区（主用/#2/设为主用/保存）→ 新增表单（驱动参数区按 configSchema 渲染）→ 切驱动参数动态变化（openai-videos 的 model/requestTimeoutMs）→ 试生成确认弹窗（含真实费用文案）→ 确认后 toast → 软删确认弹窗（含凭证清除说明）。
+- **验证**：`npm run test:server` **458/458**、`check`、`build` 通过（无后端改动）。
+- **未验证（如实）**：与真实管理端后端的联调（登录 Cookie/CSRF、真实 drivers configSchema 渲染、真实 test/trial 行为）——需在 Ubuntu 栈上用 admin:create 建号后联调；trial 后端当前为「登记审计 + 指引用冒烟脚本」占位（M2-BE-03 决定），前端已按 confirm 契约调用，后端真正执行试生成时无需改前端。
+- 局域网预览：`http://192.168.10.249:5173`（分支 agent/web/M3-ADM-01-channels-ui；管理后台入口 `/admin/login`，演示账号任意用户名 + 6 位以上密码）。
 
 ### 2026-11-03 · BE-Core · M2-BE-02 保存期清理/到期提醒/上传清理/failed 自动取消：核对现状 + 补测试缺口
 
