@@ -25,6 +25,8 @@ const html = computed(() => renderLegalMarkdown(doc.value));
 <style scoped>
 .legal-page { min-height: 100vh; background: var(--miv-bg); }
 header.bar { position: sticky; top: 0; z-index: 5; }
+/* PC 阅读限宽 760 并居中（AGENTS §6 双端走查在 1280 实测 1265 超宽，修复） */
+.legal-page { max-width: 760px; margin: 0 auto; }
 .doc { margin: var(--miv-space-3); padding: var(--miv-space-4); font-size: 15px; line-height: 1.75;
   color: var(--miv-text); overflow-wrap: break-word; }
 .doc :deep(h2) { font-size: 19px; margin: 1.4em 0 0.6em; }

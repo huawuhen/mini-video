@@ -27,9 +27,14 @@ onMounted(async () => { const c = await catalogStore.load(); form.styleId = c.st
 
 const { visible: consentVisible, ensurePhotoConsent, onDecided } = usePhotoConsent();
 
-// M3-LEGAL-01：选照片入口前确保照片同意（「不同意」不上传）；上传返回 403 时补弹（版本升级等）
+// M3-LEGAL-01：选照片入口前确保照片同意（「不同意」不上传且不留本地预览——双端走查抓到
+// 此前只 return、预览仍显示已选，与「不同意不上传」承诺不符）；上传返回 403 时补弹（版本升级等）
 async function afterRead(item: UploaderFileListItem | UploaderFileListItem[]) {
-  if (!(await ensurePhotoConsent())) return; // 未同意：移除待上传项，不发起上传
+  if (!(await ensurePhotoConsent())) {
+    const picked = Array.isArray(item) ? item : [item];
+    photos.value = photos.value.filter((p) => !picked.includes(p as UploaderFileListItem));
+    return; // 未同意：移除待上传项，不发起上传
+  }
   for (const it of Array.isArray(item) ? item : [item]) {
     if (!it.file) continue;
     it.status = 'uploading';
