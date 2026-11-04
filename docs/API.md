@@ -408,3 +408,88 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 
 新增错误码：`ADMIN_AUTH_REQUIRED`(401)、`CHANNEL_NOT_FOUND`(404)、`DRIVER_NOT_FOUND`(400，指定的协议驱动不存在)、`CHANNEL_TEST_FAILED`(400)、`NO_ACTIVE_CHANNEL`(503，用户侧提示“视频/图片生成服务暂时不可用，请稍后再试”，不暴露渠道名称；上游原始错误只放作品「技术详情」，并写日志)。
 
+### 8.1 运营后台·用户与余额（M3-ADM-02）
+
+- 手机号**一律掩码显示**（`138****1234`）；支持按完整手机号**精确**搜索（不做模糊匹配），搜索记审计。
+- 金额调整走账本 `kind='adjust'`，正数加、负数减，**必须填原因**；可用余额不能被减成负数（返回 400 `ADJUST_EXCEEDS_BALANCE`）；按 `idempotencyKey` 幂等。用户流水显示为「客服调整 +X / -X」，原因只在后台可见。
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/admin/users?phone=&userId=&status=&cursor=` | – | `{ items: AdminUser[], nextCursor }`（不带条件时按注册时间倒序） |
+| GET | `/admin/users/:id` | – | `AdminUserDetail` |
+| GET | `/admin/users/:id/ledger?cursor=` | – | `{ items: AdminLedgerItem[], nextCursor }` |
+| POST | `/admin/users/:id/adjust` | `{ amountFen, reason, idempotencyKey }` | `{ wallet, entry: AdminLedgerItem }` |
+| POST | `/admin/users/:id/disable` · `/enable` | `{ reason }` | `AdminUser`（停用：立即删除该用户全部会话，不能登录；在途作品继续跑完） |
+| POST | `/admin/users/:id/deactivate` | `{ reason, confirm: true }` | `AdminUser`（**注销**，不可恢复：见下） |
+
+```ts
+type AdminUser = { id: string; phoneMasked: string; nickname: string; status: 'active' | 'disabled' | 'deactivated';
+  balanceFen: number; frozenFen: number; createdAt: string; lastLoginAt: string | null };
+type AdminUserDetail = AdminUser & {
+  stats: { projects: number; delivered: number; characters: number; rechargedFen: number; spentFen: number };
+  consents: { terms: string | null; photo: string | null };
+  wechatBound: boolean;
+};
+type AdminLedgerItem = { id: string; kind: 'recharge' | 'redeem' | 'reserve' | 'settle' | 'refund' | 'charge' | 'adjust';
+  amountFen: number; frozenDeltaFen: number; title: string; refType: string | null; refId: string | null;
+  reason?: string; adminUsername?: string; createdAt: string };
+```
+
+- **注销**（隐私政策「注销账号」）：要求该用户没有在途作品（否则 409 `USER_HAS_ACTIVE_PROJECTS`）；执行后 `status='deactivated'`、删除全部会话、`phone` 改为不可登录的占位值（原号可重新注册为新用户）、删除照片/角色卡/作品视频文件（对象存储），作品与角色记录匿名保留；**剩余可用余额记一条 `adjust` 清零流水**（原因必填，客服应先按协议与用户确认）；账务流水与支付订单保留（法定保存）。
+
+### 8.2 运营后台·充值订单与人工退款（M3-ADM-02）
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/admin/orders?status=&userId=&outTradeNo=&from=&to=&cursor=` | – | `{ items: AdminOrder[], nextCursor }` |
+| GET | `/admin/orders/:id` | – | `AdminOrder & { notifyCount, lastNotifyAt, ledgerId }` |
+| POST | `/admin/orders/:id/reconcile` | – | `AdminOrder`（立刻向微信查单并按结果更新，与定时对账同逻辑） |
+| POST | `/admin/orders/:id/refund` | `{ amountFen, reason, idempotencyKey }` | `{ order: AdminOrder, entry: AdminLedgerItem }` |
+
+```ts
+type AdminOrder = { id: string; userId: string; phoneMasked: string; outTradeNo: string; transactionId: string | null;
+  amountFen: number; refundedFen: number; scene: 'jsapi' | 'h5' | 'native'; status: 'created' | 'paid' | 'expired' | 'failed';
+  createdAt: string; paidAt: string | null };
+```
+
+- **人工退款（第一期：记录式，待用户确认）**：钱在「微信支付商户平台 → 交易中心 → 退款」由客服手工退回；本接口只在我方记账——校验订单 `paid`、`refundedFen + amountFen ≤ amountFen(订单)`、用户可用余额足够（否则 400 `REFUND_EXCEEDS_BALANCE`），写一条 `adjust` 负数流水（标题「充值退款」，ref 指向订单）并累加 `refunded_fen`。后台页面在按钮旁写明「请先在微信商户平台完成退款，再在此登记」。第二期如需一键调用微信退款接口，另开任务。
+
+### 8.3 运营后台·作品与失败/待核对任务（M3-ADM-03）
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/admin/projects?status=&userId=&hasUnknown=&cursor=` | – | `{ items: AdminProject[], nextCursor }`（`hasUnknown=true` 只列有待核对片段的作品） |
+| GET | `/admin/projects/:id` | – | `AdminProjectDetail`（含各片段与 take、gen_task 状态、渠道名、上游任务 ID、冻结/已结算/已退回金额、事件时间线） |
+| POST | `/admin/takes/:id/resolve` | `{ outcome: 'not_charged' \| 'charged', note, idempotencyKey }` | `AdminProjectDetail` |
+| POST | `/admin/projects/:id/cancel` | `{ reason }` | `AdminProjectDetail`（与用户侧取消同逻辑：退还未消耗冻结；unknown 片段仍保持冻结待 resolve） |
+
+- **待核对处理**（AGENTS §5：unknown 不自动重提、不自动退款）：运营在渠道后台或上游控制台查明后人工判定——`not_charged`（上游确认未扣费 / 未生成）→ 退还该片段冻结、片段标 `failed`，用户可重新生成；`charged`（上游已扣费）→ 按原价结算该片段冻结，若上游有成片则运营可在后续版本补录，本期片段标 `failed` 并在作品时间线写「已核对：上游已计费」。两种结论都写 `admin_audit_logs` 与作品事件，按 `idempotencyKey` 幂等，**同一 take 只能判定一次**（409 `TAKE_ALREADY_RESOLVED`）。
+
+### 8.4 运营后台·价格、档位、风格、音色、运营参数（M3-ADM-04）
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/admin/skus` | – | `{ items: AdminSku[] }`（每个 `skuCode` 当前生效版本 + 历史版本数） |
+| POST | `/admin/skus/:skuCode/versions` | `{ priceFen, costFen?, effectiveAt?, idempotencyKey }` | `AdminSku`（**新增版本**，旧版本置 `inactive`；不覆盖历史；已出的报价按原价执行） |
+| GET | `/admin/tiers` · PATCH `/admin/tiers/:id` | `{ name?, note?, sort?, status? }` | 档位列表 / 更新后档位 |
+| POST | `/admin/tiers/:id/mappings` | `{ videoSkuCode }` | 新增档位映射版本（同上，不覆盖） |
+| GET | `/admin/styles` · POST `/admin/styles` · PATCH `/admin/styles/:id` | `{ name, description, coverUploadId?, promptHint, sort, status }` | 风格（下架 = `status:'inactive'`，不删除） |
+| GET | `/admin/voices` · POST `/admin/voices` · PATCH `/admin/voices/:id` | `{ name, category, gender, ageGroup, description, sampleUploadId?, refAudioUploadId?, sort, status }` | 音色（同上） |
+| GET | `/admin/settings` · PATCH `/admin/settings` | `{ [key]: value }`（只允许白名单键） | 运营参数（白名单：`daily_free_understanding`、`max_story_chars`、`min_story_chars`、`max_character_photos`、`max_duration_seconds`、`quote_ttl_seconds`、`expiry_remind_days`、`retention_days`；每个键带类型与上下限校验） |
+
+```ts
+type AdminSku = { skuCode: string; kind: 'video' | 'image' | 'llm'; model: string; resolution: string | null;
+  unit: 'second' | 'image' | 'ktoken'; priceFen: number; costFen: number; version: number; versions: number;
+  effectiveAt: string; marginRate: number | null };   // marginRate = (price - cost) / price，price=0 时 null
+```
+
+- 音色、风格封面上传：复用管理端上传 `POST /admin/uploads`（multipart，图片 ≤5MB、音频 mp3/wav/m4a ≤5MB），返回 `{ uploadId }`。
+
+### 8.5 运营后台·审计（M3-ADM-04）
+
+| 方法 | 路径 | 请求 | 响应 |
+|---|---|---|---|
+| GET | `/admin/audit?adminId=&action=&targetType=&targetId=&from=&to=&cursor=` | – | `{ items: [{ id, adminUsername, action, targetType, targetId, detail, ip, createdAt }], nextCursor }`（只读） |
+
+新增错误码（8.1~8.5）：`ADJUST_EXCEEDS_BALANCE`(400)、`REFUND_EXCEEDS_BALANCE`(400)、`REFUND_EXCEEDS_ORDER`(400)、`ORDER_NOT_PAID`(409)、`USER_HAS_ACTIVE_PROJECTS`(409)、`TAKE_ALREADY_RESOLVED`(409)、`TAKE_NOT_UNKNOWN`(409)、`USER_NOT_FOUND`/`ORDER_NOT_FOUND`/`PROJECT_NOT_FOUND`(404)、`SETTING_KEY_NOT_ALLOWED`(400)。**用户被停用 / 注销后**，用户端接口统一 401 `UNAUTHENTICATED`，登录时提示「账号不可用，请联系客服 help@redith.cn」（新错误码 `ACCOUNT_DISABLED` 403）。
+
