@@ -95,6 +95,7 @@
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
 | M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
 | M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03；真实发送待 §3 授权的 Mac 联调） | 2026-11-03 |
+| M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},pages/admin/*,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | 进行中（API.md §8.1~8.2） | 2026-11-04 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
