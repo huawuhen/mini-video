@@ -86,7 +86,10 @@ interface MockUser extends AdminUser {
 interface MockLedgerEntry extends AdminLedgerItem { _userId: string }
 interface MockOrder extends AdminOrder { _notifyCount: number; _lastNotifyAt: string | null; _ledgerId: string | null }
 
-const daysAgo = (days: number, hours = 0) => new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
+// function 声明（非 const）：seedDemoData() 在模块初始化时执行，必须先于其可用
+function daysAgo(days: number, hours = 0): string {
+  return new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
+}
 
 /** 填充 state.users / state.ledger / state.orders（调用时机在 state 初始化之后）。 */
 function seedDemoData(): void {

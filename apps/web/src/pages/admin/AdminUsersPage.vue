@@ -110,9 +110,12 @@ const entryAmount = (entry: AdminLedgerItem) =>
   entry.kind === 'settle' ? entry.frozenDeltaFen : entry.amountFen;
 const entryAmountText = (entry: AdminLedgerItem) => {
   const fen = entryAmount(entry);
-  if (entry.kind === 'settle') return `冻结 ${yuan(fen)}`;
+  if (entry.kind === 'settle') return fen < 0 ? `冻结 −${yuan(-fen)}` : `冻结 ${yuan(fen)}`;
   return `${fen > 0 ? '+' : '−'}${yuan(Math.abs(fen))}`;
 };
+/** adjust 流水标题固定是「客服调整」，与分类角标重复——列表里直接显示原因（调整必填原因）。 */
+const entryTitle = (entry: AdminLedgerItem) =>
+  entry.kind === 'adjust' && entry.title === '客服调整' ? (entry.reason ?? entry.title) : entry.title;
 
 // ── 余额调整 ──
 const adjustForm = reactive({ open: false, target: null as AdminUser | null, direction: 'add' as 'add' | 'sub', amount: '', reason: '' });
@@ -280,8 +283,9 @@ onMounted(() => {
           <ol class="ledger">
             <li v-for="entry in ledger" :key="entry.id">
               <span class="kind" :class="entry.kind">{{ KIND_LABEL[entry.kind] }}</span>
-              <span class="title">{{ entry.title
-                }}<em v-if="entry.reason" class="miv-hint">（{{ entry.reason }}<template v-if="entry.adminUsername"> · {{ entry.adminUsername }}</template>）</em></span>
+              <span class="title">{{ entryTitle(entry)
+                }}<em v-if="entry.reason && entryTitle(entry) !== entry.reason" class="miv-hint">（{{ entry.reason }}<template v-if="entry.adminUsername"> · {{ entry.adminUsername }}</template>）</em>
+                <em v-else-if="entry.adminUsername" class="miv-hint">（{{ entry.adminUsername }}）</em></span>
               <span class="amount" :class="{ plus: entryAmount(entry) > 0 && entry.kind !== 'settle' }">{{ entryAmountText(entry) }}</span>
               <span class="time">{{ fmtTime(entry.createdAt) }}</span>
             </li>
@@ -336,7 +340,7 @@ onMounted(() => {
           </label>
           <div class="foot">
             <button type="button" class="ghost" @click="statusForm.open = false">取消</button>
-            <button type="submit" class="primary">{{ statusForm.action === 'disable' ? '下一步（二次确认）' : '确认启用' }}</button>
+            <button type="submit" class="primary">下一步（二次确认）</button>
           </div>
         </form>
       </div>

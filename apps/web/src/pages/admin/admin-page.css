@@ -70,8 +70,9 @@ code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--
 .ledger .time { color: var(--miv-text-3); font-size: 12px; white-space: nowrap; }
 
 @media (max-width: 767px) {
-  .search { flex: 1; }
-  .search input { flex: 1; width: auto; min-width: 0; }
+  /* 搜索区可换行收缩，保证 375 下页面不横向溢出（订单页有 4 个过滤控件） */
+  .search { flex: 1 1 100%; min-width: 0; flex-wrap: wrap; }
+  .search input { flex: 1 1 140px; width: auto; min-width: 0; }
   .grid { grid-template-columns: 1fr; }
   .stats { grid-template-columns: repeat(3, 1fr); }
 }

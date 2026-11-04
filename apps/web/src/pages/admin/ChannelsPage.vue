@@ -440,7 +440,7 @@ async function saveForm() {
 <style scoped>
 .dot { background: var(--miv-danger); color: var(--miv-on-primary); border-radius: 999px; min-width: 20px; height: 20px;
   display: inline-flex; align-items: center; justify-content: center; font-size: 12px; padding: 0 6px; }
-.bar { display: flex; align-items: center; gap: var(--miv-space-3); padding: var(--miv-space-3); }
+.bar { display: flex; align-items: center; gap: var(--miv-space-3); padding: var(--miv-space-3); flex-wrap: wrap; }
 .tabs { display: flex; gap: var(--miv-space-1); flex: 1; }
 .tabs button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 999px;
   padding: 6px 16px; font: inherit; font-size: 14px; cursor: pointer; color: var(--miv-text-2); }
