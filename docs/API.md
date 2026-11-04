@@ -411,7 +411,7 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 ### 8.1 运营后台·用户与余额（M3-ADM-02）
 
 - 手机号**一律掩码显示**（`138****1234`）；支持按完整手机号**精确**搜索（不做模糊匹配），搜索记审计。
-- 金额调整走账本 `kind='adjust'`，正数加、负数减，**必须填原因**；可用余额不能被减成负数（返回 400 `ADJUST_EXCEEDS_BALANCE`）；按 `idempotencyKey` 幂等。用户流水显示为「客服调整 +X / -X」，原因只在后台可见。
+- 金额调整走账本 `kind='adjust'`，正数加、负数减，**必须填原因**；可用余额不能被减成负数（返回 400 `ADJUST_EXCEEDS_BALANCE`）；按 `idempotencyKey` 幂等（前端在打开表单时生成、失败重试沿用同一键）；已注销账号不能调整（400 `VALIDATION_FAILED`）。用户流水显示为「客服调整 +X / -X」，原因只在后台可见。
 
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
@@ -435,7 +435,7 @@ type AdminLedgerItem = { id: string; kind: 'recharge' | 'redeem' | 'reserve' | '
   reason?: string; adminUsername?: string; createdAt: string };
 ```
 
-- **注销**（隐私政策「注销账号」）：要求该用户没有在途作品（否则 409 `USER_HAS_ACTIVE_PROJECTS`）；执行后 `status='deactivated'`、删除全部会话、`phone` 改为不可登录的占位值（原号可重新注册为新用户）、删除照片/角色卡/作品视频文件（对象存储），作品与角色记录匿名保留；**剩余可用余额记一条 `adjust` 清零流水**（原因必填，客服应先按协议与用户确认）；账务流水与支付订单保留（法定保存）。
+- **注销**（隐私政策「注销账号」）：要求该用户没有在途作品、且冻结金额为 0（即没有「结果待核对」的费用；否则 409 `USER_HAS_ACTIVE_PROJECTS`，提示「该用户还有进行中的作品或待核对的费用，暂不能注销」）；执行后 `status='deactivated'`、删除全部会话、`phone` 改为不可登录的占位值（原号可重新注册为新用户）、删除照片/角色卡/作品视频文件（对象存储），作品与角色记录匿名保留；**剩余可用余额记一条 `adjust` 清零流水**（原因必填，客服应先按协议与用户确认）；账务流水与支付订单保留（法定保存）。
 
 ### 8.2 运营后台·充值订单与人工退款（M3-ADM-02）
 
