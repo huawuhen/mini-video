@@ -58,6 +58,7 @@ describe('auth（M1-BE-01）', () => {
   let limited; // 独立限流配置的第二个 app
   let limitedBase;
   let limitedServer;
+  let limitedProvider;
 
   before(async () => {
     ctx = await createTestDb();
@@ -67,11 +68,12 @@ describe('auth（M1-BE-01）', () => {
     await new Promise((resolve) => server.once('listening', resolve));
     base = `http://127.0.0.1:${server.address().port}/api/v1`;
 
+    limitedProvider = captureSmsProvider(); // 独立捕获（M3-ADM-02 停用账号登录测试需要读验证码）
     limited = createApp({
       config: loadConfig({ NODE_ENV: 'test', SMS_MAX_PER_PHONE_PER_DAY: '2', SMS_SEND_COOLDOWN_SECONDS: '0' }),
       db: ctx.db,
       logger: silentLogger,
-      smsProvider: captureSmsProvider(),
+      smsProvider: limitedProvider,
     });
     limitedServer = limited.listen(0, '127.0.0.1');
     await new Promise((resolve) => limitedServer.once('listening', resolve));
@@ -402,5 +404,23 @@ describe('auth（M1-BE-01）', () => {
     // 前 20 次是验证码错误，第 21 次被限流拦截
     assert.equal(last.status, 429);
     assert.equal((await last.json()).code, 'RATE_LIMITED');
+  });
+
+  test('M3-ADM-02：登录成功回写 last_login_at；停用账号登录 403 ACCOUNT_DISABLED（提示联系客服）', async () => {
+    const phone = '13900000003';
+    await post(limitedBase, '/auth/sms', { phone });
+    const ok = await post(limitedBase, '/auth/login', { phone, code: limitedProvider.sent.at(-1).code, agreeTerms: true });
+    assert.equal(ok.status, 200);
+    const userId = (await ok.json()).user.id;
+    const { rows } = await ctx.db.query(`SELECT last_login_at FROM users WHERE id = $1`, [userId]);
+    assert.ok(rows[0].last_login_at, '登录成功回写 last_login_at（管理端 AdminUser.lastLoginAt）');
+    await ctx.db.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [userId]);
+    await post(limitedBase, '/auth/sms', { phone });
+    const blocked = await post(limitedBase, '/auth/login', { phone, code: limitedProvider.sent.at(-1).code, agreeTerms: true });
+    assert.equal(blocked.status, 403);
+    const body = await blocked.json();
+    assert.equal(body.code, 'ACCOUNT_DISABLED');
+    assert.match(body.message, /help@redith\.cn/);
+    await ctx.db.query(`UPDATE users SET status = 'active' WHERE id = $1`, [userId]);
   });
 });

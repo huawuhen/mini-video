@@ -8,13 +8,14 @@ import { normalizeRedeemCode, redeemCodeHash } from './redeem-code.js';
 
 export { redeemCodeHash };
 
-/** amountFen 为对可用余额的变化（扣减为负），frozenDeltaFen 为对冻结金额的变化。 */
-async function insertLedger(t, { userId, kind, amountFen, frozenDeltaFen, title, refType, refId, idempotencyKey }) {
+/** amountFen 为对可用余额的变化（扣减为负），frozenDeltaFen 为对冻结金额的变化。
+ * reason/adminId 只由管理端写入（M3-ADM-02：原因与操作人仅后台可见），用户侧接口不返回。 */
+async function insertLedger(t, { userId, kind, amountFen, frozenDeltaFen, title, refType, refId, idempotencyKey, reason, adminId }) {
   const { rows } = await t.query(
-    `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key, reason, admin_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING id, kind, amount_fen, title, created_at`,
-    [newId('led'), userId, kind, amountFen, frozenDeltaFen, title, refType, refId, idempotencyKey],
+    [newId('led'), userId, kind, amountFen, frozenDeltaFen, title, refType, refId, idempotencyKey, reason ?? null, adminId ?? null],
   );
   return rows[0];
 }
@@ -183,6 +184,40 @@ export async function getWallet(db, userId) {
   await db.query(`INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
   const { rows } = await db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
   return { availableFen: rows[0].available_fen, frozenFen: rows[0].frozen_fen };
+}
+
+/**
+ * 客服余额调整（M3-ADM-02，API.md §8.1）：kind='adjust'，正数加、负数减，可用余额不能减成负数
+ * （400 ADJUST_EXCEEDS_BALANCE）。按 idempotencyKey 幂等（同键同参重放返回首次流水，同键不同参
+ * 409）。人工退款登记（§8.2）复用本函数：kind 仍为 'adjust'，title/ref 由调用方给定。
+ */
+export async function adjust(t, op) {
+  const { userId, amountFen, title = '客服调整', refType = null, refId = null, idempotencyKey, reason, adminId } = op;
+  if (!Number.isSafeInteger(amountFen) || amountFen === 0) {
+    throw appError('VALIDATION_FAILED', '调整金额必须是非 0 的整数（分）');
+  }
+  const result = await withIdempotency(
+    t,
+    { userId, idempotencyKey, expect: { kind: 'adjust', amount_fen: amountFen, frozen_delta_fen: 0, ref_type: refType, ref_id: refId } },
+    async () => {
+      await t.query(`INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [userId]);
+      if (amountFen > 0) {
+        await t.query(`UPDATE wallets SET available_fen = available_fen + $2, updated_at = now() WHERE user_id = $1`,
+          [userId, amountFen]);
+      } else {
+        const { rowCount } = await t.query(
+          `UPDATE wallets SET available_fen = available_fen + $2, updated_at = now()
+            WHERE user_id = $1 AND available_fen >= $3`,
+          [userId, amountFen, -amountFen],
+        );
+        if (rowCount === 0) throw appError('ADJUST_EXCEEDS_BALANCE');
+      }
+      const entry = await insertLedger(t, { userId, kind: 'adjust', amountFen, frozenDeltaFen: 0,
+        title, refType, refId, idempotencyKey, reason, adminId });
+      return { replayed: false, entry };
+    },
+  );
+  return { ...result, amountFen: result.entry.amount_fen };
 }
 
 function serializeEntry(row) {

@@ -63,6 +63,8 @@ export function adminRoutes({ db, config, logger, service, registry, secretKey }
 
   // ── 登录后的全部端点 ──
   router.use(auth.requireAdmin);
+  // 写操作（非 GET）统一校验同源 + CSRF（M3-ADM-02：writeGuard 此前导出未挂载，CSRF 头只有前端单方面在发）
+  router.use(auth.writeGuard);
 
   // 代码里可用的协议驱动（新增渠道表单据此渲染）
   router.get('/admin/drivers', (_req, res) => {

@@ -215,7 +215,7 @@ export async function listRechargeOrders(db, { userId, cursor, limit }) {
 async function creditPaidOrder(db, { order, transactionId, payerOpenid, notify }) {
   return db.tx(async (t) => {
     await t.query(
-      `UPDATE payment_orders SET notify_count = notify_count + 1, last_notify = $2, updated_at = now()
+      `UPDATE payment_orders SET notify_count = notify_count + 1, last_notify = $2, last_notify_at = now(), updated_at = now()
         WHERE id = $1 AND status IN ('created', 'expired', 'paid')`,
       [order.id, JSON.stringify(notify ?? {})]); // 只记事件口径，不含签名/openid 明文
     const { rows } = await t.query(
@@ -285,15 +285,54 @@ export async function handleWechatNotify(db, { headers, rawBody }, deps) {
 async function recordNotify(db, orderId, notify) {
   if (!orderId) return;
   await db.query(
-    `UPDATE payment_orders SET notify_count = notify_count + 1, last_notify = $2, updated_at = now()
+    `UPDATE payment_orders SET notify_count = notify_count + 1, last_notify = $2, last_notify_at = now(), updated_at = now()
       WHERE id = $1`, [orderId, JSON.stringify(notify ?? {})]);
 }
 
-// ───────────── 对账任务（payments.reconcile） ─────────────
+// ───────────── 对账（定时任务 payments.reconcile + 管理端手动对账共用） ─────────────
+
+/**
+ * 单笔订单对账（M3-ADM-02 抽出：管理端 POST /admin/orders/:id/reconcile 复用同一逻辑）。
+ * 查单已支付且金额相符 → 补入账；微信侧 CLOSED/REVOKED/PAYERROR → 直接本地置 expired
+ * （不调关单）；其余 → 微信关单，仅 ORDERPAID（关单瞬间已付款）保持 created。
+ * 返回 { action: 'credited' | 'closed' | 'kept' | 'nochange' }。
+ */
+export async function reconcileOneOrder(db, order, { payClient, logger }) {
+  const remote = await payClient.query(order.out_trade_no);
+  if (remote.trade_state === 'SUCCESS' && remote.amount?.total === order.amount_fen) {
+    const credited = await creditPaidOrder(db, { order, transactionId: remote.transaction_id,
+      payerOpenid: remote.payer?.openid, notify: { eventType: 'reconcile', tradeState: 'SUCCESS' } });
+    if (credited) logger?.info?.('reconcile_credited', { orderId: order.id });
+    return { action: credited ? 'credited' : 'nochange' };
+  }
+  if (['CLOSED', 'REVOKED', 'PAYERROR'].includes(remote.trade_state)) {
+    // 合并后必改 a：微信侧已关闭/已撤销/支付失败——不调关单，直接本地置 expired
+    const { rowCount } = await db.query(
+      `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
+      [order.id]);
+    return { action: rowCount ? 'closed' : 'nochange' };
+  }
+  // 合并后必改 b：关单只有「已支付」（ORDERPAID，查单与关单之间用户恰好付款）才保持
+  // created 等下一轮/通知入账；其余错误记日志后仍置 expired（真付了还有通知从 expired
+  // 入账兜底）——否则长期关单失败的单会永远占着「待支付 3 笔」并把新到期订单挤出对账窗口
+  let keepCreated = false;
+  try {
+    await payClient.close(order.out_trade_no);
+  } catch (err) {
+    if (err?.code === 'ORDERPAID') keepCreated = true;
+    logger?.warn?.('reconcile_close_failed', { orderId: order.id, code: err?.code,
+      keepCreated, message: String(err?.message ?? err).slice(0, 200) });
+  }
+  if (keepCreated) return { action: 'kept' };
+  const { rowCount } = await db.query(
+    `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
+    [order.id]);
+  return { action: rowCount ? 'closed' : 'nochange' };
+}
 
 /** 过期 +5 分钟仍 created 的订单：查单已支付 → 补入账；否则微信关单 + 本地置 expired。 */
 export async function runPaymentsReconcile(db, deps) {
-  const { payClient, config, logger } = deps;
+  const { payClient, logger } = deps;
   if (!payClient) return { skipped: true, scanned: 0, credited: 0, closed: 0 };
   const { rows } = await db.query(
     `SELECT * FROM payment_orders WHERE status = 'created' AND expires_at < now() - make_interval(secs => $1)
@@ -302,38 +341,9 @@ export async function runPaymentsReconcile(db, deps) {
   let closed = 0;
   for (const order of rows) {
     try {
-      const remote = await payClient.query(order.out_trade_no);
-      if (remote.trade_state === 'SUCCESS' && remote.amount?.total === order.amount_fen) {
-        if (await creditPaidOrder(db, { order, transactionId: remote.transaction_id,
-          payerOpenid: remote.payer?.openid, notify: { eventType: 'reconcile', tradeState: 'SUCCESS' } })) {
-          credited += 1;
-          logger?.info?.('reconcile_credited', { orderId: order.id });
-        }
-      } else if (['CLOSED', 'REVOKED', 'PAYERROR'].includes(remote.trade_state)) {
-        // 合并后必改 a：微信侧已关闭/已撤销/支付失败——不调关单，直接本地置 expired
-        const { rowCount } = await db.query(
-          `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
-          [order.id]);
-        if (rowCount) closed += 1;
-      } else {
-        // 合并后必改 b：关单只有「已支付」（ORDERPAID，查单与关单之间用户恰好付款）才保持
-        // created 等下一轮/通知入账；其余错误记日志后仍置 expired（真付了还有通知从 expired
-        // 入账兜底）——否则长期关单失败的单会永远占着「待支付 3 笔」并把新到期订单挤出对账窗口
-        let keepCreated = false;
-        try {
-          await payClient.close(order.out_trade_no);
-        } catch (err) {
-          if (err?.code === 'ORDERPAID') keepCreated = true;
-          logger?.warn?.('reconcile_close_failed', { orderId: order.id, code: err?.code,
-            keepCreated, message: String(err?.message ?? err).slice(0, 200) });
-        }
-        if (!keepCreated) {
-          const { rowCount } = await db.query(
-            `UPDATE payment_orders SET status = 'expired', updated_at = now() WHERE id = $1 AND status = 'created'`,
-            [order.id]);
-          if (rowCount) closed += 1;
-        }
-      }
+      const { action } = await reconcileOneOrder(db, order, deps);
+      if (action === 'credited') credited += 1;
+      if (action === 'closed') closed += 1;
     } catch (err) {
       logger?.warn?.('reconcile_order_failed', { orderId: order.id, code: err?.code,
         message: String(err?.message ?? err).slice(0, 200) });

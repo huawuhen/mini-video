@@ -56,8 +56,10 @@ export function createAdminAuth({ config, db }) {
     return next();
   };
 
-  /** 写操作守卫：同源（Origin 白名单）+ CSRF 头（登录后必须带）。挂在路由内部按需使用。 */
+  /** 写操作守卫：同源（Origin 白名单）+ CSRF 头（登录后必须带）。只作用于非 GET/HEAD/OPTIONS，
+   * 可以 router.use 整体挂载（M3-ADM-02 起管理端各路由组统一挂载，补齐此前「导出未用」的缺口）。 */
   const writeGuard = (req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
     const origin = req.get('origin');
     if (origin && !config.allowedOrigins.includes(origin)) {
       return next(appError('CSRF_INVALID'));
