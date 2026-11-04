@@ -9,6 +9,7 @@ import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'v
 import { adminApi, useMock } from '@/api';
 import { csrfOf } from '@/api/admin';
 import type { Channel, ChannelKind, ChannelStatus, DriverInfo, RouteRow } from '@/api/admin';
+import AdminShell from './AdminShell.vue';
 
 const route = useRoute();
 const router = useRouter();
@@ -72,10 +73,6 @@ onMounted(() => {
   }
   void reload(true);
 });
-async function logout() {
-  await adminApi.logout().catch(() => undefined);
-  router.replace('/admin/login');
-}
 
 // ── 路由排序与一键主用 ──
 const routeKind = computed<ChannelKind>(() => (kindFilter.value || 'video') as ChannelKind);
@@ -288,21 +285,15 @@ async function saveForm() {
 </script>
 
 <template>
-  <div class="admin-page">
-    <header class="topbar">
-      <div class="brand"><span class="logo">▶</span>剧优兔AI · 运营后台</div>
-      <nav>
-        <span class="nav current">渠道管理</span>
-        <span v-if="alertCount" class="dot" :title="`${alertCount} 个渠道异常`">{{ alertCount }}</span>
-      </nav>
-      <div class="actions">
-        <button type="button" class="ghost" :disabled="loading" @click="reload()">{{ loading ? '加载中…' : '重新加载配置' }}</button>
-        <button type="button" class="ghost" @click="logout">退出</button>
-      </div>
-    </header>
+  <AdminShell>
+    <template #nav-extra>
+      <span v-if="alertCount" class="dot" :title="`${alertCount} 个渠道异常`">{{ alertCount }}</span>
+    </template>
+    <template #actions>
+      <button type="button" class="ghost" :disabled="loading" @click="reload()">{{ loading ? '加载中…' : '重新加载配置' }}</button>
+    </template>
 
-    <main>
-      <section class="bar miv-card">
+    <section class="bar miv-card">
         <div class="tabs">
           <button v-for="k in (['', 'video', 'image', 'llm'] as const)" :key="k" type="button"
             :class="{ on: kindFilter === k }" @click="kindFilter = k">
@@ -386,7 +377,6 @@ async function saveForm() {
         </table>
         <p v-if="!shown.length" class="miv-hint empty">暂无渠道，点右上「新增渠道」创建第一个。</p>
       </section>
-    </main>
 
     <Teleport to="body">
       <div v-if="editing" class="mask" @click.self="editing = false">
@@ -444,22 +434,12 @@ async function saveForm() {
         </form>
       </div>
     </Teleport>
-  </div>
+  </AdminShell>
 </template>
 
 <style scoped>
-.admin-page { min-height: 100vh; background: var(--miv-bg); }
-.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: var(--miv-space-4);
-  padding: 0 var(--miv-space-4); height: 56px; background: var(--miv-surface); border-bottom: 1px solid var(--miv-border); }
-.brand { font-weight: 700; display: flex; align-items: center; gap: 8px; }
-.logo { color: var(--miv-primary); }
-nav { display: flex; align-items: center; gap: var(--miv-space-3); flex: 1; }
-.nav { color: var(--miv-text-2); font-size: 14px; }
-.nav.current { color: var(--miv-text); font-weight: 600; }
 .dot { background: var(--miv-danger); color: var(--miv-on-primary); border-radius: 999px; min-width: 20px; height: 20px;
   display: inline-flex; align-items: center; justify-content: center; font-size: 12px; padding: 0 6px; }
-.actions { display: flex; gap: var(--miv-space-2); }
-main { max-width: 1200px; margin: 0 auto; padding: var(--miv-space-4); display: flex; flex-direction: column; gap: var(--miv-space-3); }
 .bar { display: flex; align-items: center; gap: var(--miv-space-3); padding: var(--miv-space-3); }
 .tabs { display: flex; gap: var(--miv-space-1); flex: 1; }
 .tabs button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 999px;
@@ -532,7 +512,5 @@ label em { font-style: normal; font-size: 11px; }
 .foot button { border-radius: 6px; padding: 8px 20px; font: inherit; cursor: pointer; }
 @media (max-width: 767px) {
   .grid { grid-template-columns: 1fr; }
-  .topbar { padding: 0 var(--miv-space-3); }
-  main { padding: var(--miv-space-3); }
 }
 </style>
