@@ -2,7 +2,7 @@
 // 管理员任意用户名 + 6 位密码可登录；试生成返回「演示模式不产生真实费用」。
 // M3-ADM-02：§8.1 用户与余额 / §8.2 订单与人工退款同步实现（错误码与校验口径与后端一致）。
 import { MivApiError } from './http';
-import type { AdminApi, AdminLedgerItem, AdminOrder, AdminUser, Channel, DriverInfo, LedgerKind, RouteRow, UserStatus } from './admin';
+import type { AdminApi, AdminLedgerItem, AdminOrder, AdminProject, AdminProjectDetail, AdminUser, Channel, DriverInfo, LedgerKind, ResolveOutcome, RouteRow, UserStatus } from './admin';
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 12)}`;
@@ -48,7 +48,7 @@ function seedChannels(): Channel[] {
 const state: {
   loggedIn: boolean; adminName: string | null;
   channels: Channel[]; routes: Record<string, string[]>;
-  users: MockUser[]; ledger: MockLedgerEntry[]; orders: MockOrder[]; idem: Map<string, string>;
+  users: MockUser[]; ledger: MockLedgerEntry[]; orders: MockOrder[]; projects: MockProject[]; idem: Map<string, string>;
 } = {
   loggedIn: false,
   adminName: null,
@@ -58,7 +58,7 @@ const state: {
     image: ['pch_demo_aiide_image'],
     llm: ['pch_demo_zhipu_llm'],
   },
-  users: [], ledger: [], orders: [], idem: new Map(),
+  users: [], ledger: [], orders: [], projects: [], idem: new Map(),
 };
 seedDemoData(); // 用户/流水/订单演示数据（users 在上面对象里先初始化为空数组，这里填充）
 
@@ -84,6 +84,21 @@ interface MockUser extends AdminUser {
   _wechatBound: boolean;
 }
 interface MockLedgerEntry extends AdminLedgerItem { _userId: string }
+interface MockTake {
+  id: string; segmentId: string; status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown';
+  genTaskStatus: string | null; channel: string | null; upstreamTaskId: string | null;
+  frozenFen: number; error?: { code?: string; message?: string } | null;
+  resolvedOutcome?: 'not_charged' | 'charged'; resolvedNote?: string; resolvedKey?: string;
+  resolvedAt?: string; createdAt: string;
+}
+interface MockSegment { id: string; index: number; durationSeconds: number; plot: string; selectedTakeId: string | null; takes: MockTake[] }
+interface MockProject {
+  id: string; userId: string; title: string; status: AdminProject['status'];
+  progress: { percent: number; message: string };
+  money: { reservedFen: number; settledFen: number; refundedFen: number; frozenFen: number };
+  segments: MockSegment[]; events: AdminProjectDetail['events'];
+  createdAt: string; updatedAt: string;
+}
 interface MockOrder extends AdminOrder { _notifyCount: number; _lastNotifyAt: string | null; _ledgerId: string | null }
 
 // function 声明（非 const）：seedDemoData() 在模块初始化时执行，必须先于其可用
@@ -146,6 +161,73 @@ function seedDemoData(): void {
       outTradeNo: 'po_demo0000000001', transactionId: null, amountFen: 50000, refundedFen: 0,
       scene: 'native', status: 'expired', createdAt: daysAgo(8), paidAt: null, _notifyCount: 1, _lastNotifyAt: daysAgo(8), _ledgerId: null },
   ];
+
+  // 作品（M3-ADM-03）：prj1 failed 带两个待核对片段（判定演示）、prj2 rendering（取消演示）、prj3 delivered
+  const mkTake = (id: string, segmentId: string, take: Partial<MockTake> & Pick<MockTake, 'status'>): MockTake => ({
+    id, segmentId, genTaskStatus: null, channel: null, upstreamTaskId: null, frozenFen: 0,
+    error: null, createdAt: now(), ...take,
+  });
+  const seg = (id: string, index: number, durationSeconds: number, plot: string, takes: MockTake[]): MockSegment =>
+    ({ id, index, durationSeconds, plot, selectedTakeId: takes.find((t) => t.status === 'succeeded')?.id ?? null, takes });
+  state.projects = [
+    { id: 'prj_demo0000000001', userId: 'usr_demo0000000001', title: '春天的野餐（复审演示）', status: 'failed',
+      progress: { percent: 45, message: '片段提交结果未知，金额已冻结，请联系客服处理' },
+      money: { reservedFen: 8000, settledFen: 3000, refundedFen: 0, frozenFen: 5000 },
+      segments: [
+        seg('seg_demo0000000001', 0, 30, '清晨，小满和家人准备野餐篮出发。', [
+          mkTake('take_demo0000000001', 'seg_demo0000000001', { status: 'unknown',
+            genTaskStatus: 'unknown', channel: 'aiide', upstreamTaskId: 'task_9f8e7d6c',
+            frozenFen: 3000, error: { code: 'TAKE_UNKNOWN', message: '片段提交结果未知，金额已冻结' } }),
+        ]),
+        seg('seg_demo0000000002', 1, 30, '一家人在草地上铺开野餐垫，小满追蝴蝶。', [
+          mkTake('take_demo0000000002', 'seg_demo0000000002', { status: 'succeeded',
+            genTaskStatus: 'succeeded', channel: 'aiide', upstreamTaskId: 'task_1a2b3c4d' }),
+        ]),
+        seg('seg_demo0000000003', 2, 20, '傍晚收摊回家，小满在车里睡着。', [
+          mkTake('take_demo0000000003', 'seg_demo0000000003', { status: 'unknown',
+            genTaskStatus: 'unknown', channel: 'aiide', upstreamTaskId: 'task_77aa88bb',
+            frozenFen: 2000, error: { code: 'TAKE_UNKNOWN', message: '片段提交结果未知，金额已冻结' } }),
+        ]),
+      ],
+      events: [
+        { id: 3, status: 'failed', progress: { percent: 45, message: '片段提交结果未知，金额已冻结，请联系客服处理' }, createdAt: daysAgo(0, 3) },
+        { id: 2, status: 'rendering', progress: { percent: 45, message: '正在生成第 1/3 段' }, createdAt: daysAgo(1) },
+        { id: 1, status: 'cast_review', progress: { percent: 30, message: '等待确认角色' }, createdAt: daysAgo(2) },
+      ],
+      createdAt: daysAgo(2), updatedAt: daysAgo(0, 3) },
+    { id: 'prj_demo0000000002', userId: 'usr_demo0000000002', title: '城市夜跑（取消演示）', status: 'rendering',
+      progress: { percent: 60, message: '正在生成第 2/2 段' },
+      money: { reservedFen: 3600, settledFen: 0, refundedFen: 0, frozenFen: 3600 },
+      segments: [
+        seg('seg_demo0000000004', 0, 18, '夜幕下的江边跑道，路灯次第亮起。', [
+          mkTake('take_demo0000000004', 'seg_demo0000000004', { status: 'succeeded',
+            genTaskStatus: 'succeeded', channel: 'aiide', upstreamTaskId: 'task_ccdd11ee' }),
+        ]),
+        seg('seg_demo0000000005', 1, 18, '主角冲过终点，汗水与笑容。', [
+          mkTake('take_demo0000000005', 'seg_demo0000000005', { status: 'running',
+            genTaskStatus: 'running', channel: 'aiide', upstreamTaskId: 'task_eeff2233' }),
+        ]),
+      ],
+      events: [
+        { id: 2, status: 'rendering', progress: { percent: 60, message: '正在生成第 2/2 段' }, createdAt: daysAgo(0, 6) },
+        { id: 1, status: 'cast_review', progress: { percent: 30, message: '等待确认角色' }, createdAt: daysAgo(1, 2) },
+      ],
+      createdAt: daysAgo(1, 2), updatedAt: daysAgo(0, 6) },
+    { id: 'prj_demo0000000003', userId: 'usr_demo0000000001', title: '外婆的菜园', status: 'delivered',
+      progress: { percent: 100, message: '已交付' },
+      money: { reservedFen: 3000, settledFen: 3000, refundedFen: 0, frozenFen: 0 },
+      segments: [
+        seg('seg_demo0000000006', 0, 30, '外婆在菜园里摘下第一根黄瓜。', [
+          mkTake('take_demo0000000006', 'seg_demo0000000006', { status: 'succeeded',
+            genTaskStatus: 'succeeded', channel: 'aiide', upstreamTaskId: 'task_abcd1234' }),
+        ]),
+      ],
+      events: [
+        { id: 2, status: 'delivered', progress: { percent: 100, message: '已交付' }, createdAt: daysAgo(5) },
+        { id: 1, status: 'rendering', progress: { percent: 40, message: '正在生成片段' }, createdAt: daysAgo(6) },
+      ],
+      createdAt: daysAgo(6), updatedAt: daysAgo(5) },
+  ];
 }
 
 function requireUser(id: string): MockUser {
@@ -155,8 +237,9 @@ function requireUser(id: string): MockUser {
 }
 
 function newLedger(userId: string, kind: LedgerKind, amountFen: number, title: string,
-  extra: { reason?: string; adminUsername?: string; refType?: string; refId?: string } = {}): MockLedgerEntry {
-  const entry: MockLedgerEntry = { _userId: userId, id: uid('led'), kind, amountFen, frozenDeltaFen: 0,
+  extra: { reason?: string; adminUsername?: string; refType?: string; refId?: string; frozenDeltaFen?: number } = {}): MockLedgerEntry {
+  const entry: MockLedgerEntry = { _userId: userId, id: uid('led'), kind, amountFen,
+    frozenDeltaFen: extra.frozenDeltaFen ?? 0,
     title, refType: extra.refType ?? null, refId: extra.refId ?? null, createdAt: now(),
     ...(extra.reason ? { reason: extra.reason } : {}), ...(extra.adminUsername ? { adminUsername: extra.adminUsername } : {}) };
   state.ledger.unshift(entry);
@@ -419,4 +502,128 @@ export const adminMock: AdminApi = {
     state.idem.set(idemKey, JSON.stringify({ amountFen: body.amountFen, result }));
     return result;
   },
+
+  // ───────────── §8.3 作品与失败/待核对处理（M3-ADM-03 演示数据） ─────────────
+
+  async projects(query = {}) {
+    await wait(120); requireLogin();
+    let list = [...state.projects].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    if (query.status) list = list.filter((p) => p.status === query.status);
+    if (query.userId) list = list.filter((p) => p.userId === query.userId);
+    if (query.hasUnknown) list = list.filter((p) => projectUnknownTakes(p).length > 0);
+    const limit = query.limit ?? 20;
+    const offset = decodeCursor(query.cursor);
+    const page = list.slice(offset, offset + limit);
+    const next = offset + limit;
+    return { items: page.map((p) => clone(projectListItem(p))), nextCursor: next < list.length ? encodeCursor(next) : null };
+  },
+
+  async project(id) {
+    await wait(120); requireLogin();
+    const found = state.projects.find((p) => p.id === id);
+    if (!found) throw fail(404, 'PROJECT_NOT_FOUND', '作品不存在');
+    return clone(projectDetail(found));
+  },
+
+  async resolveTake(takeId, body) {
+    await wait(); requireLogin();
+    if (body.outcome !== 'not_charged' && body.outcome !== 'charged') {
+      throw fail(400, 'VALIDATION_FAILED', '判定结论取值不正确');
+    }
+    if (!body.note?.trim()) throw fail(400, 'VALIDATION_FAILED', '请填写判定说明');
+    const project = state.projects.find((p) => p.segments.some((seg) => seg.takes.some((tk) => tk.id === takeId)));
+    if (!project) throw fail(404, 'NOT_FOUND', '片段不存在');
+    const segment = project.segments.find((seg) => seg.takes.some((tk) => tk.id === takeId))!;
+    const take = segment.takes.find((tk) => tk.id === takeId)!;
+    const resolvedKey = `admin:resolve:${body.idempotencyKey}`;
+    if (take.resolvedOutcome) {
+      if (take.resolvedKey !== resolvedKey) throw fail(409, 'TAKE_ALREADY_RESOLVED', '该片段已核对过，不能重复判定');
+      return clone(projectDetail(project)); // 同键重放：返回首次结果
+    }
+    if (take.status !== 'unknown') throw fail(409, 'TAKE_NOT_UNKNOWN', '该片段不是待核对状态，无法判定');
+    const user = state.users.find((u) => u.id === project.userId);
+    if (body.outcome === 'not_charged') {
+      if (user && take.frozenFen > 0) { user.frozenFen -= take.frozenFen; user.balanceFen += take.frozenFen; }
+      newLedger(project.userId, 'refund', take.frozenFen, '待核对退回',
+        { refType: 'project', refId: project.id, reason: body.note, adminUsername: state.adminName ?? 'admin',
+          frozenDeltaFen: -take.frozenFen });
+    } else {
+      if (user) user.frozenFen -= take.frozenFen;
+      newLedger(project.userId, 'settle', 0, '待核对结算', { refType: 'project', refId: project.id,
+        reason: body.note, adminUsername: state.adminName ?? 'admin', frozenDeltaFen: -take.frozenFen });
+    }
+    project.money.frozenFen -= take.frozenFen;
+    if (body.outcome === 'not_charged') project.money.refundedFen += take.frozenFen;
+    else project.money.settledFen += take.frozenFen;
+    take.status = 'failed';
+    take.resolvedOutcome = body.outcome as ResolveOutcome;
+    take.resolvedNote = body.note;
+    take.resolvedKey = resolvedKey;
+    take.resolvedAt = now();
+    project.events.unshift({ id: (project.events[0]?.id ?? 0) + 1, status: project.status,
+      progress: { ...(project.progress ?? {}), message: body.outcome === 'charged' ? '已核对：上游已计费' : '已核对：上游未扣费，费用已退回' },
+      createdAt: now() });
+    project.updatedAt = now();
+    return clone(projectDetail(project));
+  },
+
+  async cancelProject(id, reason) {
+    await wait(); requireLogin();
+    if (!reason?.trim()) throw fail(400, 'VALIDATION_FAILED', '请填写取消原因');
+    const project = state.projects.find((p) => p.id === id);
+    if (!project) throw fail(404, 'PROJECT_NOT_FOUND', '作品不存在');
+    const cancellable = ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'];
+    if (!cancellable.includes(project.status)) throw fail(409, 'PROJECT_STATE_INVALID', '作品当前状态不能进行这个操作，请刷新后重试');
+    const unknownFrozen = projectUnknownTakes(project).reduce((sum, tk) => sum + tk.frozenFen, 0);
+    const refundable = Math.max(0, project.money.frozenFen - unknownFrozen); // unknown 保持冻结待判定
+    if (refundable > 0) {
+      const user = state.users.find((u) => u.id === project.userId);
+      if (user) { user.frozenFen -= refundable; user.balanceFen += refundable; }
+      newLedger(project.userId, 'refund', refundable, '作品取消退回',
+        { refType: 'project', refId: project.id, adminUsername: state.adminName ?? 'admin', frozenDeltaFen: -refundable });
+      project.money.frozenFen -= refundable;
+      project.money.refundedFen += refundable;
+    }
+    project.status = 'canceled';
+    project.progress = { percent: 0, message: '已取消' };
+    project.events.unshift({ id: (project.events[0]?.id ?? 0) + 1, status: 'canceled', progress: { percent: 0, message: '已取消' }, createdAt: now() });
+    project.updatedAt = now();
+    return clone(projectDetail(project));
+  },
 };
+
+// ── §8.3 派生工具 ──
+
+function projectUnknownTakes(project: MockProject): MockTake[] {
+  return project.segments.flatMap((seg) => seg.takes).filter((tk) => tk.status === 'unknown' && !tk.resolvedOutcome);
+}
+
+function projectListItem(project: MockProject): AdminProject {
+  const user = state.users.find((u) => u.id === project.userId);
+  return {
+    id: project.id, userId: project.userId, phoneMasked: user?.phoneMasked ?? '—',
+    title: project.title, status: project.status, progress: { ...project.progress },
+    unknownTakes: projectUnknownTakes(project).length,
+    createdAt: project.createdAt, updatedAt: project.updatedAt,
+  };
+}
+
+function projectDetail(project: MockProject): AdminProjectDetail {
+  return {
+    ...projectListItem(project),
+    money: { ...project.money },
+    segments: project.segments.map((seg) => ({
+      id: seg.id, index: seg.index, durationSeconds: seg.durationSeconds, plot: seg.plot,
+      selectedTakeId: seg.selectedTakeId,
+      takes: seg.takes.map((tk) => ({
+        id: tk.id, status: tk.status, genTaskStatus: tk.genTaskStatus, channel: tk.channel,
+        upstreamTaskId: tk.upstreamTaskId,
+        frozenFen: tk.status === 'unknown' && !tk.resolvedOutcome ? tk.frozenFen : 0,
+        error: tk.error ?? null,
+        ...(tk.resolvedOutcome ? { resolvedOutcome: tk.resolvedOutcome, resolvedNote: tk.resolvedNote, resolvedAt: tk.resolvedAt } : {}),
+        createdAt: tk.createdAt,
+      })),
+    })),
+    events: clone(project.events),
+  };
+}
