@@ -8,6 +8,7 @@ import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'v
 import { adminApi, useMock } from '@/api';
 import { csrfOf } from '@/api/admin';
 import type { AdminLedgerItem, AdminUser, AdminUserDetail, UserStatus } from '@/api/admin';
+import { newIdempotencyKey } from '@/utils/idempotency';
 import AdminShell from './AdminShell.vue';
 
 const route = useRoute();
@@ -118,9 +119,10 @@ const entryTitle = (entry: AdminLedgerItem) =>
   entry.kind === 'adjust' && entry.title === '客服调整' ? (entry.reason ?? entry.title) : entry.title;
 
 // ── 余额调整 ──
-const adjustForm = reactive({ open: false, target: null as AdminUser | null, direction: 'add' as 'add' | 'sub', amount: '', reason: '' });
+// 幂等键在**打开表单时**生成：请求超时/失败后重试沿用同一键（后端幂等才不会重复加减钱），成功后清空
+const adjustForm = reactive({ open: false, target: null as AdminUser | null, direction: 'add' as 'add' | 'sub', amount: '', reason: '', idempotencyKey: '' });
 function openAdjust(user: AdminUser) {
-  Object.assign(adjustForm, { open: true, target: user, direction: 'add', amount: '', reason: '' });
+  Object.assign(adjustForm, { open: true, target: user, direction: 'add', amount: '', reason: '', idempotencyKey: newIdempotencyKey() });
 }
 async function submitAdjust() {
   const target = adjustForm.target;
@@ -138,8 +140,9 @@ async function submitAdjust() {
     });
   } catch { return; }
   await run(async () => {
-    const result = await adminApi.adjustBalance(target.id, { amountFen, reason, idempotencyKey: crypto.randomUUID() });
+    const result = await adminApi.adjustBalance(target.id, { amountFen, reason, idempotencyKey: adjustForm.idempotencyKey });
     adjustForm.open = false;
+    adjustForm.idempotencyKey = ''; // 成功才清空；失败重试沿用同一键
     showSuccessToast(`已调整，当前余额 ${yuan(result.wallet.availableFen)}`);
     await loadFirst();
   });

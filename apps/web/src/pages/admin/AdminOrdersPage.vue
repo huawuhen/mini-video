@@ -8,6 +8,7 @@ import { showConfirmDialog, showFailToast, showSuccessToast, showToast } from 'v
 import { adminApi, useMock } from '@/api';
 import { csrfOf } from '@/api/admin';
 import type { AdminOrder, AdminOrderDetail, OrderStatus } from '@/api/admin';
+import { newIdempotencyKey } from '@/utils/idempotency';
 import AdminShell from './AdminShell.vue';
 
 const route = useRoute();
@@ -87,9 +88,10 @@ async function reconcile(order: AdminOrder) {
 }
 
 // ── 记录式人工退款 ──
-const refundForm = reactive({ open: false, target: null as AdminOrder | null, amount: '', reason: '' });
+// 幂等键在**打开表单时**生成：失败重试沿用同一键（后端幂等防重复登记退款），成功后清空
+const refundForm = reactive({ open: false, target: null as AdminOrder | null, amount: '', reason: '', idempotencyKey: '' });
 function openRefund(order: AdminOrder) {
-  Object.assign(refundForm, { open: true, target: order, amount: '', reason: '' });
+  Object.assign(refundForm, { open: true, target: order, amount: '', reason: '', idempotencyKey: newIdempotencyKey() });
 }
 function parseYuanToFen(input: string): number | null {
   const text = input.trim();
@@ -111,8 +113,9 @@ async function submitRefund() {
     });
   } catch { return; }
   await run(async () => {
-    const result = await adminApi.refundOrder(target.id, { amountFen: fen, reason, idempotencyKey: crypto.randomUUID() });
+    const result = await adminApi.refundOrder(target.id, { amountFen: fen, reason, idempotencyKey: refundForm.idempotencyKey });
     refundForm.open = false;
+    refundForm.idempotencyKey = ''; // 成功才清空；失败重试沿用同一键
     showSuccessToast(`已登记，累计已退 ${yuan(result.order.refundedFen)}`);
     await loadFirst();
   });

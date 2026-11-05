@@ -298,11 +298,13 @@ export const adminMock: AdminApi = {
   async adjustBalance(id, body) {
     await wait(); requireLogin();
     const user = requireUser(id);
+    if (user.status === 'deactivated') throw fail(400, 'VALIDATION_FAILED', '该账号已注销，不能调整余额');
     if (!Number.isSafeInteger(body.amountFen) || body.amountFen === 0) {
       throw fail(400, 'VALIDATION_FAILED', '调整金额必须是非 0 的整数（分）');
     }
     if (!body.reason?.trim()) throw fail(400, 'VALIDATION_FAILED', '请填写调整原因');
-    const first = state.idem.get(body.idempotencyKey);
+    const idemKey = `admin:adjust:${body.idempotencyKey}`; // 服务端同口径：加前缀再进幂等表
+    const first = state.idem.get(idemKey);
     if (first) {
       const hit = JSON.parse(first);
       if (hit.amountFen !== body.amountFen) throw fail(409, 'IDEMPOTENCY_CONFLICT', '请求重复，请刷新后重试');
@@ -314,7 +316,7 @@ export const adminMock: AdminApi = {
     user.balanceFen += body.amountFen;
     const entry = newLedger(id, 'adjust', body.amountFen, '客服调整', { reason: body.reason, adminUsername: state.adminName ?? 'admin' });
     const result = { wallet: { availableFen: user.balanceFen, frozenFen: user.frozenFen }, entry: clone(strip(entry)) };
-    state.idem.set(body.idempotencyKey, JSON.stringify({ amountFen: body.amountFen, result }));
+    state.idem.set(idemKey, JSON.stringify({ amountFen: body.amountFen, result }));
     return result;
   },
 
@@ -332,8 +334,8 @@ export const adminMock: AdminApi = {
       user.status = 'active';
     } else {
       if (user.status === 'deactivated') return clone(strip(user)); // 幂等：已注销直接返回
-      if (user._stats.activeProjects > 0) {
-        throw fail(409, 'USER_HAS_ACTIVE_PROJECTS', '该用户还有进行中的作品，暂不能注销');
+      if (user._stats.activeProjects > 0 || user.frozenFen > 0) {
+        throw fail(409, 'USER_HAS_ACTIVE_PROJECTS', '该用户还有进行中的作品或待核对的费用，暂不能注销');
       }
       if (user.balanceFen > 0) {
         newLedger(id, 'adjust', -user.balanceFen, '客服调整', { reason, adminUsername: state.adminName ?? 'admin' });
@@ -394,7 +396,8 @@ export const adminMock: AdminApi = {
       throw fail(400, 'VALIDATION_FAILED', '退款金额必须是非 0 的整数（分）');
     }
     if (!body.reason?.trim()) throw fail(400, 'VALIDATION_FAILED', '请填写退款原因');
-    const first = state.idem.get(body.idempotencyKey);
+    const idemKey = `admin:refund:${body.idempotencyKey}`; // 服务端同口径：加前缀再进幂等表
+    const first = state.idem.get(idemKey);
     if (first) {
       const hit = JSON.parse(first);
       if (hit.amountFen !== body.amountFen) throw fail(409, 'IDEMPOTENCY_CONFLICT', '请求重复，请刷新后重试');
@@ -413,7 +416,7 @@ export const adminMock: AdminApi = {
     const entry = newLedger(order.userId, 'adjust', -body.amountFen, '充值退款',
       { reason: body.reason, adminUsername: state.adminName ?? 'admin', refType: 'payment_order', refId: order.id });
     const result = { order: clone(strip(order)), entry: clone(strip(entry)) };
-    state.idem.set(body.idempotencyKey, JSON.stringify({ amountFen: body.amountFen, result }));
+    state.idem.set(idemKey, JSON.stringify({ amountFen: body.amountFen, result }));
     return result;
   },
 };
