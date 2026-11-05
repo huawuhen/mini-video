@@ -452,7 +452,7 @@ type AdminOrder = { id: string; userId: string; phoneMasked: string; outTradeNo:
   createdAt: string; paidAt: string | null };
 ```
 
-- **人工退款（第一期：记录式，待用户确认）**：钱在「微信支付商户平台 → 交易中心 → 退款」由客服手工退回；本接口只在我方记账——校验订单 `paid`、`refundedFen + amountFen ≤ amountFen(订单)`、用户可用余额足够（否则 400 `REFUND_EXCEEDS_BALANCE`），写一条 `adjust` 负数流水（标题「充值退款」，ref 指向订单）并累加 `refunded_fen`。后台页面在按钮旁写明「请先在微信商户平台完成退款，再在此登记」。第二期如需一键调用微信退款接口，另开任务。
+- **人工退款（第一期：记录式，用户 2026-11-05 确认）**：钱在「微信支付商户平台 → 交易中心 → 退款」由客服手工退回；本接口只在我方记账——校验订单 `paid`、`refundedFen + amountFen ≤ amountFen(订单)`、用户可用余额足够（否则 400 `REFUND_EXCEEDS_BALANCE`），写一条 `adjust` 负数流水（标题「充值退款」，ref 指向订单）并累加 `refunded_fen`。后台页面在按钮旁写明「请先在微信商户平台完成退款，再在此登记」。第二期如需一键调用微信退款接口，另开任务。
 
 ### 8.3 运营后台·作品与失败/待核对任务（M3-ADM-03）
 
