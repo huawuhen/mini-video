@@ -39,9 +39,9 @@ export async function transition(t, { projectId, userId, from, to, pausedFrom = 
   const value = typeof nextProgress === 'function' ? nextProgress(0, 0) : nextProgress;
   const { rows } = await t.query(
     `UPDATE projects SET status = $3, paused_from = $4, error = $5, progress = $6, updated_at = now()
-      WHERE id = $1 AND user_id = $2 AND status = ANY($7::text[]) AND deleted_at IS NULL
+      WHERE id = $1 AND deleted_at IS NULL AND status = ANY($7::text[]) AND ($2::text IS NULL OR user_id = $2)
       RETURNING id`,
-    [projectId, userId, to, pausedFrom, error ? JSON.stringify(error) : null,
+    [projectId, userId ?? null, to, pausedFrom, error ? JSON.stringify(error) : null,
       JSON.stringify(value), from],
   );
   if (!rows.length) throw appError('PROJECT_STATE_INVALID');
@@ -96,10 +96,11 @@ export async function appendEvent(t, { projectId, status, progress, changed = []
     [JSON.stringify({ projectId, status: status ?? undefined })]);
 }
 
+/** 加载作品；userId 缺省时（管理端）不做用户归属过滤，仍拒绝已删除。 */
 export async function requireProject(q, { userId, projectId }) {
   const { rows } = await q.query(
-    `SELECT * FROM projects WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL`,
-    [projectId, userId],
+    `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL AND ($2::text IS NULL OR user_id = $2)`,
+    [projectId, userId ?? null],
   );
   if (!rows.length) throw appError('NOT_FOUND');
   return rows[0];

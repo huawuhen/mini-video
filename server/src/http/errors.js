@@ -52,6 +52,9 @@ export const ERROR_CODES = {
   USER_HAS_ACTIVE_PROJECTS: [409, '该用户还有进行中的作品或待核对的费用，暂不能注销'],
   USER_NOT_FOUND: [404, '用户不存在'],
   ORDER_NOT_FOUND: [404, '订单不存在'],
+  TAKE_ALREADY_RESOLVED: [409, '该片段已核对过，不能重复判定'],
+  TAKE_NOT_UNKNOWN: [409, '该片段不是待核对状态，无法判定'],
+  PROJECT_NOT_FOUND: [404, '作品不存在'],
 };
 
 /** 按错误码创建 AppError；message 省略时用默认中文提示。 */

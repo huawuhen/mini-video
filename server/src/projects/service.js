@@ -668,10 +668,12 @@ export async function retryProject(db, { userId, projectId }) {
   });
 }
 
+/** 取消作品：用户侧传 userId 做归属校验；管理端（M3-ADM-03）可省略 userId。unknown
+ * 片段的冻结保持待对账，其余冻结全额退回（口径见下）。 */
 export async function cancelProject(db, { userId, projectId }) {
   return db.tx(async (t) => {
     const project = await requireProject(t, { userId, projectId });
-    const money = await projectMoneySummary(t, { userId, projectId });
+    const money = await projectMoneySummary(t, { userId: project.user_id, projectId });
     // 提交结果未知（unknown）的片段金额保持冻结待对账（docs/ARCHITECTURE §4：只退未提交部分）
     const { rows: unknownRows } = await t.query(
       `SELECT COALESCE(SUM(s.duration_seconds), 0)::bigint AS seconds
@@ -684,8 +686,9 @@ export async function cancelProject(db, { userId, projectId }) {
     }
     const refundable = Math.max(0, money.frozenFen - unknownFrozen);
     const purpose = 'cancel'; // 状态迁移守卫保证 cancel 只会成功一次，幂等键固定即可
-    await refundProject(t, { userId, projectId, amountFen: refundable, purpose });
-    await transition(t, { projectId, userId,
+    // 账本与状态迁移都以作品属主为准（管理端取消不带调用方 userId）
+    await refundProject(t, { userId: project.user_id, projectId, amountFen: refundable, purpose });
+    await transition(t, { projectId, userId: project.user_id,
       from: ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'],
       to: 'canceled', progress: { percent: 0, message: '已取消' } });
     return { ok: true, refundedFen: refundable, frozenFen: unknownFrozen };

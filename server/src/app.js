@@ -14,6 +14,7 @@ import { wechatNotifyRoutes } from './api/wechat-notify.js';
 import { projectRoutes } from './api/projects.js';
 import { adminRoutes } from './api/admin.js';
 import { adminUsersOrdersRoutes } from './api/admin-users-orders.js';
+import { adminProjectsRoutes } from './api/admin-projects.js';
 import { createPaymentsContext } from './payments/context.js';
 import { extractText } from './engine/extract/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
@@ -88,6 +89,8 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   }
   // 管理端·用户与订单（M3-ADM-02，API.md §8.1~8.2）：不依赖渠道层，装配在渠道层之外
   api.use(adminUsersOrdersRoutes({ db, config, logger, storage: objectStorage, payments: paymentsCtx }));
+  // 管理端·作品与待核对（M3-ADM-03，API.md §8.3）：同上
+  api.use(adminProjectsRoutes({ db, config, logger }));
 
   api.use(notFound());
   api.use(errorHandler(logger));
