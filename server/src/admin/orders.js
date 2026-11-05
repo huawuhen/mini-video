@@ -94,27 +94,28 @@ export async function reconcileOrder(db, { orderId }, deps) {
 /**
  * 人工退款登记（记录式）：校验订单已支付、累计退款不超订单金额、用户可用余额足够；
  * 写一条 adjust 负数流水（title「充值退款」，ref=订单，reason/admin 落库）并累加 refunded_fen。
- * 幂等键直接用账本幂等（同键同参重放返回首次流水，同键不同参 409）；
- * 重放先于状态/金额校验（refunded_fen 在首次执行已累加，重放时再查会误判超限）。
+ * 幂等键直接用账本幂等（同键同参重放返回首次流水，同键不同参 409）；重放先于状态/金额校验
+ * （refunded_fen 在首次执行已累加，重放时再查会误判超限）。读订单（FOR UPDATE）、重放探测、
+ * 校验与写入全部在**同一事务**内完成——行锁覆盖整个判定过程，不留「锁了又放」的窗口。
  */
 export async function refundOrder(db, { orderId, amountFen, reason, idempotencyKey, adminId }) {
-  const { rows } = await db.query(`SELECT * FROM payment_orders WHERE id = $1 FOR UPDATE`, [orderId]);
-  const order = rows[0];
-  if (!order) throw appError('ORDER_NOT_FOUND');
   if (!Number.isSafeInteger(amountFen) || amountFen <= 0) {
     throw appError('VALIDATION_FAILED', '退款金额必须是非 0 的整数（分）');
   }
-  // 幂等重放探测（口径同 wallet.withIdempotency：命中他人流水/参数不符交给它抛 409）
-  const { rows: existing } = await db.query(
-    `SELECT user_id, kind, amount_fen, ref_type, ref_id FROM ledger WHERE idempotency_key = $1`, [idempotencyKey]);
-  const isReplay = existing.length > 0;
-
-  if (!isReplay) {
-    if (order.status !== 'paid') throw appError('ORDER_NOT_PAID');
-    if (Number(order.refunded_fen) + amountFen > order.amount_fen) throw appError('REFUND_EXCEEDS_ORDER');
-  }
-
   return db.tx(async (t) => {
+    const { rows } = await t.query(`SELECT * FROM payment_orders WHERE id = $1 FOR UPDATE`, [orderId]);
+    const order = rows[0];
+    if (!order) throw appError('ORDER_NOT_FOUND');
+    // 幂等重放探测（口径同 wallet.withIdempotency：命中他人流水/参数不符交给它抛 409）
+    const { rows: existing } = await t.query(
+      `SELECT user_id, kind, amount_fen, ref_type, ref_id FROM ledger WHERE idempotency_key = $1`, [idempotencyKey]);
+    const isReplay = existing.length > 0;
+
+    if (!isReplay) {
+      if (order.status !== 'paid') throw appError('ORDER_NOT_PAID');
+      if (Number(order.refunded_fen) + amountFen > order.amount_fen) throw appError('REFUND_EXCEEDS_ORDER');
+    }
+
     let result;
     try {
       result = await adjust(t, { userId: order.user_id, amountFen: -amountFen, title: '充值退款',

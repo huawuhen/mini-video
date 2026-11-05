@@ -84,7 +84,9 @@ export function adminUsersOrdersRoutes({ db, config, logger, storage, payments =
     };
     fields.done();
     if (body.amountFen === 0) throw appError('VALIDATION_FAILED', '调整金额不能为 0');
-    const result = await users.adjustBalance(db, { userId: String(req.params.id), ...body, adminId: req.admin.id });
+    // 服务端加 admin: 前缀再进账本，避免与内部幂等键（recharge:<订单>/deactivate:<用户>）共用命名空间
+    const result = await users.adjustBalance(db, { userId: String(req.params.id), ...body,
+      idempotencyKey: `admin:adjust:${body.idempotencyKey}`, adminId: req.admin.id });
     await audit(req, 'wallet.adjust', 'user', req.params.id,
       { amountFen: body.amountFen, reason: body.reason, idempotencyKey: body.idempotencyKey });
     res.json({ wallet: result.wallet, entry: result.entry });
@@ -118,11 +120,11 @@ export function adminUsersOrdersRoutes({ db, config, logger, storage, payments =
     if (body.confirm !== true) {
       throw appError('VALIDATION_FAILED', '注销不可恢复，需要 confirm=true 二次确认');
     }
-    const { user, filesFailed } = await users.deactivateUser(db, {
+    const { user, filesFailed, balanceClearedFen } = await users.deactivateUser(db, {
       userId: String(req.params.id), reason: body.reason, adminId: req.admin.id, storage, logger,
     });
     await audit(req, 'user.deactivate', 'user', req.params.id,
-      { reason: body.reason, balanceClearedFen: null, filesFailed });
+      { reason: body.reason, balanceClearedFen, filesFailed });
     res.json(user);
   }));
 
@@ -162,7 +164,8 @@ export function adminUsersOrdersRoutes({ db, config, logger, storage, payments =
       idempotencyKey: fields.string('idempotencyKey', { required: true, max: 100 }),
     };
     fields.done();
-    const result = await orders.refundOrder(db, { orderId: String(req.params.id), ...body, adminId: req.admin.id });
+    const result = await orders.refundOrder(db, { orderId: String(req.params.id), ...body,
+      idempotencyKey: `admin:refund:${body.idempotencyKey}`, adminId: req.admin.id });
     await audit(req, 'order.refund', 'payment_order', req.params.id,
       { amountFen: body.amountFen, reason: body.reason, idempotencyKey: body.idempotencyKey });
     res.json(result);

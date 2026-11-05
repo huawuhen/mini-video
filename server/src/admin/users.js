@@ -123,9 +123,12 @@ export async function listUserLedger(db, { userId, cursor, limit }) {
   };
 }
 
-/** 客服调整余额：原因必填；返回 { wallet, entry }（entry 为 AdminLedgerItem）。 */
+/** 客服调整余额：原因必填；已注销账号不能调整（400）；返回 { wallet, entry }（entry 为 AdminLedgerItem）。 */
 export async function adjustBalance(db, { userId, amountFen, reason, idempotencyKey, adminId }) {
   const detail = await getUserDetail(db, { userId }); // 不存在 → 404 USER_NOT_FOUND
+  if (detail.status === 'deactivated') {
+    throw appError('VALIDATION_FAILED', '该账号已注销，不能调整余额');
+  }
   const { entry } = await db.tx((t) => adjust(t, { userId, amountFen, idempotencyKey, reason, adminId }));
   const { rows } = await db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
   return {
@@ -164,19 +167,19 @@ export async function enableUser(db, { userId }) {
 const IN_FLIGHT = ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused'];
 
 /**
- * 注销（§8.1，不可恢复）：无在途作品（否则 409 USER_HAS_ACTIVE_PROJECTS）；剩余可用余额记一条
- * adjust 清零流水（原因必填）；删除全部会话与微信绑定；手机号改占位（原号可重新注册为新用户）；
- * 作品与角色记录匿名保留（清掉用户自由输入文本，AI 生成的片段剧情保留）；媒体对象（上传图片、
- * 形象图、片段视频/海报、成片/封面、头像）在**事务外**尽力删除（AGENTS §5：事务内不等上游/网络），
- * 失败只记日志，key 留在库里供排查（对象已删时 key 是惰性数据，签名链接访问只会 404）；
- * 账务流水与支付订单保留（法定保存）。重复调用按幂等返回当前状态。
+ * 注销（§8.1，不可恢复）：要求**没有在途作品、且冻结金额为 0**（有「结果待核对」的费用时
+ * 冻结 >0，此时注销会导致后续判定退款进无人可用的账号——两项检查都在注销事务内、锁定钱包行
+ * 之后执行，消除检查与执行之间的窗口）；否则 409 USER_HAS_ACTIVE_PROJECTS。
+ * 剩余可用余额记一条 adjust 清零流水（原因必填）；删除全部会话与微信绑定；手机号改占位
+ * （原号可重新注册为新用户）；作品与角色记录匿名保留（清掉用户自由输入文本，AI 生成的片段
+ * 剧情保留）；媒体对象（上传图片、形象图、片段视频/海报、成片/封面、头像）在**事务外**尽力
+ * 删除（AGENTS §5：事务内不等上游/网络），失败只记日志，key 留在库里供排查（对象已删时 key
+ * 是惰性数据，签名链接访问只会 404）；账务流水与支付订单保留（法定保存）。
+ * 重复调用按幂等返回当前状态；返回 { user, filesFailed, balanceClearedFen }（审计记实际清零金额）。
  */
 export async function deactivateUser(db, { userId, reason, adminId, storage, logger }) {
   const detail = await getUserDetail(db, { userId });
-  if (detail.status === 'deactivated') return { user: detail, filesFailed: 0 };
-  const { rows: inflight } = await db.query(
-    `SELECT count(*)::int AS n FROM projects WHERE user_id = $1 AND status = ANY($2)`, [userId, IN_FLIGHT]);
-  if (inflight[0].n > 0) throw appError('USER_HAS_ACTIVE_PROJECTS');
+  if (detail.status === 'deactivated') return { user: detail, filesFailed: 0, balanceClearedFen: 0 };
 
   const { rows: media } = await db.query(
     `SELECT storage_key AS key FROM uploads WHERE user_id = $1 AND storage_key IS NOT NULL
@@ -202,13 +205,20 @@ export async function deactivateUser(db, { userId, reason, adminId, storage, log
   );
   const keys = [...new Set(media.map((row) => row.key))];
 
+  let balanceClearedFen = 0;
   await db.tx(async (t) => {
     const { rows } = await t.query(
-      `SELECT available_fen FROM wallets WHERE user_id = $1 FOR UPDATE`, [userId]);
+      `SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1 FOR UPDATE`, [userId]);
     const available = Number(rows[0]?.available_fen ?? 0);
+    const frozen = Number(rows[0]?.frozen_fen ?? 0);
+    if (frozen > 0) throw appError('USER_HAS_ACTIVE_PROJECTS');
+    const { rows: inflight } = await t.query(
+      `SELECT count(*)::int AS n FROM projects WHERE user_id = $1 AND status = ANY($2)`, [userId, IN_FLIGHT]);
+    if (inflight[0].n > 0) throw appError('USER_HAS_ACTIVE_PROJECTS');
     if (available > 0) {
       await adjust(t, { userId, amountFen: -available, title: '客服调整',
         idempotencyKey: `deactivate:${userId}`, reason, adminId });
+      balanceClearedFen = available;
     }
     await t.query(
       `UPDATE users SET status = 'deactivated', phone = $2, nickname = '已注销用户', avatar_key = NULL, updated_at = now()
@@ -231,5 +241,5 @@ export async function deactivateUser(db, { userId, reason, adminId, storage, log
         message: String(err?.message ?? err).slice(0, 200) });
     }
   }
-  return { user: await getUserDetail(db, { userId }), filesFailed };
+  return { user: await getUserDetail(db, { userId }), filesFailed, balanceClearedFen };
 }

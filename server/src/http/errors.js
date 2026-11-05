@@ -49,7 +49,7 @@ export const ERROR_CODES = {
   REFUND_EXCEEDS_BALANCE: [400, '用户可用余额不足，无法登记退款'],
   REFUND_EXCEEDS_ORDER: [400, '退款金额超过订单可退金额'],
   ORDER_NOT_PAID: [409, '订单未支付，不能登记退款'],
-  USER_HAS_ACTIVE_PROJECTS: [409, '该用户还有进行中的作品，暂不能注销'],
+  USER_HAS_ACTIVE_PROJECTS: [409, '该用户还有进行中的作品或待核对的费用，暂不能注销'],
   USER_NOT_FOUND: [404, '用户不存在'],
   ORDER_NOT_FOUND: [404, '订单不存在'],
 };

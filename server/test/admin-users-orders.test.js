@@ -297,11 +297,14 @@ describe('管理端·用户与订单（M3-ADM-02）', () => {
       { body: { amountFen: 100, reason: 'x', idempotencyKey: 'adm-adjust-0006' }, csrf: csrfToken });
     assert.equal(notFound.status, 404);
 
-    // 后台流水带 reason/adminUsername；审计留痕
+    // 后台流水带 reason/adminUsername；审计留痕；幂等键带 admin: 前缀（与内部键隔离命名空间）
     const ledger = await client.call('admin', 'GET', `/admin/users/${u1}/ledger`);
     const adjustRow = ledger.json.items.find((item) => item.id === ok.json.entry.id);
     assert.equal(adjustRow.reason, '补偿活动奖励');
     assert.equal(adjustRow.adminUsername, 'admin');
+    const keyRow = (await testDb.db.query(
+      `SELECT idempotency_key FROM ledger WHERE id = $1`, [ok.json.entry.id])).rows[0];
+    assert.equal(keyRow.idempotency_key, 'admin:adjust:adm-adjust-0001');
     const audit = await testDb.db.query(`SELECT action FROM admin_audit_logs WHERE action = 'wallet.adjust'`);
     assert.ok(audit.rowCount >= 3);
     // 加回 4500，后续用例继续用
@@ -368,8 +371,15 @@ describe('管理端·用户与订单（M3-ADM-02）', () => {
       { body: { reason: '用户申请注销', confirm: false }, csrf: csrfToken });
     assert.equal(noConfirm.status, 400);
 
-    // 在途作品改终态后注销成功
+    // 在途作品改终态后再试：冻结金额 >0（待核对的费用）同样拦截，检查在注销事务内做
     await testDb.db.query(`UPDATE projects SET status = 'delivered' WHERE id = $1`, [activeProject]);
+    await testDb.db.query(`UPDATE wallets SET frozen_fen = 500 WHERE user_id = $1`, [u4]);
+    const frozenBlocked = await client.call('admin', 'POST', `/admin/users/${u4}/deactivate`,
+      { body: { reason: '用户申请注销', confirm: true }, csrf: csrfToken });
+    assert.equal(frozenBlocked.status, 409, '冻结 >0 不能注销');
+    assert.equal(frozenBlocked.json.code, 'USER_HAS_ACTIVE_PROJECTS');
+    assert.equal(frozenBlocked.json.message, '该用户还有进行中的作品或待核对的费用，暂不能注销');
+    await testDb.db.query(`UPDATE wallets SET frozen_fen = 0 WHERE user_id = $1`, [u4]);
     await testDb.db.query(
       `INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at)
        VALUES ($1, $2, 'csrf', now() + interval '1 day')`, ['y'.repeat(64), u4]);
@@ -399,6 +409,13 @@ describe('管理端·用户与订单（M3-ADM-02）', () => {
     const audit = (await testDb.db.query(
       `SELECT detail FROM admin_audit_logs WHERE action = 'user.deactivate' ORDER BY id DESC LIMIT 1`)).rows[0];
     assert.equal(audit.detail.filesFailed, 0);
+    assert.equal(audit.detail.balanceClearedFen, 888, '审计记实际清零金额');
+
+    // 已注销账号不能调整余额
+    const adjustDeactivated = await client.call('admin', 'POST', `/admin/users/${u4}/adjust`,
+      { body: { amountFen: 100, reason: '补偿已注销用户', idempotencyKey: 'adm-adjust-dead' }, csrf: csrfToken });
+    assert.equal(adjustDeactivated.status, 400);
+    assert.equal(adjustDeactivated.json.message, '该账号已注销，不能调整余额');
 
     // 幂等重复调用：直接返回当前状态，不再产生新的清零流水
     const again = await client.call('admin', 'POST', `/admin/users/${u4}/deactivate`,
@@ -511,8 +528,9 @@ describe('管理端·用户与订单（M3-ADM-02）', () => {
     const audit = await testDb.db.query(`SELECT action FROM admin_audit_logs WHERE action = 'order.refund'`);
     assert.ok(audit.rowCount >= 2);
     const ledgerRow = (await testDb.db.query(
-      `SELECT reason, admin_id FROM ledger WHERE ref_id = $1 AND kind = 'adjust'`, [paidOrder])).rows[0];
+      `SELECT reason, admin_id, idempotency_key FROM ledger WHERE ref_id = $1 AND kind = 'adjust'`, [paidOrder])).rows[0];
     assert.equal(ledgerRow.reason, '用户申请退款，微信商户平台已退');
     assert.equal(ledgerRow.admin_id, adminId);
+    assert.equal(ledgerRow.idempotency_key, 'admin:refund:rf-2');
   });
 });
