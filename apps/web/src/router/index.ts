@@ -34,6 +34,8 @@ export const router = createRouter({
     { path: '/legal/privacy', component: () => import('@/pages/LegalPage.vue'), meta: { title: '隐私政策', hideTabbar: true } },
     // 运营后台（M3-ADM-01）：独立于用户端布局与登录态（API.md §8）
     { path: '/admin/login', component: () => import('@/pages/admin/AdminLoginPage.vue'), meta: { title: '运营后台登录' } },
+    { path: '/admin/users', component: () => import('@/pages/admin/AdminUsersPage.vue'), meta: { title: '用户与订单' } },
+    { path: '/admin/orders', component: () => import('@/pages/admin/AdminOrdersPage.vue'), meta: { title: '充值订单' } },
     { path: '/admin/channels', component: () => import('@/pages/admin/ChannelsPage.vue'), meta: { title: '渠道管理' } },
     { path: '/:pathMatch(.*)*', component: () => import('@/pages/NotFoundPage.vue'), meta: { title: '页面不存在' } },
   ],

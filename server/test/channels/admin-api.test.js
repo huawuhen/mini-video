@@ -140,7 +140,8 @@ describe('管理端 API（M2-BE-03）', () => {
     const list = await client.call('admin', 'GET', '/admin/channels?kind=video');
     const channel = list.json.items.find((item) => item.name === 'api-video');
     // 渠道地址不可达（example.test 假域名）：测试驱动注入的 catalog 不可用路径——期望 400 CHANNEL_TEST_FAILED
-    const result = await client.call('admin', 'POST', `/admin/channels/${channel.id}/test`, {});
+    // （M3-ADM-02 起管理端写操作统一校验 CSRF，漏带令牌会被 403 挡住——这里补上）
+    const result = await client.call('admin', 'POST', `/admin/channels/${channel.id}/test`, { csrf: csrfToken });
     assert.equal(result.status, 400);
     assert.equal(result.json.code, 'CHANNEL_TEST_FAILED');
   });

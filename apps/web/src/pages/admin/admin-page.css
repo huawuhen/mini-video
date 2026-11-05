@@ -1,0 +1,78 @@
+/* 运营后台两页共用样式（M3-ADM-02）：由 AdminUsersPage / AdminOrdersPage 以
+   <style scoped src> 引入（scoped 后类名只作用于本页元素，与 ChannelsPage 的同名内联样式互不影响）。
+   色值全部使用设计令牌（tokens.css），与 M3-ADM-01 审查口径一致。 */
+.bar { display: flex; align-items: center; gap: var(--miv-space-3); padding: var(--miv-space-3); flex-wrap: wrap; }
+.tabs { display: flex; gap: var(--miv-space-1); flex: 1; min-width: 0; flex-wrap: wrap; }
+.tabs button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 999px;
+  padding: 6px 16px; font: inherit; font-size: 14px; cursor: pointer; color: var(--miv-text-2); }
+.tabs button.on { border-color: var(--miv-primary); color: var(--miv-primary-strong); background: var(--miv-primary-soft); }
+.search { display: flex; gap: var(--miv-space-2); }
+.search input { border: 1px solid var(--miv-border); border-radius: var(--miv-radius-sm); padding: 7px 10px;
+  font: inherit; font-size: 14px; background: var(--miv-surface); color: var(--miv-text); width: 200px; }
+
+button.primary { background: var(--miv-primary); color: var(--miv-on-primary); border: 0; border-radius: var(--miv-radius-sm);
+  padding: 8px 16px; font: inherit; cursor: pointer; }
+button.primary.small { padding: 6px 14px; font-size: 13px; }
+button.primary:disabled { opacity: 0.5; cursor: default; }
+button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px solid var(--miv-border);
+  border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; }
+button.danger-solid { background: var(--miv-danger); color: var(--miv-on-primary); border: 0;
+  border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; }
+
+.table-wrap { overflow-x: auto; padding: var(--miv-space-2) var(--miv-space-3) var(--miv-space-3); }
+.table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; font-weight: 600; color: var(--miv-text-2); padding: 10px; border-bottom: 1px solid var(--miv-border); white-space: nowrap; }
+td { padding: 10px; border-bottom: 1px solid var(--miv-border); vertical-align: top; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tag { display: inline-block; border-radius: 999px; padding: 2px 10px; font-size: 12px; white-space: nowrap; }
+.tag.active { background: var(--miv-success-soft); color: var(--miv-success-strong); }
+.tag.disabled, .tag.deactivated { background: var(--miv-bg); color: var(--miv-text-3); }
+.tag.deactivated { text-decoration: line-through; }
+.tag.created { background: var(--miv-bg); color: var(--miv-text-2); }
+.tag.paid { background: var(--miv-success-soft); color: var(--miv-success-strong); }
+.tag.expired, .tag.failed { background: var(--miv-bg); color: var(--miv-text-3); }
+td.ops { white-space: nowrap; }
+td.ops button { border: 1px solid var(--miv-border); background: var(--miv-surface); border-radius: 6px;
+  padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer; margin: 2px 2px; }
+td.ops button:hover { border-color: var(--miv-primary); color: var(--miv-primary-strong); }
+td.ops button.danger { color: var(--miv-danger); }
+.empty { padding: var(--miv-space-4); text-align: center; }
+.more { display: flex; justify-content: center; padding-top: var(--miv-space-3); }
+
+.mask { position: fixed; inset: 0; background: var(--miv-overlay); display: flex; align-items: center; justify-content: center;
+  z-index: 100; padding: var(--miv-space-4); overflow: auto; }
+.dialog { width: min(640px, 100%); max-height: 90vh; overflow: auto; display: flex; flex-direction: column; gap: var(--miv-space-3); }
+.dialog h2 { font-size: 16px; margin: 0; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--miv-space-3); }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--miv-text-2); }
+label.full { width: 100%; }
+label input:not([type='checkbox']), label select { border: 1px solid var(--miv-border); border-radius: 6px;
+  padding: 8px 10px; font: inherit; font-size: 14px; background: var(--miv-surface); color: var(--miv-text); }
+.foot { display: flex; justify-content: flex-end; gap: var(--miv-space-2); }
+.foot button { border-radius: 6px; padding: 8px 20px; font: inherit; cursor: pointer; }
+code { font-family: ui-monospace, monospace; font-size: 12px; background: var(--miv-bg); padding: 1px 5px; border-radius: 4px; }
+
+/* 详情抽屉 */
+.detail-head { display: flex; align-items: center; gap: var(--miv-space-3); }
+.detail-head h2 { flex: 1; margin: 0; font-size: 16px; }
+.uid { align-self: flex-start; }
+.stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: var(--miv-space-2); }
+.stats div { display: flex; flex-direction: column; gap: 2px; background: var(--miv-bg); border-radius: var(--miv-radius-md); padding: 8px 10px; }
+.stats b { font-size: 14px; font-variant-numeric: tabular-nums; }
+.stats span { font-size: 11px; color: var(--miv-text-2); }
+.ledger { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ledger li { display: flex; align-items: baseline; gap: var(--miv-space-2); padding: 8px 0; border-bottom: 1px dashed var(--miv-border); }
+.ledger .kind { font-size: 11px; color: var(--miv-text-2); border: 1px solid var(--miv-border); border-radius: 4px; padding: 1px 6px; white-space: nowrap; }
+.ledger .title { flex: 1; font-size: 13px; min-width: 0; }
+.ledger .title em { font-style: normal; display: block; font-size: 11px; }
+.ledger .amount { font-variant-numeric: tabular-nums; white-space: nowrap; font-size: 13px; }
+.ledger .amount.plus { color: var(--miv-success-strong); }
+.ledger .time { color: var(--miv-text-3); font-size: 12px; white-space: nowrap; }
+
+@media (max-width: 767px) {
+  /* 搜索区可换行收缩，保证 375 下页面不横向溢出（订单页有 4 个过滤控件） */
+  .search { flex: 1 1 100%; min-width: 0; flex-wrap: wrap; }
+  .search input { flex: 1 1 140px; width: auto; min-width: 0; }
+  .grid { grid-template-columns: 1fr; }
+  .stats { grid-template-columns: repeat(3, 1fr); }
+}

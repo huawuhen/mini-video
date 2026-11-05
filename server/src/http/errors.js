@@ -43,6 +43,15 @@ export const ERROR_CODES = {
   SUBMISSION_UNKNOWN: [502, '生成结果确认中，费用已冻结，请稍后查看'],
   PAYMENT_UNAVAILABLE: [502, '支付通道暂不可用，请稍后重试'],
   PHOTO_CONSENT_REQUIRED: [403, '上传照片前需要先同意照片使用说明'],
+  // M3-ADM-02（API.md §8.1~8.2）：管理端用户/订单
+  ACCOUNT_DISABLED: [403, '账号不可用，请联系客服 help@redith.cn'],
+  ADJUST_EXCEEDS_BALANCE: [400, '可用余额不足，不能扣减这么多'],
+  REFUND_EXCEEDS_BALANCE: [400, '用户可用余额不足，无法登记退款'],
+  REFUND_EXCEEDS_ORDER: [400, '退款金额超过订单可退金额'],
+  ORDER_NOT_PAID: [409, '订单未支付，不能登记退款'],
+  USER_HAS_ACTIVE_PROJECTS: [409, '该用户还有进行中的作品或待核对的费用，暂不能注销'],
+  USER_NOT_FOUND: [404, '用户不存在'],
+  ORDER_NOT_FOUND: [404, '订单不存在'],
 };
 
 /** 按错误码创建 AppError；message 省略时用默认中文提示。 */

@@ -95,6 +95,7 @@
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
 | M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
 | M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03；真实发送待 §3 授权的 Mac 联调） | 2026-11-03 |
+| M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},utils/idempotency.ts,pages/admin/*,pages/**,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | 待审查（复审修复 @`f2e6a4d`：3 必改 + 建议 a~c + 用户端 randomUUID；test:server 479/479、check、build 过；双端走查截图 `docs/m3-adm02/`） | 2026-11-05 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -257,6 +258,35 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-05 · BE-Core + Web · M3-ADM-02 复审修复（3 必改 + 建议 a~c + 用户端 randomUUID）
+
+- **背景**：Lead 复审退回（§6 2026-11-04 @`075b7bc`），同分支追加 3 个提交（`884464c` 后端 / `ff9b66d` 前端+mock / `f2e6a4d` 用户端单独提交），已 merge 最新 main（`4468c06`）。
+- **必改①（前端幂等键）**：新增 `utils/idempotency.ts` 的 `newIdempotencyKey()`——`crypto.randomUUID` 可用则用，否则 `getRandomValues` 拼 UUID v4（设置 version/variant 位），再退化时间戳+随机；调整余额与登记退款的幂等键改为**打开表单时生成**（存进表单状态）、失败重试沿用同一键、成功后才清空。
+- **必改②（注销冻结检查）**：「无在途作品」与「冻结金额=0」两项检查**挪进注销事务内**（`SELECT wallets … FOR UPDATE` 之后执行），消除检查与执行之间的窗口；`frozen_fen>0` 同样 409 `USER_HAS_ACTIVE_PROJECTS`，文案「该用户还有进行中的作品或待核对的费用，暂不能注销」（errors.js 默认文案同步，API.md §8.1 已由 Lead 更新）。
+- **必改③（已注销禁调整）**：`adjustBalance` 对 `deactivated` 返回 400「该账号已注销，不能调整余额」；mock 同步；前端本就不给已注销行渲染「调整余额」按钮（走查核对）。
+- **建议 a**：管理端传入幂等键在服务端加 `admin:adjust:` / `admin:refund:` 前缀再进账本（与 `recharge:<订单>`、`deactivate:<用户>` 隔离命名空间），mock 同口径。**建议 b**：注销返回并审计实际清零金额 `balanceClearedFen`（替换恒 null）。**建议 c**：退款读订单（FOR UPDATE）、幂等重放探测、校验、写入全部挪进同一事务。
+- **用户端 randomUUID（单独提交）**：`http.ts`（redeem/recharge）、HomePage、RechargePage、AssetNewPage、AssetDetailPage、StoryReviewView、CastReviewView×2、DeliveryView 共 9 处替换为 `newIdempotencyKey()`。
+- **测试**：新增/更新断言——冻结>0 拦截与新文案、已注销调整 400、审计 `balanceClearedFen=888`、账本幂等键前缀 `admin:adjust:`/`admin:refund:`；`test:server` **479/479**、`check`、`build` 全过（期间测试库容器掉线重开过一次）。
+- **双端走查（mock，局域网 http 源 `http://192.168.10.249:5173`，非安全上下文）**：
+  - **PC 1280**：进页断言 `crypto.randomUUID === 'undefined'`、`isSecureContext=false`——登录与页面正常；调整余额：开表单读键 `b2e89819-f908…`（**兜底键为标准 v4 形态**）→ 提交 -999 超余额被拒 → **键不变** → 改 +10 同键重试成功 ¥456→¥466（`1280-18`）；登记退款：开表单读键 → 提交 ¥600 超订单被拒 → 键不变 → 改 ¥30 成功、已退列 ¥30.00；已注销行只有「详情」按钮；注销阿澈（冻结 3600）toast **与 §8.1 新文案逐字一致**（`1280-19`）。
+  - **375（触屏 + iPhone UA）**：干净会话重走——调整 +¥1 成功 ¥456→¥457、页面无横向溢出（`375-05`）；注销阿澈拦截 toast 新文案一致（`375-06`；截图为 375 宽，toast 存活约 2 秒先于截图消失，文案以执行日志为准）。
+  - **走查方法坑（记录）**：ego 会在交互中重放自己的视口，截图前强制+按 PNG 头宽度重试至正确；Teleport 弹层不能用 DOM parentElement 找组件，需沿 `__vueParentComponent.parent` 组件链读 setupState；本轮曾因多表单叠开导致点击命中错表单，改为**先 goto 重载拿干净状态、点击限定在指定 `.dialog` 内**后复测通过。
+- **局域网预览**：`http://192.168.10.249:5173` 仍在跑（本分支，mock；登录任意用户名 + 6 位以上密码）。
+
+### 2026-11-04 · BE-Core + Web · M3-ADM-02 用户与余额 / 订单与人工退款（API.md §8.1~8.2）
+
+- **背景**：运营后台第二批第 1 个任务（用户 2026-11-04 指定串行顺序）。分支 `agent/be/M3-ADM-02-users-orders`（基于 main `8b0b744`，4 个提交：认领 / 后端 / 前端 / 走查修复）。
+- **后端**：迁移 `014-admin-users-orders.sql`（users.status 增 `deactivated`、`users.last_login_at`、`ledger.admin_id/reason`、`payment_orders.refunded_fen/last_notify_at`、订单全局倒序索引）；新模块 `server/src/admin/{users,orders}.js` + 路由 `server/src/api/admin-users-orders.js`（**限定 /admin 路径挂载**——初版挂在根上把未登录的未知路径全变成 401，破坏 404 语义，http.test 抓到后改 `router.use('/admin', …)`）；`wallet/service.js` 增 `adjust`（正负调整、条件 UPDATE 不可减成负数、账本幂等）；`payments/recharge.js` 抽出 `reconcileOneOrder`（手动对账与定时对账同一口径，含 CLOSED/REVOKED/PAYERROR 直置 expired、ORDERPAID 保持 created）；登录停用/注销 → 403 `ACCOUNT_DISABLED`（提示 help@redith.cn）并回写 `last_login_at`；**补齐 writeGuard 缺口**——admin-auth 的 writeGuard 此前导出未挂载、管理端 CSRF 头只有前端单方面在发，现渠道路由与新路由统一挂载（仅非 GET 生效）。人工退款为**记录式**：校验 `paid`、`refunded_fen + amount ≤ amount_fen`、用户余额足够（`ADJUST_EXCEEDS_BALANCE` 映射为 `REFUND_EXCEEDS_BALANCE`），写 `adjust` 负数流水（标题「充值退款」ref=订单）并累加 `refunded_fen`；**幂等重放先于状态校验**（重放时 refunded_fen 已累加，先查会误判超限——沿用 M1-BE-05 确认点的同款惯例）。注销：无在途作品（409 `USER_HAS_ACTIVE_PROJECTS`）→ 事务内清零余额（`adjust` 幂等键 `deactivate:<userId>`）+ 手机号占位 `deactivated:<id>` + 删会话/微信绑定 + 作品/角色匿名化，**事务外**尽力删媒体对象（内存与七牛实现同 `remove(keys)` 接口），失败记日志、key 留库；账务与支付订单不动。
+- **前端**：`admin.ts` 8 个新方法与类型；`adminMock.ts` 同步实现（错误码与校验同形，含幂等重放/超余额/在途作品拦截）；`AdminShell.vue` 抽出顶栏（导航：用户与余额 / 充值订单 / 渠道管理），ChannelsPage 改用；`AdminUsersPage`（精确搜索+审计提示、详情+流水、调整余额元↔分、停用/启用/注销全部二次确认+原因必填）；`AdminOrdersPage`（状态/用户/订单号/时间过滤、详情含回调与入账流水、手动对账、登记退款——表单顶部黄条「**请先在微信商户平台完成退款，再在此登记。**」）；路由 `/admin/users`、`/admin/orders`。
+- **走查抓到并修复 4 个问题**：① `adminMock` 的 `daysAgo` 是 const 而 `seedDemoData()` 在模块初始化即执行——**TDZ ReferenceError 整个前端白屏**（改 function 声明）；② AdminShell 导航初版没有「充值订单」入口（订单页只能手敲 URL）——补第三个导航项、高亮改全等匹配；③ 375 下两处横向溢出：订单页搜索表单（4 控件 min-width 撑破）与渠道页 `.bar`（不换行，「新增渠道」按钮出界）——搜索区 375 改换行收缩、`.bar` 加 `flex-wrap`；④ 结算行显示 `¥-54.00` → `冻结 −¥54.00`，adjust 流水列表直接显示原因（原来与角标重复「客服调整/客服调整」）。
+- **双端走查**（ego-browser；截图 `docs/m3-adm02/` 共 19 张，PC 系全部为最终 UI 重拍）：
+  - **375（触屏 + iPhone Safari UA，进页先断言 `ontouchstart`/UA/`innerWidth`）**：登录 → 用户列表（`375-01`）→ 详情弹层：统计/协议/微信绑定/流水（`375-04`）→ 订单列表（`375-02`）→ 渠道管理（`375-03`）；四页 `scrollWidth ≤ clientWidth` 全部通过（修复前为 true，已用元素级排查定位两处元凶后复测）。
+  - **1280（显式仿真）**：登录（`01`）→ 用户列表掩码/状态/余额（`02`）→ 完整手机号 `15811110001` 精确搜索 1 行、部分号码拒绝（`03`）→ 详情统计与流水带 reason/adminUsername（`04`）→ 调整余额表单（`05`）→ 确认弹层（`06`）→ +¥10 后列表 ¥456→¥466；**扣 999 超余额被拒**（提示「可用余额不足，不能扣减这么多」，toast 已核对、截图因属旧版导航已删）；停用（`08`）/启用；**注销阿澈（有在途作品）409 拦截**（toast「该用户还有进行中的作品，暂不能注销」，同前述原因截图已删）→ 注销用户0921：警示含余额清零说明（`10`）→ 成功后手机号列显示「已注销」；订单列表（`11`）→ 详情回调 2 次/入账流水（`12`）→ 登记退款表单含商户平台黄条（`13`）→ **对已注销余额 0 用户退款被拒**（`REFUND_EXCEEDS_BALANCE`，`14`）→ po_0002 退 ¥30：确认弹层（`15`）→ 已退列 ¥30.00 且用户页余额 ¥466→¥426 同步（`17`）→ 手动对账 created 单 → 已支付 + 入账（`16`）。渠道路由/编辑等原功能随 AdminShell 重构回归正常。
+  - **MicroMessenger UA**：后台无微信内行为页面——不适用。
+  - **ego-browser 走查坑（备忘）**：ego 会在 SPA 路由切换后重放自己的视口尺寸，CDP `setDeviceMetricsOverride` 需在每页截图前重试至 `clientWidth` 达标；触屏仿真开启时 `page.click`（鼠标事件）可能超时，全部改用 `page.evaluate` DOM click；vant 关闭后的隐藏弹层会让 `.van-dialog` 选择器命中陈旧节点，点击前用 `getBoundingClientRect().width > 0` 过滤。
+- **验证**：`test:server` **479/479**（基线 467 + 新增 admin-users-orders 11 用例 + auth 1 用例；admin-api 测试补 1 处漏带 CSRF 令牌的调用——现在服务端真的校验了）、`check`、`build` 全部通过。**未验证**：真实管理端后端联调（需 Ubuntu 栈 `admin:create` 建号后做，同 M3-ADM-01 遗留）；七牛真实桶的媒体删除只验证了存储接口调用，未跑真实桶。
+- **局域网预览**：`http://192.168.10.249:5173`（分支 `agent/be/M3-ADM-02-users-orders`；mock 模式：登录任意用户名 + 6 位以上密码；演示用户/订单/流水可全流程操作，刷新即重置）。
+
 ### 2026-11-03 · BE-Core · M3-SMS-02 真实短信联调（Mac 本机，授权 §3 同日）
 
 - **背景**：用户授权（§3 2026-11-03：Mac 本机、上限 10 条、只发用户本人手机号、同号小时 ≤5、验证码由用户本人输入）。前置满足：M3-SMS-02 已合并（main `52d4b83` 之后）。分支 `agent/be/M3-SMS-02-live-test`。

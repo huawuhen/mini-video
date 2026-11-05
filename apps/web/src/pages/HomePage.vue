@@ -13,6 +13,7 @@ import { useOnboarding } from '@/composables/useOnboarding';
 import { useAuthStore } from '@/stores/auth';
 import { useCatalogStore } from '@/stores/catalog';
 import { formatFen } from '@/utils/money';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const DRAFT_KEY = 'miv-home-draft';
 const route = useRoute();
@@ -102,7 +103,7 @@ async function generate() {
     const project = await api.createProject({
       storyText: draft.storyText, sourceType: draft.sourceType, title: draft.title || undefined,
       styleId: draft.styleId, qualityTierId: draft.qualityTierId, characterIds: draft.characterIds,
-      idempotencyKey: crypto.randomUUID(),
+      idempotencyKey: newIdempotencyKey(),
     });
     Object.assign(draft, { storyText: '', title: '', sourceType: 'text', characterIds: [] });
     router.push(`/projects/${project.id}`);

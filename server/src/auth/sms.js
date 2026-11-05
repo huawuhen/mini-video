@@ -160,7 +160,11 @@ export async function loginWithSmsCode({ db, config, phone, code }) {
       // 钱包行随注册建好（余额 0），钱包模块无需懒建
       await t.query(`INSERT INTO wallets (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, [user.id]);
     }
-    if (user.status !== 'active') throw appError('UNAUTHENTICATED', '账号已被停用，请联系客服');
+    if (user.status !== 'active') {
+      // M3-ADM-02：停用/注销账号登录 → 403 ACCOUNT_DISABLED（API.md §8.1 注）
+      throw appError('ACCOUNT_DISABLED', '账号不可用，请联系客服 help@redith.cn');
+    }
+    await t.query(`UPDATE users SET last_login_at = now(), updated_at = now() WHERE id = $1`, [user.id]);
 
     const token = randomBytes(32).toString('base64url');
     const csrfToken = randomBytes(32).toString('base64url');
