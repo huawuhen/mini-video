@@ -12,6 +12,7 @@ import { useCharge } from '@/composables/useCharge';
 import { useOnboarding } from '@/composables/useOnboarding';
 import { useCatalogStore } from '@/stores/catalog';
 import { useWalletStore } from '@/stores/wallet';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const props = defineProps<{ project: ProjectDetail }>();
 const emit = defineEmits<{ updated: [ProjectDetail]; refresh: [] }>();
@@ -43,11 +44,11 @@ async function regenerate(castId: string) {
   const m = props.project.cast.find((x) => x.id === castId);
   if (!m?.characterId) return;
   const quote = await confirmCharge({ kind: 'look_regenerate', characterId: m.characterId, styleId: props.project.styleId }, `重新生成「${m.name}」的形象`, '确认并生成');
-  if (quote) act(() => api.regenerateCastLook(props.project.id, castId, quote.quoteId, crypto.randomUUID()), '已开始生成，旧版本会保留');
+  if (quote) act(() => api.regenerateCastLook(props.project.id, castId, quote.quoteId, newIdempotencyKey()), '已开始生成，旧版本会保留');
 }
 async function confirm() {
   const quote = await confirmCharge({ kind: 'project_render', projectId: props.project.id }, '确认并开始制作', '确认并开始制作');
-  if (quote) act(() => api.confirmCast(props.project.id, quote.quoteId, crypto.randomUUID()), '已开始制作');
+  if (quote) act(() => api.confirmCast(props.project.id, quote.quoteId, newIdempotencyKey()), '已开始制作');
 }
 </script>
 

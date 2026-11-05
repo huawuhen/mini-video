@@ -11,6 +11,7 @@ import { useCharge } from '@/composables/useCharge';
 import { useOnboarding } from '@/composables/useOnboarding';
 import { useCatalogStore } from '@/stores/catalog';
 import { formatFen } from '@/utils/money';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const props = defineProps<{ project: ProjectDetail }>();
 const emit = defineEmits<{ updated: [ProjectDetail]; refresh: [] }>();
@@ -64,7 +65,7 @@ async function confirm() {
     if (!quote) return;
     quoteId = quote.quoteId;
   }
-  act(() => api.confirmStory(p.id, quoteId, crypto.randomUUID()));
+  act(() => api.confirmStory(p.id, quoteId, newIdempotencyKey()));
 }
 </script>
 

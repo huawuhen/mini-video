@@ -8,6 +8,7 @@ import { showFailToast, showToast } from 'vant';
 import { api, type RechargeOptions } from '@/api';
 import { isWechatBrowser, pickScene } from '@/utils/payEnv';
 import { formatFen } from '@/utils/money';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const route = useRoute();
 const router = useRouter();
@@ -77,7 +78,7 @@ async function submit() {
   if (!scene) return;
   submitting.value = true;
   try {
-    const order = await api.createRechargeOrder({ amountFen: selectedFen.value, scene, idempotencyKey: crypto.randomUUID() });
+    const order = await api.createRechargeOrder({ amountFen: selectedFen.value, scene, idempotencyKey: newIdempotencyKey() });
     if (scene === 'jsapi' && order.pay?.type === 'jsapi') {
       const { params } = order.pay;
       callJsapiPay({ appId: params.appId, timeStamp: params.timeStamp, nonceStr: params.nonceStr,

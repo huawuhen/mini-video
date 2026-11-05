@@ -1,5 +1,6 @@
 // 真实后端实现：/api/v1 + Cookie 会话 + X-CSRF-Token（docs/API.md §0）。
 import type { ApiError, LoginResult, MivApi, Session } from './types';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const BASE = '/api/v1';
 let csrfToken = '';
@@ -58,12 +59,12 @@ export const httpApi: MivApi = {
 
   wallet: () => request('GET', '/wallet'),
   ledger: (cursor) => request('GET', `/wallet/ledger${qs({ cursor })}`),
-  redeem: (code) => request('POST', '/wallet/redeem', { code, idempotencyKey: crypto.randomUUID() }),
+  redeem: (code) => request('POST', '/wallet/redeem', { code, idempotencyKey: newIdempotencyKey() }),
   estimate: (body) => request('POST', '/quotes/estimate', body),
   quote: (body) => request('POST', '/quotes', body),
   // §3.1 在线充值（M3-PAY-03）
   rechargeOptions: () => request('GET', '/wallet/recharge/options'),
-  createRechargeOrder: (body) => request('POST', '/wallet/recharge', { ...body, idempotencyKey: crypto.randomUUID() }),
+  createRechargeOrder: (body) => request('POST', '/wallet/recharge', { ...body, idempotencyKey: newIdempotencyKey() }),
   getRechargeOrder: (orderId) => request('GET', `/wallet/recharge/${encodeURIComponent(orderId)}`),
   listRechargeOrders: (cursor) => request('GET', `/wallet/recharge${qs({ cursor })}`),
 

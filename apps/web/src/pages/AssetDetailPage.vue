@@ -8,6 +8,7 @@ import VoicePicker from '@/components/VoicePicker.vue';
 import VoicePlayButton from '@/components/VoicePlayButton.vue';
 import { useCharge } from '@/composables/useCharge';
 import { useCatalogStore } from '@/stores/catalog';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const route = useRoute();
 const router = useRouter();
@@ -41,7 +42,7 @@ async function generate(styleId: string) {
   const c = character.value;
   if (!c) return;
   const quote = await confirmCharge({ kind: 'look_regenerate', characterId: c.id, styleId }, `生成「${catalogStore.styleName(styleId)}」形象`, '确认并生成');
-  if (quote) run(() => api.generateLook(c.id, styleId, quote.quoteId, crypto.randomUUID()), '已开始生成，旧版本会保留');
+  if (quote) run(() => api.generateLook(c.id, styleId, quote.quoteId, newIdempotencyKey()), '已开始生成，旧版本会保留');
 }
 const select = (styleId: string, versionId: string) => run(() => api.selectLook(id.value, styleId, versionId), '已切换到这个版本，可随时切回');
 const setVoice = (voiceId: string | null) => run(() => api.updateCharacter(id.value, { defaultVoiceId: voiceId }), '默认声音已更新');

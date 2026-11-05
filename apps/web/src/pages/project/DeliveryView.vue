@@ -12,6 +12,7 @@ import { useCharge } from '@/composables/useCharge';
 import { useOnboarding } from '@/composables/useOnboarding';
 import { useCatalogStore } from '@/stores/catalog';
 import { ratioLabel } from '@/utils/status';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const props = defineProps<{ project: ProjectDetail }>();
 const emit = defineEmits<{ updated: [ProjectDetail]; refresh: [] }>();
@@ -49,7 +50,7 @@ const selectTake = (segmentId: string, takeId: string) => act(() => api.selectTa
 async function regenerate(segmentId: string) {
   const s = props.project.segments.find((x) => x.id === segmentId);
   const quote = await confirmCharge({ kind: 'segment_take', projectId: props.project.id, segmentId }, `重新生成片段 ${(s?.index ?? 0) + 1}`, '确认并生成');
-  if (quote) act(() => api.regenerateSegment(props.project.id, segmentId, quote.quoteId, crypto.randomUUID()), '已开始生成，完成后自动替换并重新拼接');
+  if (quote) act(() => api.regenerateSegment(props.project.id, segmentId, quote.quoteId, newIdempotencyKey()), '已开始生成，完成后自动替换并重新拼接');
 }
 async function savePlot() {
   const e = editing.value;

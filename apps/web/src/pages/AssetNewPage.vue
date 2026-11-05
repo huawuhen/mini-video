@@ -11,6 +11,7 @@ import { useCharge } from '@/composables/useCharge';
 import { useCatalogStore } from '@/stores/catalog';
 import { usePhotoConsent } from '@/composables/usePhotoConsent';
 import PhotoConsentSheet from '@/components/PhotoConsentSheet.vue';
+import { newIdempotencyKey } from '@/utils/idempotency';
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
@@ -92,7 +93,7 @@ async function save(withLook: boolean) {
     });
     if (withLook && form.styleId) {
       const quote = await confirmCharge({ kind: 'look_regenerate', characterId: character.id, styleId: form.styleId }, '生成数字人形象', '确认并生成');
-      if (quote) await api.generateLook(character.id, form.styleId, quote.quoteId, crypto.randomUUID());
+      if (quote) await api.generateLook(character.id, form.styleId, quote.quoteId, newIdempotencyKey());
     }
     router.replace(`/assets/${character.id}`);
   } catch (e) { showToast((e as Error).message); } finally { saving.value = false; }
