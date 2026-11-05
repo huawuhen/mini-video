@@ -95,7 +95,7 @@
 | M3-SMS-01 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-01-aliyun-sms` | `server/src/auth/{sms-aliyun.js,auth/index.js,sms.js,config.js}` `server/.env.example` `server/test/sms-aliyun.test.js`（新增） `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-02；真实发送待用户阿里云账号与授权） | 2026-11-02 |
 | M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
 | M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03；真实发送待 §3 授权的 Mac 联调） | 2026-11-03 |
-| M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},pages/admin/*,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | 待审查（test:server 479/479、check、build 过；双端走查截图 `docs/m3-adm02/`） | 2026-11-04 |
+| M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},utils/idempotency.ts,pages/admin/*,pages/**,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | 待审查（复审修复 @`f2e6a4d`：3 必改 + 建议 a~c + 用户端 randomUUID；test:server 479/479、check、build 过；双端走查截图 `docs/m3-adm02/`） | 2026-11-05 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -258,6 +258,21 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-05 · BE-Core + Web · M3-ADM-02 复审修复（3 必改 + 建议 a~c + 用户端 randomUUID）
+
+- **背景**：Lead 复审退回（§6 2026-11-04 @`075b7bc`），同分支追加 3 个提交（`884464c` 后端 / `ff9b66d` 前端+mock / `f2e6a4d` 用户端单独提交），已 merge 最新 main（`4468c06`）。
+- **必改①（前端幂等键）**：新增 `utils/idempotency.ts` 的 `newIdempotencyKey()`——`crypto.randomUUID` 可用则用，否则 `getRandomValues` 拼 UUID v4（设置 version/variant 位），再退化时间戳+随机；调整余额与登记退款的幂等键改为**打开表单时生成**（存进表单状态）、失败重试沿用同一键、成功后才清空。
+- **必改②（注销冻结检查）**：「无在途作品」与「冻结金额=0」两项检查**挪进注销事务内**（`SELECT wallets … FOR UPDATE` 之后执行），消除检查与执行之间的窗口；`frozen_fen>0` 同样 409 `USER_HAS_ACTIVE_PROJECTS`，文案「该用户还有进行中的作品或待核对的费用，暂不能注销」（errors.js 默认文案同步，API.md §8.1 已由 Lead 更新）。
+- **必改③（已注销禁调整）**：`adjustBalance` 对 `deactivated` 返回 400「该账号已注销，不能调整余额」；mock 同步；前端本就不给已注销行渲染「调整余额」按钮（走查核对）。
+- **建议 a**：管理端传入幂等键在服务端加 `admin:adjust:` / `admin:refund:` 前缀再进账本（与 `recharge:<订单>`、`deactivate:<用户>` 隔离命名空间），mock 同口径。**建议 b**：注销返回并审计实际清零金额 `balanceClearedFen`（替换恒 null）。**建议 c**：退款读订单（FOR UPDATE）、幂等重放探测、校验、写入全部挪进同一事务。
+- **用户端 randomUUID（单独提交）**：`http.ts`（redeem/recharge）、HomePage、RechargePage、AssetNewPage、AssetDetailPage、StoryReviewView、CastReviewView×2、DeliveryView 共 9 处替换为 `newIdempotencyKey()`。
+- **测试**：新增/更新断言——冻结>0 拦截与新文案、已注销调整 400、审计 `balanceClearedFen=888`、账本幂等键前缀 `admin:adjust:`/`admin:refund:`；`test:server` **479/479**、`check`、`build` 全过（期间测试库容器掉线重开过一次）。
+- **双端走查（mock，局域网 http 源 `http://192.168.10.249:5173`，非安全上下文）**：
+  - **PC 1280**：进页断言 `crypto.randomUUID === 'undefined'`、`isSecureContext=false`——登录与页面正常；调整余额：开表单读键 `b2e89819-f908…`（**兜底键为标准 v4 形态**）→ 提交 -999 超余额被拒 → **键不变** → 改 +10 同键重试成功 ¥456→¥466（`1280-18`）；登记退款：开表单读键 → 提交 ¥600 超订单被拒 → 键不变 → 改 ¥30 成功、已退列 ¥30.00；已注销行只有「详情」按钮；注销阿澈（冻结 3600）toast **与 §8.1 新文案逐字一致**（`1280-19`）。
+  - **375（触屏 + iPhone UA）**：干净会话重走——调整 +¥1 成功 ¥456→¥457、页面无横向溢出（`375-05`）；注销阿澈拦截 toast 新文案一致（`375-06`；截图为 375 宽，toast 存活约 2 秒先于截图消失，文案以执行日志为准）。
+  - **走查方法坑（记录）**：ego 会在交互中重放自己的视口，截图前强制+按 PNG 头宽度重试至正确；Teleport 弹层不能用 DOM parentElement 找组件，需沿 `__vueParentComponent.parent` 组件链读 setupState；本轮曾因多表单叠开导致点击命中错表单，改为**先 goto 重载拿干净状态、点击限定在指定 `.dialog` 内**后复测通过。
+- **局域网预览**：`http://192.168.10.249:5173` 仍在跑（本分支，mock；登录任意用户名 + 6 位以上密码）。
+
 ### 2026-11-04 · BE-Core + Web · M3-ADM-02 用户与余额 / 订单与人工退款（API.md §8.1~8.2）
 
 - **背景**：运营后台第二批第 1 个任务（用户 2026-11-04 指定串行顺序）。分支 `agent/be/M3-ADM-02-users-orders`（基于 main `8b0b744`，4 个提交：认领 / 后端 / 前端 / 走查修复）。
