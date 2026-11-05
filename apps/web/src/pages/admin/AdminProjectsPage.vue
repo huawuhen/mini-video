@@ -27,6 +27,9 @@ const yuan = (fen: number) => `¥${(fen / 100).toFixed(2)}`;
 const fmtTime = (iso: string | null | undefined) => (iso ? iso.replace('T', ' ').slice(0, 16) : '—');
 const dangerToken = () => getComputedStyle(document.documentElement).getPropertyValue('--miv-danger').trim() || undefined;
 const statusLabel = (status: string) => projectStatusMeta[status as ProjectStatus]?.label ?? status;
+// 管理页术语：unknown（用户侧叫「确认中」）在这里统一说「待核对」
+const takeStatusLabel = (status: string) => (status === 'unknown' ? '待核对' : genStatusLabel[status as never] ?? status);
+const genTaskLabel = (status: string | null) => (status === null ? '—' : status === 'unknown' ? '待核对' : genStatusLabel[status as never] ?? status);
 
 const CANCELLABLE = ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'];
 
@@ -244,7 +247,7 @@ onMounted(() => {
             </div>
             <div v-for="take in seg.takes" :key="take.id" class="take" :class="{ unknown: take.status === 'unknown' && !take.resolvedOutcome }">
               <div class="take-line">
-                <span class="tag" :class="take.status">{{ genStatusLabel[take.status] ?? take.status }}</span>
+                <span class="tag" :class="take.status">{{ takeStatusLabel(take.status) }}</span>
                 <code>{{ take.id }}</code>
                 <span v-if="take.resolvedOutcome" class="resolved">
                   {{ take.resolvedOutcome === 'charged' ? '已核对：上游已计费' : '已核对：上游未扣费，已退回' }}
@@ -252,7 +255,7 @@ onMounted(() => {
                 <span v-else-if="take.status === 'unknown'" class="frozen">冻结 {{ yuan(take.frozenFen) }}</span>
               </div>
               <div class="take-meta">
-                <span>gen_task：{{ genStatusLabel[take.genTaskStatus as never] ?? take.genTaskStatus ?? '—' }}</span>
+                <span>gen_task：{{ genTaskLabel(take.genTaskStatus) }}</span>
                 <span>渠道：{{ take.channel ?? '—' }}</span>
                 <span>上游任务：<code>{{ take.upstreamTaskId ?? '—' }}</code></span>
                 <span>{{ fmtTime(take.createdAt) }}</span>

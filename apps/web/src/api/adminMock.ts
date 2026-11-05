@@ -110,7 +110,7 @@ function daysAgo(days: number, hours = 0): string {
 function seedDemoData(): void {
   state.users = [
     { id: 'usr_demo0000000001', phoneMasked: '158****0001', _phone: '15811110001', nickname: '小满', status: 'active',
-      balanceFen: 45600, frozenFen: 0, createdAt: daysAgo(26), lastLoginAt: daysAgo(0, 2),
+      balanceFen: 45600, frozenFen: 5000, createdAt: daysAgo(26), lastLoginAt: daysAgo(0, 2),
       _stats: { projects: 6, delivered: 4, characters: 3, activeProjects: 1 },
       _consents: { terms: 'terms-v1', photo: 'photo-v1' }, _wechatBound: true },
     { id: 'usr_demo0000000002', phoneMasked: '137****2210', _phone: '13711112210', nickname: '阿澈', status: 'active',
