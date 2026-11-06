@@ -193,6 +193,18 @@ export async function resolveTake(db, { takeId, outcome, note, idempotencyKey, a
         WHERE id = $1 AND status = 'unknown' AND resolved_outcome IS NULL`,
       [takeId, outcome, note, resolvedKey, adminId]);
     if (rowCount === 0) throw appError('TAKE_ALREADY_RESOLVED'); // 并发兜底
+    // 判定清零最后一个待核对片段、且作品停在 failed(TAKE_UNKNOWN) 时，恢复为普通失败
+    //（错误码换成 SEGMENT_FAILED）——用户端据 error.code 决定展示「等客服」还是「可重试」视图
+    const { rows: remaining } = await t.query(
+      `SELECT 1 FROM segment_takes st JOIN segments s ON s.id = st.segment_id
+        WHERE s.project_id = $1 AND st.status = 'unknown' LIMIT 1`, [take.project_id]);
+    if (!remaining.length && take.project_status === 'failed') {
+      await t.query(
+        `UPDATE projects SET error = $2, updated_at = now()
+          WHERE id = $1 AND status = 'failed' AND error->>'code' = 'TAKE_UNKNOWN'`,
+        [take.project_id, JSON.stringify({ code: 'SEGMENT_FAILED',
+          message: '片段生成失败，可以重试或取消', step: 'rendering' })]);
+    }
     // 用户可见时间线（统一文案，不暴露上游是否计费）
     await appendEvent(t, { projectId: take.project_id, status: take.project_status,
       progress: { ...(take.project_progress ?? { percent: 0 }),

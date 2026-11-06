@@ -108,7 +108,7 @@ export interface AdminApi {
   cancelProject(id: string, reason: string): Promise<AdminProjectDetail>;
 }
 
-const BASE = '/api';
+const BASE = '/api/v1'; // 管理端接口同挂在 /api/v1（真实后端联调发现：原 /api 缺 v1，全 404）
 
 async function request<T>(method: string, path: string, body?: unknown, csrf?: string): Promise<T> {
   const headers: Record<string, string> = {};

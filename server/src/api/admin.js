@@ -43,25 +43,7 @@ export function adminRoutes({ db, config, logger, service, registry, secretKey }
     adminId: req.admin?.id ?? null, actor: 'admin', action, ...detail,
   });
 
-  // ── 登录 / 登出 ──
-  router.post('/admin/auth/login', asyncHandler(async (req, res) => {
-    const fields = new Fields(req.body);
-    const body = { username: fields.string('username', { required: true }),
-      password: fields.string('password', { required: true }) };
-    fields.done();
-    const session = await auth.login({ ...body, ip: req.ip });
-    if (!session) throw adminFail(401, 'ADMIN_AUTH_REQUIRED', '用户名或密码不正确');
-    auth.setCookie(res, session.token);
-    res.json({ admin: session.admin, csrfToken: session.csrfToken });
-  }));
-
-  router.post('/admin/auth/logout', (req, res) => {
-    void auth.logout(auth.readCookie(req));
-    auth.clearCookie(res);
-    res.json({ ok: true });
-  });
-
-  // ── 登录后的全部端点 ──
+  // ── 登录后的全部端点（登录/登出在 api/admin-auth.js，无条件挂载——mock 开发模式也要能登录） ──
   router.use(auth.requireAdmin);
   // 写操作（非 GET）统一校验同源 + CSRF（M3-ADM-02：writeGuard 此前导出未挂载，CSRF 头只有前端单方面在发）
   router.use(auth.writeGuard);

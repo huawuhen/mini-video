@@ -13,6 +13,7 @@ import { rechargeRoutes } from './api/recharge.js';
 import { wechatNotifyRoutes } from './api/wechat-notify.js';
 import { projectRoutes } from './api/projects.js';
 import { adminRoutes } from './api/admin.js';
+import { adminAuthRoutes } from './api/admin-auth.js';
 import { adminUsersOrdersRoutes } from './api/admin-users-orders.js';
 import { adminProjectsRoutes } from './api/admin-projects.js';
 import { createPaymentsContext } from './payments/context.js';
@@ -82,6 +83,8 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   const channelRouter = channelLayer?.router ?? null;
   api.use(projectRoutes({ config, db, logger, storage: objectStorage, urlFor, channelRouter }));
 
+  // 管理端登录/登出（无条件挂载——mock 开发模式同样需要登录；M3-ADM-03 走查发现）
+  api.use(adminAuthRoutes({ db, config }));
   // 管理端（M2-BE-03，API.md §8）：独立管理员会话；用户端不调用
   if (channelLayer) {
     api.use(adminRoutes({ db, config, logger, service: channelLayer.service,

@@ -95,6 +95,10 @@ export function createSessionTools({ config, db }) {
 
   const csrfGuard = (req, res, next) => {
     if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    // 管理端路径豁免用户 CSRF：管理端有独立会话与自己的 writeGuard（同源 + 管理员 CSRF 头）。
+    // 不豁免的话，浏览器同时持有用户会话时（miv_sid）管理端登录/写操作会被用户 CSRF 校验拦下
+    //（管理端不带用户 CSRF 头，M3-ADM-03 真实后端联调发现）。
+    if (req.path.startsWith('/admin/')) return next();
     const origin = req.get('origin');
     if (origin) {
       let trusted = false;

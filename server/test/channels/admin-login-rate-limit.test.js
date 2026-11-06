@@ -10,6 +10,7 @@ import { loadConfig } from '../../src/config.js';
 import { createAdminAuth } from '../../src/channels/admin-auth.js';
 import { hashAdminPassword } from '../../src/channels/crypto.js';
 import { adminRoutes } from '../../src/api/admin.js';
+import { adminAuthRoutes } from '../../src/api/admin-auth.js';
 import { loadDriverRegistry } from '../../src/engine/providers/index.js';
 import { createChannelService } from '../../src/channels/service.js';
 import { newId } from '../../src/db/ids.js';
@@ -132,6 +133,7 @@ describe('管理员登录 IP 限流（M2-BE-03 审查必改）', () => {
       const service = createChannelService({ db, secretKey: 'z'.repeat(40), registry, logger: silent });
       const app = express();
       app.use(express.json());
+      app.use('/api/v1', adminAuthRoutes({ db, config }));
       app.use('/api/v1', adminRoutes({ db, config, logger: silent, service, registry, secretKey: 'z'.repeat(40) }));
       app.use(errorHandler(silent));
       await new Promise((resolve) => { server = app.listen(0, '127.0.0.1', resolve); });

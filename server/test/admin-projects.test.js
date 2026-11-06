@@ -293,6 +293,11 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
     const event = done.json.events[0];
     assert.equal(event.progress.message, '已核对：该片段生成失败，费用未扣除');
     assert.equal(done.json.unknownTakes, 0);
+    // 判定清零最后一个 unknown：作品错误从 TAKE_UNKNOWN 恢复为普通失败（用户端出现重试入口）
+    const projRow = (await testDb.db.query(`SELECT error, status FROM projects WHERE id = $1`, [prjX])).rows[0];
+    assert.equal(projRow.status, 'failed');
+    assert.equal(projRow.error.code, 'SEGMENT_FAILED');
+    assert.equal(projRow.error.step, 'rendering');
     const auditRows = await testDb.db.query(`SELECT action, detail FROM admin_audit_logs WHERE action = 'take.resolve'`);
     assert.equal(auditRows.rowCount, 1);
     assert.equal(auditRows.rows[0].detail.outcome, 'not_charged');

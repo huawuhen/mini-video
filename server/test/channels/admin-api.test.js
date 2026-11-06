@@ -9,6 +9,7 @@ import { loadDriverRegistry } from '../../src/engine/providers/index.js';
 import { createChannelService } from '../../src/channels/service.js';
 import { hashAdminPassword } from '../../src/channels/crypto.js';
 import { adminRoutes } from '../../src/api/admin.js';
+import { adminAuthRoutes } from '../../src/api/admin-auth.js';
 import { errorHandler } from '../../src/http/middleware.js';
 import { newId } from '../../src/db/ids.js';
 
@@ -56,6 +57,7 @@ describe('管理端 API（M2-BE-03）', () => {
       admin: { loginMaxFailures: 5, loginFailWindowSeconds: 600, loginBanSeconds: 7200 } };
     const app = express();
     app.use(express.json({ limit: '100kb' }));
+    app.use('/api/v1', adminAuthRoutes({ db, config }));
     app.use('/api/v1', adminRoutes({ db, config, logger: silentLogger, service, registry, secretKey: SECRET }));
     app.use(errorHandler(silentLogger));
     await new Promise((resolve) => { server = app.listen(0, '127.0.0.1', resolve); });
