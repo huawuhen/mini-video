@@ -51,7 +51,8 @@ export function adminProjectsRoutes({ db, config, logger }) {
     res.json(await adminProjects.getProjectDetail(db, { projectId: String(req.params.id) }));
   }));
 
-  // 待核对判定（真实钱账变动，写审计）：outcome + 说明必填，幂等键打开弹窗时生成
+  // 待核对判定（真实钱账变动，写审计）：outcome + 说明必填，幂等键打开弹窗时生成。
+  // 同键同结论重放返回首次结果且不再重复写审计（复审建议 c）。
   router.post('/admin/takes/:id/resolve', asyncHandler(async (req, res) => {
     const fields = new Fields(req.body);
     const body = {
@@ -60,9 +61,12 @@ export function adminProjectsRoutes({ db, config, logger }) {
       idempotencyKey: fields.string('idempotencyKey', { required: true, max: 100 }),
     };
     fields.done();
-    const detail = await adminProjects.resolveTake(db, { takeId: String(req.params.id), ...body, adminId: req.admin.id });
-    await audit(req, 'take.resolve', 'segment_take', req.params.id,
-      { outcome: body.outcome, note: body.note, idempotencyKey: body.idempotencyKey });
+    const { detail, replayed, refundedFen } = await adminProjects.resolveTake(db,
+      { takeId: String(req.params.id), ...body, adminId: req.admin.id });
+    if (!replayed) {
+      await audit(req, 'take.resolve', 'segment_take', req.params.id,
+        { outcome: body.outcome, note: body.note, idempotencyKey: body.idempotencyKey, refundedFen });
+    }
     res.json(detail);
   }));
 

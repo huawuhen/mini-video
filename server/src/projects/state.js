@@ -32,8 +32,11 @@ export const PROGRESS = {
  * 条件状态迁移。from 为允许的前置状态数组；error 结构 { code, message, step }；
  * 返回更新前的行不存在或状态不符时抛 409。
  */
-export async function transition(t, { projectId, userId, from, to, pausedFrom = null, error = null,
+export async function transition(t, { projectId, userId, asAdmin = false, from, to, pausedFrom = null, error = null,
   progress, changed = [] }) {
+  if (!asAdmin && typeof userId !== 'string') {
+    throw appError('INTERNAL', 'transition 缺少 userId（管理端调用请显式传 asAdmin: true）');
+  }
   const nextProgress = progress ?? PROGRESS[to] ?? { percent: 0, message: '' };
   // rendering 的进度是 (done, total) => object 的函数：这里按 0/total 求值，事件里存对象
   const value = typeof nextProgress === 'function' ? nextProgress(0, 0) : nextProgress;
@@ -41,7 +44,7 @@ export async function transition(t, { projectId, userId, from, to, pausedFrom = 
     `UPDATE projects SET status = $3, paused_from = $4, error = $5, progress = $6, updated_at = now()
       WHERE id = $1 AND deleted_at IS NULL AND status = ANY($7::text[]) AND ($2::text IS NULL OR user_id = $2)
       RETURNING id`,
-    [projectId, userId ?? null, to, pausedFrom, error ? JSON.stringify(error) : null,
+    [projectId, asAdmin ? null : userId, to, pausedFrom, error ? JSON.stringify(error) : null,
       JSON.stringify(value), from],
   );
   if (!rows.length) throw appError('PROJECT_STATE_INVALID');
@@ -96,11 +99,15 @@ export async function appendEvent(t, { projectId, status, progress, changed = []
     [JSON.stringify({ projectId, status: status ?? undefined })]);
 }
 
-/** 加载作品；userId 缺省时（管理端）不做用户归属过滤，仍拒绝已删除。 */
-export async function requireProject(q, { userId, projectId }) {
+/** 加载作品。userId 必填；管理端等系统调用显式传 asAdmin: true（不做归属过滤，仍拒已删除）——
+ * 不允许「漏传 userId 就静默变成管理员视角」（M3-ADM-03 复审建议 a）。 */
+export async function requireProject(q, { userId, projectId, asAdmin = false }) {
+  if (!asAdmin && typeof userId !== 'string') {
+    throw appError('INTERNAL', 'requireProject 缺少 userId（管理端调用请显式传 asAdmin: true）');
+  }
   const { rows } = await q.query(
-    `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL AND ($2::text IS NULL OR user_id = $2)`,
-    [projectId, userId ?? null],
+    `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL ${asAdmin ? '' : 'AND user_id = $2'}`,
+    asAdmin ? [projectId] : [projectId, userId],
   );
   if (!rows.length) throw appError('NOT_FOUND');
   return rows[0];
