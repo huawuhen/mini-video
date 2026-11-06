@@ -114,12 +114,14 @@ async function submitResolve() {
   const note = resolveForm.note.trim();
   if (!note) { showFailToast('请填写判定说明（如「渠道后台确认未扣费」），将记入审计'); return; }
   const outcomeText = resolveForm.outcome === 'not_charged'
-    ? `未扣费：退还冻结 ${yuan(target.take.frozenFen)} 给用户，片段标失败（用户可重新生成）`
-    : `已扣费：按原价结算冻结 ${yuan(target.take.frozenFen)}，片段标失败并在时间线注明`;
+    ? '结论：上游未扣费 / 未生成'
+    : '结论：上游已扣费（费用由平台承担，不向用户结算）';
+  const moneyText = `片段标失败、用户可重新生成；冻结 ${yuan(target.take.frozenFen)} ${
+    resolveForm.outcome === 'not_charged' ? '' : '同样'}保留供重试（交付后重拍或已取消/过期的作品则当场退回）`;
   try {
     await showConfirmDialog({
       title: '确认判定',
-      message: `作品「${detail.value?.title}」片段 ${target.seg.index + 1}（上游任务 ${target.take.upstreamTaskId ?? '—'}）\n${outcomeText}\n\n判定依据：${note}\n同一片段只能判定一次，提交后不可更改。`,
+      message: `作品「${detail.value?.title}」片段 ${target.seg.index + 1}（上游任务 ${target.take.upstreamTaskId ?? '—'}）\n${outcomeText}\n${moneyText}\n\n判定依据：${note}\n同一片段只能判定一次，提交后不可更改。`,
       confirmButtonText: '确认判定', confirmButtonColor: dangerToken(),
     });
   } catch { return; }
@@ -129,7 +131,7 @@ async function submitResolve() {
     resolveForm.open = false;
     resolveForm.idempotencyKey = ''; // 成功才清空
     detail.value = result;
-    showSuccessToast(resolveForm.outcome === 'not_charged' ? '已退回冻结费用' : '已按原价结算');
+    showSuccessToast('已判定：该片段生成失败，费用未扣除');
     await loadFirst();
   });
 }
@@ -250,7 +252,7 @@ onMounted(() => {
                 <span class="tag" :class="take.status">{{ takeStatusLabel(take.status) }}</span>
                 <code>{{ take.id }}</code>
                 <span v-if="take.resolvedOutcome" class="resolved">
-                  {{ take.resolvedOutcome === 'charged' ? '已核对：上游已计费' : '已核对：上游未扣费，已退回' }}
+                  判定：{{ take.resolvedOutcome === 'charged' ? '上游已计费（平台承担）' : '上游未扣费' }}
                 </span>
                 <span v-else-if="take.status === 'unknown'" class="frozen">冻结 {{ yuan(take.frozenFen) }}</span>
               </div>
@@ -283,7 +285,7 @@ onMounted(() => {
       <div v-if="resolveForm.open" class="mask" @click.self="resolveForm.open = false">
         <form class="dialog miv-card" @submit.prevent="submitResolve">
           <h2>待核对判定</h2>
-          <p class="notice">请先在渠道后台 / 上游控制台核实该片段的实际计费与生成结果，再在此判定。</p>
+          <p class="notice">请先在渠道后台 / 上游控制台核实该片段的实际计费与生成结果，再在此判定。两种结论都不向用户结算：冻结保留供重试，交付后重拍或已取消/过期的作品当场退回；「上游已扣费」由平台承担。</p>
           <p class="miv-hint">
             片段时长 {{ resolveTarget?.seg.durationSeconds }} 秒 · 冻结 {{ yuan(resolveForm.take?.frozenFen ?? 0) }}
             · 上游任务 <code>{{ resolveForm.take?.upstreamTaskId ?? '—' }}</code>。同一片段只能判定一次。
@@ -291,11 +293,11 @@ onMounted(() => {
           <div class="outcomes">
             <label :class="{ on: resolveForm.outcome === 'not_charged' }">
               <input v-model="resolveForm.outcome" type="radio" value="not_charged" />
-              <span><b>上游未扣费 / 未生成</b>退还冻结 {{ yuan(resolveForm.take?.frozenFen ?? 0) }}，片段标失败，用户可重新生成</span>
+              <span><b>上游未扣费 / 未生成</b>片段标失败、用户可重新生成；冻结保留供重试（无重试入口则当场退回）</span>
             </label>
             <label :class="{ on: resolveForm.outcome === 'charged' }">
               <input v-model="resolveForm.outcome" type="radio" value="charged" />
-              <span><b>上游已扣费</b>按原价结算冻结 {{ yuan(resolveForm.take?.frozenFen ?? 0) }}，片段标失败并在时间线注明</span>
+              <span><b>上游已扣费（平台承担）</b>不向用户结算；其余处理与「未扣费」相同，结论记入审计与上游成本</span>
             </label>
           </div>
           <label class="full">

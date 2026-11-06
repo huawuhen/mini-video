@@ -88,6 +88,7 @@ interface MockTake {
   id: string; segmentId: string; status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown';
   genTaskStatus: string | null; channel: string | null; upstreamTaskId: string | null;
   frozenFen: number; error?: { code?: string; message?: string } | null;
+  redelivery?: boolean; // 交付后重拍：无重试入口，判定后当场退回
   resolvedOutcome?: 'not_charged' | 'charged'; resolvedNote?: string; resolvedKey?: string;
   resolvedAt?: string; createdAt: string;
 }
@@ -538,30 +539,29 @@ export const adminMock: AdminApi = {
     const resolvedKey = `admin:resolve:${body.idempotencyKey}`;
     if (take.resolvedOutcome) {
       if (take.resolvedKey !== resolvedKey) throw fail(409, 'TAKE_ALREADY_RESOLVED', '该片段已核对过，不能重复判定');
-      return clone(projectDetail(project)); // 同键重放：返回首次结果
+      if (take.resolvedOutcome !== body.outcome) throw fail(409, 'IDEMPOTENCY_CONFLICT', '请求重复，请刷新后重试');
+      return clone(projectDetail(project)); // 同键同结论重放：返回首次结果
     }
     if (take.status !== 'unknown') throw fail(409, 'TAKE_NOT_UNKNOWN', '该片段不是待核对状态，无法判定');
-    const user = state.users.find((u) => u.id === project.userId);
-    if (body.outcome === 'not_charged') {
+    // 2026-11-05 新规则：两种结论对用户资金处理相同（不向用户结算，已扣费由平台承担）。
+    // 可重试作品保持冻结（重试复用）；redelivery / 已取消过期当场退回。
+    const refundNow = take.redelivery === true || project.status === 'canceled' || project.status === 'expired';
+    if (refundNow) {
+      const user = state.users.find((u) => u.id === project.userId);
       if (user && take.frozenFen > 0) { user.frozenFen -= take.frozenFen; user.balanceFen += take.frozenFen; }
       newLedger(project.userId, 'refund', take.frozenFen, '待核对退回',
         { refType: 'project', refId: project.id, reason: body.note, adminUsername: state.adminName ?? 'admin',
           frozenDeltaFen: -take.frozenFen });
-    } else {
-      if (user) user.frozenFen -= take.frozenFen;
-      newLedger(project.userId, 'settle', 0, '待核对结算', { refType: 'project', refId: project.id,
-        reason: body.note, adminUsername: state.adminName ?? 'admin', frozenDeltaFen: -take.frozenFen });
+      project.money.frozenFen -= take.frozenFen;
+      project.money.refundedFen += take.frozenFen;
     }
-    project.money.frozenFen -= take.frozenFen;
-    if (body.outcome === 'not_charged') project.money.refundedFen += take.frozenFen;
-    else project.money.settledFen += take.frozenFen;
     take.status = 'failed';
     take.resolvedOutcome = body.outcome as ResolveOutcome;
     take.resolvedNote = body.note;
     take.resolvedKey = resolvedKey;
     take.resolvedAt = now();
     project.events.unshift({ id: (project.events[0]?.id ?? 0) + 1, status: project.status,
-      progress: { ...(project.progress ?? {}), message: body.outcome === 'charged' ? '已核对：上游已计费' : '已核对：上游未扣费，费用已退回' },
+      progress: { ...(project.progress ?? {}), message: '已核对：该片段生成失败，费用未扣除' },
       createdAt: now() });
     project.updatedAt = now();
     return clone(projectDetail(project));
