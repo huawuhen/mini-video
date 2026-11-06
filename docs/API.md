@@ -463,7 +463,11 @@ type AdminOrder = { id: string; userId: string; phoneMasked: string; outTradeNo:
 | POST | `/admin/takes/:id/resolve` | `{ outcome: 'not_charged' \| 'charged', note, idempotencyKey }` | `AdminProjectDetail` |
 | POST | `/admin/projects/:id/cancel` | `{ reason }` | `AdminProjectDetail`（与用户侧取消同逻辑：退还未消耗冻结；unknown 片段仍保持冻结待 resolve） |
 
-- **待核对处理**（AGENTS §5：unknown 不自动重提、不自动退款）：运营在渠道后台或上游控制台查明后人工判定——`not_charged`（上游确认未扣费 / 未生成）→ 退还该片段冻结、片段标 `failed`，用户可重新生成；`charged`（上游已扣费）→ 按原价结算该片段冻结，若上游有成片则运营可在后续版本补录，本期片段标 `failed` 并在作品时间线写「已核对：上游已计费」。两种结论都写 `admin_audit_logs` 与作品事件，按 `idempotencyKey` 幂等，**同一 take 只能判定一次**（409 `TAKE_ALREADY_RESOLVED`）。
+- **待核对处理**（AGENTS §5：unknown 不自动重提、不自动退款；**用户 2026-11-05 决定：上游已扣费但没出片的费用由平台承担**）：运营在渠道后台或上游控制台查明后人工判定一次，两种结论**对用户的资金处理相同**，区别只在内部记录（`charged` 记为平台承担的上游成本）：
+  - take 置 `failed`，写 `resolved_*`、`admin_audit_logs` 与作品事件；用户可见时间线统一写「已核对：该片段生成失败，费用未扣除」，不向用户暴露「上游已计费」。
+  - **金额一律取该 take 下单时写入的 `gen_tasks.request.amountFen`**，不按当前价重算（与逐段结算同口径；作品取消时保留冻结的 unknown 金额、详情页 `frozenFen` 同样改用此口径）。
+  - 用户冻结的去向：①作品仍可重试（未取消、未过期，且不是交付后重拍）→ **保持冻结**，与普通片段失败一致，用户点「重试」时复用这笔冻结，取消作品时随其他冻结一起退回；②交付后重拍（`redelivery`）的 take，或作品已取消 / 已过期 → **当场退回**这笔冻结（标题「待核对退回」）。**不向用户结算。**
+  - 按 `idempotencyKey` 幂等：同键同结论重放返回首次结果，同键不同结论 409 `IDEMPOTENCY_CONFLICT`；**同一 take 只能判定一次**（换键重判 409 `TAKE_ALREADY_RESOLVED`）；非 unknown 的 take 409 `TAKE_NOT_UNKNOWN`。
 
 ### 8.4 运营后台·价格、档位、风格、音色、运营参数（M3-ADM-04）
 
