@@ -387,7 +387,7 @@ type ProjectEvent = { projectId: string; status: ProjectStatus; progress: { perc
 
 ## 8. 管理端接口（仅运营后台与运维脚本使用，**前端用户端不调用**）
 
-- 路径前缀 `/api/admin`；**独立管理员账号**（`admin_users`，用户名 + 强密码，首个管理员由 `npm run admin:create` 脚本创建，不开放注册）与独立会话 Cookie；同样校验同源 + CSRF；全部写操作写 `admin_audit_logs`。
+- 路径前缀 `/api/v1/admin`（本节下表省略 `/api/v1`）；**独立管理员账号**（`admin_users`，用户名 + 强密码，首个管理员由 `npm run admin:create` 脚本创建，不开放注册）与独立会话 Cookie；同样校验同源 + CSRF；全部写操作写 `admin_audit_logs`。
 - 渠道凭证只写不读：创建 / 更新时传明文，之后接口只返回 `credentialMask`（后 4 位）。渠道 = 驱动（代码里已有的协议）+ 地址 + 密钥 + 模型映射；见 ARCHITECTURE §5.5。
 
 | 方法 | 路径 | 请求 | 响应 |
