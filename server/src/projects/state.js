@@ -100,13 +100,16 @@ export async function appendEvent(t, { projectId, status, progress, changed = []
 }
 
 /** 加载作品。userId 必填；管理端等系统调用显式传 asAdmin: true（不做归属过滤，仍拒已删除）——
- * 不允许「漏传 userId 就静默变成管理员视角」（M3-ADM-03 复审建议 a）。 */
-export async function requireProject(q, { userId, projectId, asAdmin = false }) {
+ * 不允许「漏传 userId 就静默变成管理员视角」（M3-ADM-03 复审建议 a）。
+ * forUpdate: true 时加 FOR UPDATE 行锁（M3-ADM-03 复审必改①：取消与判定串行化，
+ * 锁内再判断状态/汇总 unknown，避免并发互判留下无出口的冻结）。 */
+export async function requireProject(q, { userId, projectId, asAdmin = false, forUpdate = false }) {
   if (!asAdmin && typeof userId !== 'string') {
     throw appError('INTERNAL', 'requireProject 缺少 userId（管理端调用请显式传 asAdmin: true）');
   }
   const { rows } = await q.query(
-    `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL ${asAdmin ? '' : 'AND user_id = $2'}`,
+    `SELECT * FROM projects WHERE id = $1 AND deleted_at IS NULL ${asAdmin ? '' : 'AND user_id = $2'}
+      ${forUpdate ? 'FOR UPDATE' : ''}`,
     asAdmin ? [projectId] : [projectId, userId],
   );
   if (!rows.length) throw appError('NOT_FOUND');

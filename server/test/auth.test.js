@@ -423,4 +423,25 @@ describe('auth（M1-BE-01）', () => {
     assert.match(body.message, /help@redith\.cn/);
     await ctx.db.query(`UPDATE users SET status = 'active' WHERE id = $1`, [userId]);
   });
+
+  test('M3-ADM-03：浏览器持用户会话（miv_sid）时管理端登录仍成功（csrfGuard 豁免 /admin/）', async () => {
+    // 管理端账号走 admin:create 同构插入（scrypt 哈希）
+    const { hashAdminPassword } = await import('../src/channels/crypto.js');
+    await ctx.db.query(
+      `INSERT INTO admin_users (id, username, password_hash, display_name) VALUES ('adm_auth00000001', 'auth-admin', $1, '测试')`,
+      [hashAdminPassword('auth-admin-pass-1234')]);
+    // 用户登录拿 miv_sid
+    const phone = '13900000009';
+    await post(limitedBase, '/auth/sms', { phone });
+    const userRes = await post(limitedBase, '/auth/login', { phone, code: limitedProvider.sent.at(-1).code, agreeTerms: true });
+    assert.equal(userRes.status, 200);
+    const sid = mivCookie(userRes);
+    // 同一浏览器（带 miv_sid、无管理端 CSRF 头）登录管理端 → 200（不会被用户 CSRF 校验拦下）
+    const adminRes = await post(base, '/admin/auth/login', { username: 'auth-admin', password: 'auth-admin-pass-1234' },
+      { cookie: sid });
+    assert.equal(adminRes.status, 200);
+    const body = await adminRes.json();
+    assert.equal(body.admin.username, 'auth-admin');
+    assert.ok(body.csrfToken);
+  });
 });

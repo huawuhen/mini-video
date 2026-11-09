@@ -9,8 +9,9 @@ import express from 'express';
 import { createTestDb } from './helpers/db.js';
 import { createLogger } from '../src/logger.js';
 import { hashAdminPassword, encryptCredential } from '../src/channels/crypto.js';
-import { createAdminAuth } from '../src/channels/admin-auth.js';
 import { adminProjectsRoutes } from '../src/api/admin-projects.js';
+import { adminAuthRoutes } from '../src/api/admin-auth.js';
+import { resolveTake } from '../src/admin/projects.js';
 import { retryProject, cancelProject } from '../src/projects/service.js';
 import { settleSegment } from '../src/projects/money.js';
 import { errorHandler, asyncHandler } from '../src/http/middleware.js';
@@ -21,11 +22,12 @@ const silentLogger = createLogger({ level: 'silent' });
 
 function clientFor(base) {
   const jars = new Map();
-  async function call(label, method, path, { body, csrf } = {}) {
+  async function call(label, method, path, { body, csrf, origin } = {}) {
     const headers = {};
     const cookie = jars.get(label);
     if (cookie) headers.cookie = cookie;
     if (csrf) headers['x-csrf-token'] = csrf;
+    if (origin) headers.origin = origin;
     const response = await fetch(`${base}${path}`, {
       method, headers: { ...(body !== undefined ? { 'content-type': 'application/json' } : {}), ...headers },
       body: body !== undefined ? JSON.stringify(body) : undefined,
@@ -48,11 +50,13 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
   let csrfToken;
   let adminId;
   let u1;
+  let u2;
   let prjX; // failed（可重试）：take1 unknown（下单 3000）+ take2 succeeded（已结算 3000）
   let prjD; // delivered：redelivery unknown take（下单 2500）
   let prjC; // canceled：unknown take（下单 1800）
   let prjY; // rendering：无 unknown（冻结 2000，取消测试）
   let prjE; // composing：unknown take（下单 900）+ 其他冻结 1100（取消测试）
+  let prjZ; // 已注销用户的作品（手机号显示断言）
   let unknownTakeId;
   let redeliveryTakeId;
   let canceledTakeId;
@@ -77,6 +81,10 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
     u1 = newId('usr');
     await db.query(`INSERT INTO users (id, phone, nickname) VALUES ($1, '15922220001', '测试用户')`, [u1]);
     await db.query(`INSERT INTO wallets (user_id, available_fen, frozen_fen) VALUES ($1, 10000, 0)`, [u1]);
+    // 已注销用户（复审必改③）：列表/详情手机号显示「已注销」
+    u2 = newId('usr');
+    await db.query(
+      `INSERT INTO users (id, phone, nickname, status) VALUES ($1, '15922220002', '已注销用户', 'deactivated')`, [u2]);
     const { rows: tm } = await db.query(`SELECT id FROM tier_mappings ORDER BY id LIMIT 1`);
     const tierMappingId = tm[0].id;
     const { rows: styles } = await db.query(`SELECT id FROM styles ORDER BY id LIMIT 1`);
@@ -88,11 +96,11 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
        VALUES ($1, 'video', 'test-channel', 'local-mock', 'https://channel.test', $2)`,
       [channelId, encryptCredential('k'.repeat(48), 'channel-secret-0001')]);
 
-    const mkProject = async ({ id, status, daysAgo, error = null }) => {
+    const mkProject = async ({ id, status, daysAgo, error = null, owner = u1 }) => {
       await db.query(
         `INSERT INTO projects (id, user_id, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, status, title, error, created_at, updated_at)
          VALUES ($1, $2, '测试故事', 'text', $3, $4, $5, $6, $7, $8, now() - make_interval(days => $9), now())`,
-        [id, u1, styles[0].id, tiers[0].id, tierMappingId, status, `作品${id.slice(-4)}`,
+        [id, owner, styles[0].id, tiers[0].id, tierMappingId, status, `作品${id.slice(-4)}`,
           error ? JSON.stringify(error) : null, daysAgo]);
     };
     const mkSegment = async ({ id, projectId, idx, seconds }) => {
@@ -176,21 +184,19 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
     await mkTake({ id: composeTakeId, segmentId: segE, status: 'unknown', genTaskId: gtE });
     await mkLedger({ key: 'fx-reserve-e', kind: 'reserve', amountFen: -2000, frozenDeltaFen: 2000, refId: prjE, title: '视频生成预占' });
 
+    // prjZ（已注销用户，最新）：手机号列显示「已注销」
+    prjZ = newId('prj');
+    await mkProject({ id: prjZ, status: 'delivered', daysAgo: 0, owner: u2 });
+
     // 钱包冻结 = 3000 + 2500 + 1800 + 2000 + 2000 = 11300
     await db.query(`UPDATE wallets SET frozen_fen = $2 WHERE user_id = $1`, [u1, 11300]);
 
-    const config = { cookieSecure: false, sessionTtlDays: 1, allowedOrigins: [],
+    const config = { cookieSecure: false, sessionTtlDays: 1, allowedOrigins: ['http://localhost:5173'],
       admin: { loginMaxFailures: 5, loginFailWindowSeconds: 600, loginBanSeconds: 7200 } };
     const mount = () => {
       const app = express();
       app.use(express.json({ limit: '100kb' }));
-      const auth = createAdminAuth({ config, db });
-      app.post('/api/v1/admin/auth/login', asyncHandler(async (req, res) => {
-        const session = await auth.login({ username: req.body?.username, password: req.body?.password, ip: req.ip });
-        if (!session) throw appError('ADMIN_AUTH_REQUIRED', '用户名或密码不正确');
-        auth.setCookie(res, session.token);
-        res.json({ admin: session.admin, csrfToken: session.csrfToken });
-      }));
+      app.use('/api/v1', adminAuthRoutes({ db, config }));
       app.use('/api/v1', adminProjectsRoutes({ db, config, logger: silentLogger }));
       app.use(errorHandler(silentLogger));
       return app;
@@ -223,16 +229,19 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
   test('列表：创建时间倒序；status/userId 过滤；hasUnknown 只列有待核对作品并带计数', async () => {
     const all = await client.call('admin', 'GET', '/admin/projects');
     assert.equal(all.status, 200);
-    assert.deepEqual(all.json.items.map((item) => item.id), [prjY, prjE, prjD, prjC, prjX], '创建时间倒序');
+    assert.deepEqual(all.json.items.map((item) => item.id), [prjZ, prjY, prjE, prjD, prjC, prjX], '创建时间倒序');
     const counts = Object.fromEntries(all.json.items.map((item) => [item.id, item.unknownTakes]));
-    assert.deepEqual(counts, { [prjY]: 0, [prjE]: 1, [prjD]: 1, [prjC]: 1, [prjX]: 1 });
-    assert.equal(all.json.items[4].phoneMasked, '159****0001');
+    assert.deepEqual(counts, { [prjZ]: 0, [prjY]: 0, [prjE]: 1, [prjD]: 1, [prjC]: 1, [prjX]: 1 });
+    assert.equal(all.json.items[5].phoneMasked, '159****0001');
+    assert.equal(all.json.items[0].phoneMasked, '已注销', '已注销用户手机号显示（复审必改③）');
     const byStatus = await client.call('admin', 'GET', '/admin/projects?status=failed');
     assert.deepEqual(byStatus.json.items.map((item) => item.id), [prjX]);
     const canceled = await client.call('admin', 'GET', '/admin/projects?status=canceled');
     assert.deepEqual(canceled.json.items.map((item) => item.id), [prjC]);
     const byUser = await client.call('admin', 'GET', `/admin/projects?userId=${u1}`);
     assert.equal(byUser.json.items.length, 5);
+    const byUser2 = await client.call('admin', 'GET', `/admin/projects?userId=${u2}`);
+    assert.deepEqual(byUser2.json.items.map((item) => [item.id, item.phoneMasked]), [[prjZ, '已注销']]);
     const unknownOnly = await client.call('admin', 'GET', '/admin/projects?hasUnknown=true');
     assert.deepEqual(unknownOnly.json.items.map((item) => item.id), [prjE, prjD, prjC, prjX]);
     const page1 = await client.call('admin', 'GET', '/admin/projects?limit=2');
@@ -268,6 +277,10 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
     const missing = await client.call('admin', 'GET', '/admin/projects/prj_missing');
     assert.equal(missing.status, 404);
     assert.equal(missing.json.code, 'PROJECT_NOT_FOUND');
+    // 已注销用户的作品详情：手机号显示「已注销」
+    const deactivated = await client.call('admin', 'GET', `/admin/projects/${prjZ}`);
+    assert.equal(deactivated.status, 200);
+    assert.equal(deactivated.json.phoneMasked, '已注销');
   });
 
   test('unknown 挡重试；判定（可重试作品）不向用户结算、保持冻结、时间线统一文案、同键换结论 409、重放不重复写审计', async () => {
@@ -429,5 +442,84 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
     await assert.rejects(
       cancelProject(testDb.db, { projectId: prjE }),
       (err) => err.code === 'INTERNAL');
+  });
+
+  test('管理端登录 Origin 校验（复审必改②）：恶意 Origin 403、合法 Origin 正常', async () => {
+    const evil = await client.call('admin', 'POST', '/admin/auth/login',
+      { body: { username: 'admin', password: 'admin-password-123' }, origin: 'https://evil.example' });
+    assert.equal(evil.status, 403);
+    assert.equal(evil.json.code, 'CSRF_INVALID');
+    const good = clientFor(base);
+    const ok = await good.call('good', 'POST', '/admin/auth/login',
+      { body: { username: 'admin', password: 'admin-password-123' }, origin: 'http://localhost:5173' });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.json.admin.username, 'admin');
+    // 登出同样受 Origin 校验（无 Origin 的本机/服务端调用不受影响）
+    const evilLogout = await client.call('good', 'POST', '/admin/auth/logout', { origin: 'https://evil.example' });
+    assert.equal(evilLogout.status, 403);
+  });
+
+  test('判定与取消并发（复审必改①）：两种先后顺序都不留下冻结', async () => {
+    for (let round = 0; round < 6; round += 1) {
+      const projectId = newId('prj');
+      const segId = newId('seg');
+      const gtId = newId('gt');
+      const takeId = newId('take');
+      await testDb.db.query(
+        `INSERT INTO projects (id, user_id, story_text, source_type, style_id, quality_tier_id, tier_mapping_id, status, title, error)
+         VALUES ($1, $2, '并发走查', 'text',
+           (SELECT id FROM styles ORDER BY id LIMIT 1), (SELECT id FROM quality_tiers ORDER BY id LIMIT 1),
+           (SELECT id FROM tier_mappings ORDER BY id LIMIT 1), 'failed', $3,
+           $4)`,
+        [projectId, u1, `并发${round}`, JSON.stringify({ code: 'TAKE_UNKNOWN', step: 'rendering', message: '待核对' })]);
+      await testDb.db.query(
+        `INSERT INTO segments (id, project_id, idx, duration_seconds, plot) VALUES ($1, $2, 0, 30, '剧情')`,
+        [segId, projectId]);
+      await testDb.db.query(
+        `INSERT INTO gen_tasks (id, user_id, kind, provider, status, request, idempotency_key)
+         VALUES ($1, $2, 'video', 'test-provider', 'unknown', $3, $4)`,
+        [gtId, u1, JSON.stringify({ takeId, projectId, amountFen: 3000 }), `gt-race-${round}`]);
+      await testDb.db.query(
+        `INSERT INTO segment_takes (id, segment_id, status, gen_task_id) VALUES ($1, $2, 'unknown', $3)`,
+        [takeId, segId, gtId]);
+      // 每轮新增冻结 3000；并发结束后必须全部退回（两种顺序都不能留下冻结）
+      await testDb.db.query(
+        `UPDATE wallets SET frozen_fen = frozen_fen + 3000 WHERE user_id = $1`, [u1]);
+      const walletBefore = await wallet();
+
+      const [resolveResult, cancelResult] = await Promise.allSettled([
+        resolveTake(testDb.db, { takeId, outcome: 'not_charged', note: `并发判定 ${round}`,
+          idempotencyKey: `race-${round}`, adminId }),
+        cancelProject(testDb.db, { projectId, asAdmin: true }),
+      ]);
+      for (const [name, result] of [['resolve', resolveResult], ['cancel', cancelResult]]) {
+        if (result.status === 'rejected') {
+          // PROJECT_STATE_INVALID 仅在「取消的迁移输给了已取消状态」时可能出现——资金不变量仍须成立
+          assert.equal(result.reason?.code, 'PROJECT_STATE_INVALID', `${name} 意外失败：${result.reason?.message}`);
+        }
+      }
+      const after = await wallet();
+      assert.equal(Number(after.frozen_fen), Number(walletBefore.frozen_fen) - 3000,
+        `第 ${round} 轮：并发后冻结不能残留`);
+      assert.equal(Number(after.available_fen), Number(walletBefore.available_fen) + 3000,
+        `第 ${round} 轮：3000 恰好退回一次`);
+      const refunds = await testDb.db.query(
+        `SELECT COALESCE(SUM(amount_fen), 0)::bigint AS total, count(*)::int AS n FROM ledger
+          WHERE ref_type = 'project' AND ref_id = $1 AND kind = 'refund'`, [projectId]);
+      assert.equal(Number(refunds.rows[0].total), 3000, `第 ${round} 轮：退款流水合计 3000`);
+      assert.ok(refunds.rows[0].n <= 1, `第 ${round} 轮：不能出现多笔退款流水`);
+      const project = (await testDb.db.query(`SELECT status FROM projects WHERE id = $1`, [projectId])).rows[0];
+      assert.equal(project.status, 'canceled', `第 ${round} 轮：作品取消`);
+      const takeRow = await take(takeId);
+      assert.equal(takeRow.status, 'failed', `第 ${round} 轮：take 已判定为 failed`);
+      // 清理本轮夹具（钱包余额留给下一轮断言增量）
+      await testDb.db.query(`DELETE FROM ledger WHERE ref_type = 'project' AND ref_id = $1`, [projectId]);
+      await testDb.db.query(`DELETE FROM project_events WHERE project_id = $1`, [projectId]);
+      await testDb.db.query(`DELETE FROM segment_takes WHERE id = $1`, [takeId]);
+      await testDb.db.query(`DELETE FROM segments WHERE id = $1`, [segId]);
+      await testDb.db.query(`DELETE FROM gen_tasks WHERE id = $1`, [gtId]);
+      await testDb.db.query(`DELETE FROM admin_audit_logs WHERE target_id = $1`, [projectId]);
+      await testDb.db.query(`UPDATE wallets SET available_fen = available_fen - 3000 WHERE user_id = $1`, [u1]);
+    }
   });
 });

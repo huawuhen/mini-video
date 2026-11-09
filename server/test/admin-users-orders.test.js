@@ -9,8 +9,8 @@ import { createTestDb } from './helpers/db.js';
 import { createLogger } from '../src/logger.js';
 import { createMemoryStorage } from '../src/engine/storage/memory.js';
 import { hashAdminPassword } from '../src/channels/crypto.js';
-import { createAdminAuth } from '../src/channels/admin-auth.js';
 import { adminUsersOrdersRoutes } from '../src/api/admin-users-orders.js';
+import { adminAuthRoutes } from '../src/api/admin-auth.js';
 import { errorHandler, asyncHandler } from '../src/http/middleware.js';
 import { appError } from '../src/http/errors.js';
 import { newId } from '../src/db/ids.js';
@@ -156,13 +156,7 @@ describe('管理端·用户与订单（M3-ADM-02）', () => {
       app.use(express.json({ limit: '100kb' }));
       // 登录入口在生产由 api/admin.js（渠道路由）提供；测试这里按同一实现补一个，
       // 让被测模块专注于 §8.1~8.2（登录本身已在 admin-api.test.js 覆盖）
-      const auth = createAdminAuth({ config, db });
-      app.post('/api/v1/admin/auth/login', asyncHandler(async (req, res) => {
-        const session = await auth.login({ username: req.body?.username, password: req.body?.password, ip: req.ip });
-        if (!session) throw appError('ADMIN_AUTH_REQUIRED', '用户名或密码不正确');
-        auth.setCookie(res, session.token);
-        res.json({ admin: session.admin, csrfToken: session.csrfToken });
-      }));
+      app.use('/api/v1', adminAuthRoutes({ db, config }));
       app.use('/api/v1', adminUsersOrdersRoutes({ db, config, logger: silentLogger, storage, ...extra }));
       app.use(errorHandler(silentLogger));
       return app;

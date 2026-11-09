@@ -673,7 +673,9 @@ export async function retryProject(db, { userId, projectId }) {
  * gen_tasks.request.amountFen 汇总（复审必改①：不按当前价重算，与逐段结算同口径）。 */
 export async function cancelProject(db, { userId, projectId, asAdmin = false }) {
   return db.tx(async (t) => {
-    const project = await requireProject(t, { userId, projectId, asAdmin });
+    // 复审必改①：带锁读取作品行，与判定（FOR UPDATE OF st, p）串行化——锁内再判断状态、
+    // 汇总 unknown，避免「判定保冻结 vs 取消退差额」并发互判留下无出口的冻结
+    const project = await requireProject(t, { userId, projectId, asAdmin, forUpdate: true });
     const money = await projectMoneySummary(t, { userId: project.user_id, projectId });
     // 提交结果未知（unknown）的片段金额保持冻结待对账（docs/ARCHITECTURE §4：只退未提交部分）
     const { rows: unknownRows } = await t.query(

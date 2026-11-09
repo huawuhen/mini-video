@@ -11,6 +11,10 @@ export function adminAuthRoutes({ db, config }) {
   const router = Router();
   const auth = createAdminAuth({ config, db });
 
+  // 登录/登出同样校验同源（复审必改②）：此处无管理员会话，writeGuard 只做 Origin 白名单
+  // （管理员 CSRF 头在登录成功后才有意义）。豁免用户 csrfGuard 的前提是这里补齐防护。
+  router.use(auth.writeGuard);
+
   router.post('/admin/auth/login', asyncHandler(async (req, res) => {
     const fields = new Fields(req.body);
     const body = {

@@ -37,7 +37,7 @@ export async function listProjects(db, { status, userId, hasUnknown, cursor, lim
     conditions.push(`(${CURSOR_NS}, p.id) < ($${values.length - 1}, $${values.length})`);
   }
   const { rows } = await db.query(
-    `SELECT p.id, p.user_id, p.title, p.status, p.progress, p.created_at, p.updated_at, u.phone,
+    `SELECT p.id, p.user_id, p.title, p.status, p.progress, p.created_at, p.updated_at, u.phone, u.status AS user_status,
             ${CURSOR_NS} AS created_us,
             (SELECT count(*)::int FROM segments s3 JOIN segment_takes st3 ON st3.segment_id = s3.id
               WHERE s3.project_id = p.id AND st3.status = 'unknown' AND st3.resolved_outcome IS NULL) AS unknown_takes
@@ -51,7 +51,8 @@ export async function listProjects(db, { status, userId, hasUnknown, cursor, lim
   const last = page.at(-1);
   return {
     items: page.map((row) => ({
-      id: row.id, userId: row.user_id, phoneMasked: maskPhone(row.phone),
+      id: row.id, userId: row.user_id,
+      phoneMasked: row.user_status === 'deactivated' ? '已注销' : maskPhone(row.phone),
       title: row.title, status: row.status, progress: row.progress ?? { percent: 0, message: '' },
       unknownTakes: Number(row.unknown_takes),
       createdAt: row.created_at.toISOString(), updatedAt: row.updated_at.toISOString(),
@@ -110,7 +111,7 @@ async function loadSegments(db, { projectId }) {
 /** 详情（§8.3 AdminProjectDetail）：片段/take、gen_task、渠道、金额聚合、事件时间线。 */
 export async function getProjectDetail(db, { projectId }) {
   const { rows } = await db.query(
-    `SELECT p.*, u.phone FROM projects p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, [projectId]);
+    `SELECT p.*, u.phone, u.status AS user_status FROM projects p JOIN users u ON u.id = p.user_id WHERE p.id = $1`, [projectId]);
   if (!rows.length) throw appError('PROJECT_NOT_FOUND');
   const project = rows[0];
   const money = await projectMoneySummary(db, { userId: project.user_id, projectId });
@@ -121,7 +122,8 @@ export async function getProjectDetail(db, { projectId }) {
         WHERE project_id = $1 ORDER BY id DESC LIMIT 50`, [projectId]),
   ]);
   return {
-    id: project.id, userId: project.user_id, phoneMasked: maskPhone(project.phone),
+    id: project.id, userId: project.user_id,
+    phoneMasked: project.user_status === 'deactivated' ? '已注销' : maskPhone(project.phone),
     title: project.title, status: project.status, progress: project.progress ?? { percent: 0, message: '' },
     unknownTakes: segments.reduce((n, seg) => n + seg.takes.filter((tk) => tk.status === 'unknown' && !tk.resolvedOutcome).length, 0),
     money: {
@@ -161,7 +163,7 @@ export async function resolveTake(db, { takeId, outcome, note, idempotencyKey, a
           JOIN projects p ON p.id = s.project_id
           LEFT JOIN gen_tasks gt ON gt.id = st.gen_task_id
         WHERE st.id = $1
-        FOR UPDATE OF st`, [takeId]);
+        FOR UPDATE OF st, p`, [takeId]);
     const take = rows[0];
     if (!take) throw appError('NOT_FOUND', '片段不存在');
     if (take.resolved_outcome) {
