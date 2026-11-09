@@ -460,7 +460,12 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
   });
 
   test('判定与取消并发（复审必改①）：两种先后顺序都不留下冻结', async () => {
-    for (let round = 0; round < 6; round += 1) {
+    const refundTitlesSeen = new Set();
+    // 每轮夹具：failed 作品 + unknown take（下单 3000）+ reserve 流水（cancelProject 按作品流水汇总可退额）+
+    // 钱包冻结 +3000；跑完后断言：冻结清零、3000 恰退一次、take failed、作品 canceled。
+    // 顺序覆盖：cancel-first / resolve-first 两轮确定性固定先后（各自必然产生一种退回标题），
+    // 另加 3 轮 Promise.allSettled 真竞争（只断言不变量）。
+    const runRound = async (round, mode) => {
       const projectId = newId('prj');
       const segId = newId('seg');
       const gtId = newId('gt');
@@ -482,36 +487,50 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
       await testDb.db.query(
         `INSERT INTO segment_takes (id, segment_id, status, gen_task_id) VALUES ($1, $2, 'unknown', $3)`,
         [takeId, segId, gtId]);
-      // 每轮新增冻结 3000；并发结束后必须全部退回（两种顺序都不能留下冻结）
+      // 复审指出的夹具缺口：可退金额按作品 reserve 流水汇总——每轮补一条，取消才能按 3000 退
+      await testDb.db.query(
+        `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key)
+         VALUES ($1, $2, 'reserve', -3000, 3000, '视频生成预占', 'project', $3, $4)`,
+        [newId('led'), u1, projectId, `fx-race-reserve-${round}`]);
       await testDb.db.query(
         `UPDATE wallets SET frozen_fen = frozen_fen + 3000 WHERE user_id = $1`, [u1]);
       const walletBefore = await wallet();
 
-      const [resolveResult, cancelResult] = await Promise.allSettled([
-        resolveTake(testDb.db, { takeId, outcome: 'not_charged', note: `并发判定 ${round}`,
-          idempotencyKey: `race-${round}`, adminId }),
-        cancelProject(testDb.db, { projectId, asAdmin: true }),
-      ]);
-      for (const [name, result] of [['resolve', resolveResult], ['cancel', cancelResult]]) {
-        if (result.status === 'rejected') {
-          // PROJECT_STATE_INVALID 仅在「取消的迁移输给了已取消状态」时可能出现——资金不变量仍须成立
-          assert.equal(result.reason?.code, 'PROJECT_STATE_INVALID', `${name} 意外失败：${result.reason?.message}`);
+      const resolveOp = () => resolveTake(testDb.db, { takeId, outcome: 'not_charged',
+        note: `并发判定 ${round}`, idempotencyKey: `race-${round}`, adminId });
+      const cancelOp = () => cancelProject(testDb.db, { projectId, asAdmin: true });
+      if (mode === 'cancel-first') {
+        // 取消先拿锁：unknown 冻结保留（退 0），作品 canceled；判定随后看到 canceled → 当场退 3000
+        await cancelOp(); await resolveOp();
+      } else if (mode === 'resolve-first') {
+        // 判定先拿锁：可重试作品保持冻结、take failed；取消随后把这笔冻结作为非 unknown 退回
+        await resolveOp(); await cancelOp();
+      } else {
+        const [resolveResult, cancelResult] = await Promise.allSettled([resolveOp(), cancelOp()]);
+        for (const [name, result] of [['resolve', resolveResult], ['cancel', cancelResult]]) {
+          if (result.status === 'rejected') {
+            assert.equal(result.reason?.code, 'PROJECT_STATE_INVALID', `${name} 意外失败：${result.reason?.message}`);
+          }
         }
       }
+
       const after = await wallet();
       assert.equal(Number(after.frozen_fen), Number(walletBefore.frozen_fen) - 3000,
-        `第 ${round} 轮：并发后冻结不能残留`);
+        `[${mode} ${round}] 并发后冻结不能残留`);
       assert.equal(Number(after.available_fen), Number(walletBefore.available_fen) + 3000,
-        `第 ${round} 轮：3000 恰好退回一次`);
+        `[${mode} ${round}] 3000 恰好退回一次`);
       const refunds = await testDb.db.query(
-        `SELECT COALESCE(SUM(amount_fen), 0)::bigint AS total, count(*)::int AS n FROM ledger
+        `SELECT COALESCE(SUM(amount_fen), 0)::bigint AS total, count(*)::int AS n,
+                COALESCE(array_agg(DISTINCT title), '{}') AS titles FROM ledger
           WHERE ref_type = 'project' AND ref_id = $1 AND kind = 'refund'`, [projectId]);
-      assert.equal(Number(refunds.rows[0].total), 3000, `第 ${round} 轮：退款流水合计 3000`);
-      assert.ok(refunds.rows[0].n <= 1, `第 ${round} 轮：不能出现多笔退款流水`);
+      assert.equal(Number(refunds.rows[0].total), 3000, `[${mode} ${round}] 退款流水合计 3000`);
+      assert.ok(refunds.rows[0].n <= 1, `[${mode} ${round}] 不能出现多笔退款流水`);
+      const titles = refunds.rows[0].titles ?? [];
+      for (const title of titles) refundTitlesSeen.add(title);
       const project = (await testDb.db.query(`SELECT status FROM projects WHERE id = $1`, [projectId])).rows[0];
-      assert.equal(project.status, 'canceled', `第 ${round} 轮：作品取消`);
+      assert.equal(project.status, 'canceled', `[${mode} ${round}] 作品取消`);
       const takeRow = await take(takeId);
-      assert.equal(takeRow.status, 'failed', `第 ${round} 轮：take 已判定为 failed`);
+      assert.equal(takeRow.status, 'failed', `[${mode} ${round}] take 已判定为 failed`);
       // 清理本轮夹具（钱包余额留给下一轮断言增量）
       await testDb.db.query(`DELETE FROM ledger WHERE ref_type = 'project' AND ref_id = $1`, [projectId]);
       await testDb.db.query(`DELETE FROM project_events WHERE project_id = $1`, [projectId]);
@@ -520,6 +539,15 @@ describe('管理端·作品与待核对（M3-ADM-03）', () => {
       await testDb.db.query(`DELETE FROM gen_tasks WHERE id = $1`, [gtId]);
       await testDb.db.query(`DELETE FROM admin_audit_logs WHERE target_id = $1`, [projectId]);
       await testDb.db.query(`UPDATE wallets SET available_fen = available_fen - 3000 WHERE user_id = $1`, [u1]);
-    }
+    };
+
+    await runRound(0, 'cancel-first');  // 期望「待核对退回」（判定看到已取消 → 当场退）
+    await runRound(1, 'resolve-first'); // 期望「作品取消退回」（取消看到 failed take → 退差额）
+    await runRound(2, 'race');
+    await runRound(3, 'race');
+    await runRound(4, 'race');
+    // 复审建议：断言两种先后顺序都实际出现过（各产生一种退回标题）
+    assert.ok(refundTitlesSeen.has('待核对退回'), `应出现判定侧当场退回，实际：${[...refundTitlesSeen]}`);
+    assert.ok(refundTitlesSeen.has('作品取消退回'), `应出现取消侧退差额，实际：${[...refundTitlesSeen]}`);
   });
 });

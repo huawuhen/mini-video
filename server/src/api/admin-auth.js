@@ -13,9 +13,9 @@ export function adminAuthRoutes({ db, config }) {
 
   // 登录/登出同样校验同源（复审必改②）：此处无管理员会话，writeGuard 只做 Origin 白名单
   // （管理员 CSRF 头在登录成功后才有意义）。豁免用户 csrfGuard 的前提是这里补齐防护。
-  router.use(auth.writeGuard);
+  // 二轮复审顺手建议：只挂在这两个路由上，不做 router 级兜底。
 
-  router.post('/admin/auth/login', asyncHandler(async (req, res) => {
+  router.post('/admin/auth/login', auth.writeGuard, asyncHandler(async (req, res) => {
     const fields = new Fields(req.body);
     const body = {
       username: fields.string('username', { required: true }),
@@ -28,7 +28,7 @@ export function adminAuthRoutes({ db, config }) {
     res.json({ admin: session.admin, csrfToken: session.csrfToken });
   }));
 
-  router.post('/admin/auth/logout', (req, res) => {
+  router.post('/admin/auth/logout', auth.writeGuard, (req, res) => {
     void auth.logout(auth.readCookie(req));
     auth.clearCookie(res);
     res.json({ ok: true });

@@ -264,6 +264,12 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-10 · BE-Core · M3-ADM-03 三轮修复（并发测试夹具 + writeGuard 收窄）
+
+- **背景**：Lead 三轮复审（§6 2026-11-06 @`943cf1f`）：产品代码通过，退回并发测试夹具 1 处——每轮只加钱包冻结 3000、未插 reserve 流水，`cancelProject` 按作品流水汇总可退额，判定先拿锁时取消退 0、误报冻结残留（全量第 3 轮失败、单独 5/5 失败）。
+- **修复**：① 并发测试每轮补 `ledger reserve`（amount_fen -3000 / frozen_delta_fen 3000 / ref_type 'project' / ref_id 本轮作品）；② 顺序覆盖按复审建议固定：`cancel-first`（取消先拿锁→unknown 保留→判定见 canceled 当场退「待核对退回」）与 `resolve-first`（判定先拿锁→保冻结→取消退差额「作品取消退回」）各 1 轮确定性断言两种先后顺序实际出现（退回标题集合断言两种都在），另保留 3 轮 `Promise.allSettled` 真竞争只断言不变量（冻结清零 / 3000 恰退一次 / ≤1 笔退款流水 / take failed / 作品 canceled）；③ 顺手（不阻塞）：`api/admin-auth.js` 的 `writeGuard` 从 router 级收窄为只挂 login/logout 两个路由。
+- **验证**：该测试单独跑 **5/5 次全过**（11/11），与 admin-users-orders、auth 组合 51/51；`test:server` **491/491**、`check`、`build` 全过。纯测试夹具 + 路由守卫收窄（Origin 用例仍过），无 UI 变化，未重复浏览器走查。
+
 ### 2026-11-09 · BE-Core + Web · M3-ADM-03 二轮复审修复（并发锁 / 登录 Origin / 已注销手机号）
 
 - **背景**：Lead 二轮复审退回（§6 2026-11-06 @`606a856`，3 处小改）。同分支追加 2 个提交（`7da62e4` 修复与测试 / `308d95e` §7），已 merge main（`38fa8be`）。
