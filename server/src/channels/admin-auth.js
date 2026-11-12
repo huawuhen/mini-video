@@ -151,12 +151,13 @@ export function createAdminAuth({ config, db }) {
     return rowCount > 0;
   }
 
-  /** 审计（后台 / CLI / 种子 / 试生成全部留痕；detail 里禁止放明文凭证）。 */
-  async function audit({ adminId = null, actor, action, targetType, targetId, detail = {} }) {
+  /** 审计（后台 / CLI / 种子 / 试生成全部留痕；detail 里禁止放明文凭证）。
+   * ip 由管理端路由传入（§8.5 审计列表展示；迁移 016 起落库）。 */
+  async function audit({ adminId = null, actor, action, targetType, targetId, detail = {}, ip = null }) {
     await db.query(
-      `INSERT INTO admin_audit_logs (admin_id, actor, action, target_type, target_id, detail)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [adminId, actor, action, targetType, String(targetId ?? ''), JSON.stringify(detail)],
+      `INSERT INTO admin_audit_logs (admin_id, actor, action, target_type, target_id, detail, ip)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [adminId, actor, action, targetType, String(targetId ?? ''), JSON.stringify(detail), ip],
     );
   }
 

@@ -5,6 +5,11 @@
 // 过期或已消费 409 QUOTE_EXPIRED。
 // project_render / segment_take 按作品锁定的 tier_mapping_id 取价（不是当前映射）；形象单价取
 // settings.look_image_sku_code 指向的当前生效 SKU。
+// 价格锁定（M3-ADM-04）：改价（SKU 新版本生效）后「已出的报价」分两种——
+// ① 未消费的报价：consumeQuote 重算出新价即 409 QUOTE_MISMATCH，用户重新取价（M1-BE-02 契约，
+//    保证冻结额永远等于确认时点价格）；② 已消费的报价（作品已确认、钱已冻结）：确认点 B 把
+//    重算通过时的单价写进 projects.video_unit_fen，后续分段生成/重试/展示一律按锁定价，
+//    不再回到本模块取价——因此本文件的取价函数不受确认后改价影响。
 import { createHash } from 'node:crypto';
 import { newId } from '../db/ids.js';
 import { appError } from '../http/errors.js';
@@ -174,6 +179,8 @@ export async function createQuote(t, { userId, request }) {
  * 原子占用报价并按当前状态与价格重算（要点 c）。
  * §6 审查 5：调用方必须声明正在确认的资源（kind/refType/refId），与报价不一致抛 QUOTE_MISMATCH，
  * 防止「拿 A 作品的便宜报价确认 B 作品」；MISMATCH/EXPIRED 抛错时占用随调用方事务回滚。
+ * 改价场景：消费时重算出不同的单价 → amountFen 不一致 → QUOTE_MISMATCH（用户重新取价），
+ * 因此确认时冻结额恒等于确认时点价格；确认后的分段结算走 projects.video_unit_fen 锁定价。
  */
 export async function consumeQuote(t, { userId, quoteId, kind, refType, refId }) {
   if (!kind || !refType || !refId) throw appError('INTERNAL', 'consumeQuote 缺少 kind/refType/refId');

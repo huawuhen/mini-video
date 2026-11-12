@@ -61,7 +61,11 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
       }
     }
 
-    const unit = await videoUnitFen(db, project.tier_mapping_id);
+    // 价格锁定（M3-ADM-04）：确认点 B 锁定的单价优先——重试/续跑不因改价与冻结额不一致；
+    // 旧数据（迁移 016 前确认）为 NULL 时回退当前价（原行为）
+    const unit = Number.isSafeInteger(project.video_unit_fen) && project.video_unit_fen > 0
+      ? project.video_unit_fen
+      : await videoUnitFen(db, project.tier_mapping_id);
     const amountFen = unit * segment.duration_seconds;
     // prev_tail：调用方在生成前先取上一段尾帧作为普通参考图（尽力而为，不保证首帧衔接）
     let tailRef;

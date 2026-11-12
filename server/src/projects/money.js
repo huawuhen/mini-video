@@ -53,7 +53,9 @@ export function refundProject(t, { userId, projectId, amountFen, purpose }) {
   });
 }
 
-/** 视频单价（分/秒）：按作品创建时锁定的 tier_mapping 找当前生效 SKU，与计价函数同源。 */
+/** 视频单价（分/秒）：按作品创建时锁定的 tier_mapping 找当前生效 SKU，与计价函数同源。
+ * M3-ADM-04 起仅作回退：确认点 B 已把单价锁进 projects.video_unit_fen（见 segment.js /
+ * buildPricing），本函数只服务迁移 016 前确认的旧数据。 */
 export async function videoUnitFen(t, tierMappingId) {
   const { rows } = await t.query(
     `SELECT s.price_fen FROM tier_mappings tm

@@ -239,7 +239,8 @@ async function existingLookVersionId(t, characterId, styleId) {
   return rows[0]?.id ?? null;
 }
 
-/** Pricing（API §6.2）：形象缺口按当前图片 SKU 计价，视频按锁定档位映射的当前 SKU 计价。 */
+/** Pricing（API §6.2）：形象缺口按当前图片 SKU 计价；视频单价按确认点 B 锁定价
+ * （video_unit_fen，M3-ADM-04；确认前为 NULL，回退当前价以便报价与展示一致）。 */
 export async function buildPricing(t, { userId, project }) {
   const { rows: cast } = await t.query(
     `SELECT look_version_id FROM project_cast WHERE project_id = $1`, [project.id]);
@@ -248,7 +249,9 @@ export async function buildPricing(t, { userId, project }) {
   const { rows: imageSku } = await t.query(
     `SELECT price_fen FROM skus WHERE kind = 'image' AND status = 'active'
       ORDER BY version DESC, effective_at DESC LIMIT 1`);
-  const unit = await videoUnitFen(t, project.tier_mapping_id);
+  const unit = Number.isSafeInteger(project.video_unit_fen) && project.video_unit_fen > 0
+    ? project.video_unit_fen
+    : await videoUnitFen(t, project.tier_mapping_id);
   const looksToGenerate = cast.filter((member) => !member.look_version_id).length;
   const looksFen = looksToGenerate * (imageSku[0]?.price_fen ?? 0);
   const videoFen = segments.reduce((sum, segment) => sum + segment.duration_seconds, 0) * unit;
@@ -483,8 +486,15 @@ export async function confirmCast(db, { userId, projectId, quoteId, idempotencyK
     }
     if (!quoteId) throw appError('VALIDATION_FAILED', '需要先获取视频生成报价');
 
-    const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'project_render', refType: 'project', refId: projectId });
+    const { quote, priced } = await consumeQuote(t, { userId, quoteId, kind: 'project_render', refType: 'project', refId: projectId });
     await reserveProjectVideo(t, { userId, projectId, amountFen: quote.amount_fen });
+    // 价格锁定（M3-ADM-04）：视频单价以确认时点为准（consumeQuote 重算通过，报价额与冻结额一致），
+    // 之后 segment.generate、失败重试、详情 pricing 都按锁定价，改价只影响新报价。
+    const unitFen = priced.priceSnapshot?.video?.unitFen;
+    if (!Number.isSafeInteger(unitFen) || unitFen <= 0) {
+      throw appError('INTERNAL', '报价缺少视频单价，无法锁定价格');
+    }
+    await t.query(`UPDATE projects SET video_unit_fen = $2 WHERE id = $1`, [projectId, unitFen]);
     await t.query(`UPDATE project_cast SET locked_at = now() WHERE project_id = $1`, [projectId]);
     await transition(t, { projectId, userId, from: ['cast_review'], to: 'rendering',
       progress: { percent: 45, message: `正在生成片段 1/${segmentCount}` }, changed: ['pricing'] });
