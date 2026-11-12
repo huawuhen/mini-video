@@ -97,7 +97,7 @@
 | M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03；真实发送待 §3 授权的 Mac 联调） | 2026-11-03 |
 | M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},utils/idempotency.ts,pages/admin/*,pages/**,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 已合并（main `89d7c1f`，2026-11-05 复审通过） | 2026-11-05 |
 | M3-ADM-03 作品与失败/待核对处理 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-03-projects` | `server/migrations/015*.sql` `server/src/admin/projects.js`（新增） `server/src/api/{admin-projects,admin-auth}.js` `server/src/projects/{state.js,service.js}` `server/src/{http/errors.js,auth/session.js}` `server/src/app.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},pages/admin/*,router}` `docs/m3-adm03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 已合并（main `294598f`，2026-11-12 三轮复审通过） | 2026-11-12 |
-| M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | 进行中 | 2026-11-12 |
+| M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | 待审查（test:server 512/512、check、build 过；驱动契约 21/21；零真实费用，真实冒烟待 §4 第 11 条授权） | 2026-11-12 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -107,6 +107,7 @@
 
 | 日期 | 决策 | 来源 |
 |---|---|---|
+| 2026-11-12 | **视频生成渠道接入 Vidu Q3 系列，作为项目默认模型；Q4 Preview 放弃**（不接入、不观察）。主力 `viduq3-turbo`（缺省），可选 `viduq3`/`viduq3-pro`；实现为新驱动 `drivers/vidu`（参考生 reference2video + 文生 text2video，音画同出默认开；480p→540p 只升不降）。**逻辑 SKU 单段时长收窄 {5,10,15,30}→{5,10,15}**（迁移 017：Vidu 参考生上限 15 秒，aiide 同步收窄；首页报价下限随之从「1 个 30 秒段」变「1 个 15 秒段」，见 §4 第 10 条）。真实冒烟待充值并授权（§4 第 11 条）。成本对比：720p 由 aiide 实测 151 分/秒 → Vidu turbo 参考 720p 约 31 分/秒（错峰 15.6）。任务 M3-ENG-01。 | 用户 |
 | 2026-11-05 | **待核对片段「上游已扣费但没出片」由平台承担**：运营判定 `charged` 时不向用户结算，用户冻结与 `not_charged` 一样处理（作品可重试则保持冻结供重试复用，交付后重拍或作品已取消/过期则当场退回）；用户时间线统一显示「已核对：该片段生成失败，费用未扣除」。详见 API.md §8.3。 | 用户 |
 | 2026-11-05 | **人工退款第一期采用「手工退款 + 后台登记」**：客服先在微信支付商户平台手工把钱退给用户，再到运营后台登记一笔，扣减用户可用余额并累计订单已退金额（API.md §8.2）。不调用微信退款接口；如需一键自动退款，第二期另开任务。 | 用户 |
 | 2026-11-04 | **运营后台第二批按顺序开发**：M3-ADM-02 用户与余额 / 订单与人工退款 → M3-ADM-03 作品与失败/待核对处理 → M3-ADM-04 价格与配置 / 审计（接口 API.md §8.1~8.5，任务见 TASKS「其他」）。微信支付代码已完成，真实联调等商户号审核。人工退款第一期采用「记录式」（已于 2026-11-05 确认，见上条）。 | 用户 + Lead |
@@ -181,6 +182,9 @@
 7. ~~（M2-OPS-02 联调发现）七牛桶选择~~ **已决（2026-10-21，用户）**：新建**私有桶 `redith-h5` + CDN `cdnh5.redith.cn`**（HTTPS 证书、CDN 回源鉴权均已配置——回源鉴权是官方对「私有空间 + 自定义域名」的强制要求，须保留）。旧桶 `redith` 保持公开不动，桶内既有实验数据不受影响。Engine 已在该配置上重跑联调 **10/10 通过**（过期/无 token 均被 403 拒绝；详见 `server/src/engine/README.md` 联调结论）。生产环境变量：`QINIU_BUCKET=redith-h5`、`QINIU_DOMAIN=https://cdnh5.redith.cn`、`QINIU_REGION=z0`（region 必须显式配置）。
 9. **（M3-SMS-01，2026-11-02）真实短信发送授权**：阿里云短信 provider 已完成（模拟网关测试，零真实发送）；**用户阿里云账号尚未申请**。真实发送验证需：① 账号就绪并配置四项环境变量；② 用户明确授权并写明**测试条数上限**（建议 ≤5 条）；③ 顺带验证真实错误码与到达率。
 8. **（2026-10-23，aiide 渠道切换）**：① 密钥与首批冒烟已决已毕（见 §7 当日条目）；**定价已决（迁移 008，用户委托）**：480p 100 / 720p 200 / 形象 60 分，成本 68 / 143 / 36（见 §3 当日决策，Lead 可复核）；② **渠道限制待用户向商家反馈**：gpt-image-2 是**同步接口**且在 Cloudflare 后面（网关约 100 秒掐断，HTTP 524）——生成高峰期超 100 秒的请求会被切断，适配器按「结果未知」冻结待对账。本次端到端第二个形象就撞上了（63 秒成功、125 秒 524，重试一次成功）。请商家确认：是否有异步任务接口 / 能否放宽网关超时；若不能，建议产品策略允许「同步图片 524/504 网关超时自动重试 ≤2 次」（最坏双倍计费 72 分/张，须 Lead 追认）；③ **部署注意**：成片在火山 TOS 新加坡，本机跨境下载实测 ~60KB/s（safeFetch 与 curl 一致，慢在线路）；生产服务器须实测，Worker 下载超时 300 秒写死（720p 30 秒片约 40MB），必要时配置化放宽；④ 真人照片素材过审、720p 真实 token 未验证。
+10. **（M3-ENG-01，2026-11-12）首页报价下限口径变化需确认**：迁移 017 取消 30 秒单段后，首页价格区间下限按 PRD 口径「1 个最长单段」从 ¥30（30 秒×100 分）变为 **¥15**（15 秒×100 分），上限不变（¥90）。总时长上限与秒价都不变，仅展示下限变化。若用户希望保持 ¥30 显示口径，需 Lead 改 pricing.js 的展示策略（如按「2 个 15 秒段」计下限）——待拍板。
+11. **（M3-ENG-01，2026-11-12）Vidu 真实冒烟授权**：驱动与配置已就绪（见 drivers/vidu/README.md 配置步骤），真实调用前需：① 用户在 Vidu 控制台充值最小套餐（500 元 = 16000 积分）并把 API Token 由本人填入渠道配置（不经聊天/仓库）；② 用户明确授权**冒烟费用上限**（建议 ≤10 元：1 段 540p 5 秒约 35 积分 ≈ 1.1 元，跑 3~5 段覆盖图生/参考生/音画同出）；③ 冒烟通过后再由管理员把渠道路由切到第 1 位（默认模型切换是运营后台运行时操作）。**跨段角色音色一致性** v1 依赖模型自动推荐音色，如需锁定角色音色，后续任务评估 voice_id / 声音复刻（300 积分/音色，前 10 个免费）。
+12. **（M3-ENG-01，2026-11-12）Vidu 并发与放大**：所有套餐可用并发 ≤5（超出排队），生产放量需商务定制；定价页与接口页有两处小出入（参考生 turbo 时长 3~16 vs 3~15，驱动按 15 收紧；viduq3-mix 见于定价未见接口枚举），真实联调时确认。
 
 ## 5. 接口/跨域变更申请
 
@@ -266,6 +270,15 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-12 · Engine（含 BE 配合） · M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道）
+
+- **背景**：用户 2026-11-12 决策：接入 Vidu Q3 系列（文档调研结论：Q3 turbo 性价比最高、音画同出默认开、错峰半价；Q4 Preview 放弃；Q2 不作主力）。Vidu 按积分计费（1 积分 = 0.03125 元），720p 参考生约 31 分/秒，对比 aiide 实测 151 分/秒约降至 1/5。
+- **改动**：`server/src/engine/providers/drivers/vidu/`（新增：index.js + 5 个协议夹具 + provenance + README）；`server/src/engine/providers/contract-test.js`（hasAuth 断言放宽支持 `Token` 鉴权方案）；`server/migrations/017-vidu-sku-durations.sql`（新增，BE 配合）；`server/test/`（providers-framework 驱动清单 6→7；wallet/projects/project-api 时长联动修正）。
+- **核心实现**：① 有参考图走 `reference2video`（1~7 张主体参考，与管线「图N 主体参考」提示词语义对齐，尾帧排第 1 位但为参考条件而非首帧），无参考图回退 `text2video`；② 产品 480p → Vidu 540p 只升不降；③ 时长按模型能力表校验（turbo 参考生 3~15 秒），30 秒段在驱动层明确拒绝，配套迁移 017 把逻辑 SKU 时长收窄 {5,10,15,30}→{5,10,15}（就地 UPDATE，价格不变，版本号语义是用户价；在途任务时长已快照不受影响）；④ 错误口径与 aiide-ark 一致（4xx→failed 不冻结、429/连接失败→retryable、超时/5xx→unknown 不重提），余额不足/鉴权失败有专属中文文案，轮询 credits 透传 usage；⑤ `catalog()` 用免费余额接口做 channel:test 连通检查；⑥ 驱动缺省参数 audio=true、offPeak=false（错峰 48h 只适合后台批量）、watermark=false。
+- **验证**：`node --test drivers/vidu/driver.test.js` **21/21**（契约套件 10 + 特有场景 11：Token 鉴权、接口选型、480p→540p、30 秒拒绝、5000 字上限、7 张截断、credits 透传、TaskNotFound、余额、配置矛盾、URL 安全）；`npm run test:server` **512/512**（main 基线 491 + 21）；`npm run check`、`npm run build` 通过。夹具按官方文档示例构造（provenance 已注明），零真实费用。
+- **未完成 / 风险**：真实渠道未验证（提交/轮询/音画同步/切镜观感/真实错误码），待 §4 第 11 条授权；首页报价下限 ¥30→¥15 待 §4 第 10 条拍板；跨段角色音色一致性依赖模型自动推荐（§4 第 11 条）； Vidu 无创建幂等键（重提防护靠 gen_tasks 状态守卫，与 aiide 同口径）；默认渠道切换本身是运营后台运行时操作（渠道路由 rank 1），代码侧已就绪、待用户充值录钥后执行。
+- 局域网预览：`http://192.168.5.195:5173`（分支 `agent/eng/M3-ENG-01-vidu-q3`，mock；纯后端引擎改动无 UI 变化，预览仅供美工继续看当前界面）。
+
 ### 2026-11-10 · BE-Core · M3-ADM-03 三轮修复（并发测试夹具 + writeGuard 收窄）
 
 - **背景**：Lead 三轮复审（§6 2026-11-06 @`943cf1f`）：产品代码通过，退回并发测试夹具 1 处——每轮只加钱包冻结 3000、未插 reserve 流水，`cancelProject` 按作品流水汇总可退额，判定先拿锁时取消退 0、误报冻结残留（全量第 3 轮失败、单独 5/5 失败）。
