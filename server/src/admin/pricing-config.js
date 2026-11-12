@@ -17,9 +17,19 @@ async function skuView(t, skuCode) {
       ORDER BY k.version DESC LIMIT 1`,
     [skuCode],
   );
-  if (!rows.length) return null;
-  const row = rows[0];
-  return toAdminSku(row);
+  return rows.length ? toAdminSku(rows[0]) : null;
+}
+
+/** 指定版本的视图（POST 新增版本的响应：新版本行本身——未来生效时它还不是「当前生效版本」）。 */
+async function skuVersionView(t, skuCode, version) {
+  const { rows } = await t.query(
+    `SELECT k.sku_code, k.kind, k.model, k.resolution, k.unit, k.price_fen, k.cost_fen,
+            k.version, k.effective_at,
+            (SELECT count(*)::int FROM skus h WHERE h.sku_code = k.sku_code) AS versions
+       FROM skus k WHERE k.sku_code = $1 AND k.version = $2`,
+    [skuCode, version],
+  );
+  return rows.length ? toAdminSku(rows[0]) : null;
 }
 
 function toAdminSku(row) {
@@ -71,7 +81,7 @@ export async function createSkuVersion(db, { skuCode, priceFen, costFen = null, 
           && (costFen === null || Number(first.cost_fen) === costFen)
           && (effectiveAt === null || first.effective_at.getTime() === effectiveAt.getTime());
         if (!same) throw appError('IDEMPOTENCY_CONFLICT');
-        return { replayed: true, sku: await skuView(t, skuCode) };
+        return { replayed: true, sku: await skuVersionView(t, skuCode, first.version) };
       }
     }
     const effective = effectiveAt ?? null; // null → SQL now()，立即生效
@@ -93,7 +103,7 @@ export async function createSkuVersion(db, { skuCode, priceFen, costFen = null, 
       await t.query(`UPDATE skus SET status = 'inactive' WHERE sku_code = $1 AND version < $2 AND status = 'active'`,
         [skuCode, version]);
     }
-    return { replayed: false, sku: await skuView(t, skuCode) };
+    return { replayed: false, sku: await skuVersionView(t, skuCode, version) };
   });
 }
 
