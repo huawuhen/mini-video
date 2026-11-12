@@ -92,12 +92,12 @@ const PLAN = {
     { name: '宝宝', description: '好奇活泼', gender: 'female', ageGroup: 'child', characterId: 'chr_baby00000001' },
   ],
   segments: [
-    { durationSeconds: 30, sceneId: 's1', propIds: ['p1'],
+    { durationSeconds: 15, sceneId: 's1', propIds: ['p1'],
       endState: 'the girl stands holding a fallen leaf, the mother sits beside her, medium-wide framing',
       plot: '公园里铺开野餐垫，宝宝追逐飘落的树叶。', cameraNotes: '广角建立场景后跟拍宝宝',
       dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。' }], ambience: '风声和鸟鸣',
       transition: 'hard_cut', castIndexes: [0, 1] },
-    { durationSeconds: 30, sceneId: 's1', propIds: ['p1'],
+    { durationSeconds: 15, sceneId: 's1', propIds: ['p1'],
       endState: 'the two sit close together sharing fruit, both smiling, medium shot',
       plot: '同一片草地上，两人分享水果并相视而笑。', cameraNotes: '从手部特写缓慢拉到双人中景',
       dialogue: [{ castIndex: 1, line: '这个苹果真甜！' }], ambience: '轻微风声',
@@ -252,7 +252,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.match(request.system, /bible/);
     const message = JSON.parse(request.messages[0].content);
     assert.equal(message.maxSeconds, 90);
-    assert.deepEqual(message.allowedDurations, [30, 15, 10, 5]);
+    assert.deepEqual(message.allowedDurations, [15, 10, 5]); // 迁移 017：单段上限 15 秒（Vidu 参考生口径）
     assert.ok(message.untrustedStory.text.includes('公园野餐'));
   });
 
@@ -482,7 +482,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: project } = await ctx.db.query(`SELECT progress FROM projects WHERE id = $1`, [projectId]);
     assert.ok(project[0].progress.percent >= 45);
     const { rows: wallet } = await ctx.db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [userId]);
-    assert.equal(wallet[0].frozen_fen, 6000, '视频费预占 = 2 段 × 30 秒 × 100 分（迁移 008）');
+    assert.equal(wallet[0].frozen_fen, 3000, '视频费预占 = 2 段 × 15 秒 × 100 分（迁移 008 定价 + 017 时长）');
     const { rows: locked } = await ctx.db.query(
       `SELECT count(*)::int AS n FROM project_cast WHERE project_id = $1 AND locked_at IS NOT NULL`, [projectId]);
     assert.equal(locked[0].n, 2, '确认后锁定角色');
@@ -496,14 +496,14 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'project_render', projectId } }));
     await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: 'c4-confirm-0002', config });
-    // 两个 30 秒片段：每个 4 镜头（3~8 秒/镜）；第 1 段带一句对白，第 2 段 prev_tail 无对白
+    // 两个 15 秒片段：每个 3 镜头（3~8 秒/镜）；第 1 段带一句对白，第 2 段 prev_tail 无对白
     const shot = (index, start, end, dialogue = []) => ({ start, end, size: 'Medium shot', transition: 'cut',
       action: `Shot ${index}: the characters continue naturally.`, dialogue,
       reaction: '', environment: 'Soft daylight.', camera: 'static' });
-    const timeline1 = { shots: [shot(1, 0, 7), shot(2, 7, 14), shot(3, 14, 21),
-        { ...shot(4, 21, 30), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }],
+    const timeline1 = { shots: [shot(1, 0, 5), shot(2, 5, 10),
+        { ...shot(3, 10, 15), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }],
       avoid: [] };
-    const timeline2 = { shots: [shot(1, 0, 7), shot(2, 7, 14), shot(3, 14, 21), shot(4, 21, 30)], avoid: [] };
+    const timeline2 = { shots: [shot(1, 0, 5), shot(2, 5, 10), shot(3, 10, 15)], avoid: [] };
     const llm = createMockLlm([JSON.stringify(timeline1), JSON.stringify(timeline2)]);
     const agent = createStoryAgent({ llm, logger: silentLogger });
     const handler = createBindPromptsHandler({ db: ctx.db, logger: silentLogger, storyAgent: agent });
@@ -513,7 +513,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { rows: segments } = await ctx.db.query(
       `SELECT idx, final_prompt FROM segments WHERE project_id = $1 ORDER BY idx`, [projectId]);
     const first = segments[0].final_prompt;
-    assert.match(first.prompt, /第1个镜头\[0-7秒\]/);
+    assert.match(first.prompt, /第1个镜头\[0-5秒\]/);
     assert.match(first.prompt, /Lip sync\./);
     assert.equal(first.skillId, 'generic', 'mock SKU 的 model=mock-video 回退 generic Skill');
     assert.equal(first.imageRefs.length, 1, '只有宝宝绑定了形象图');
@@ -578,14 +578,14 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
   const SHOT = (index, start, end, dialogue = []) => ({ start, end, size: 'Medium shot', transition: 'cut',
     action: `Shot ${index}: the characters continue naturally.`, dialogue,
     reaction: '', environment: 'Soft daylight.', camera: 'static' });
-  const timeline30 = (withDialogue) => ({ shots: withDialogue
-    ? [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21),
-        { ...SHOT(4, 21, 30), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }]
-    : [SHOT(1, 0, 7), SHOT(2, 7, 14), SHOT(3, 14, 21), SHOT(4, 21, 30)], avoid: [] });
+  const timeline15 = (withDialogue) => ({ shots: withDialogue
+    ? [SHOT(1, 0, 5), SHOT(2, 5, 10),
+        { ...SHOT(3, 10, 15), dialogue: [{ castIndex: 0, line: '慢一点，看看树叶。', delivery: 'gently' }] }]
+    : [SHOT(1, 0, 5), SHOT(2, 5, 10), SHOT(3, 10, 15)], avoid: [] });
 
 
   async function driveToRendering(idemKey, { llmScript } = {}) {
-    // 建项目 → understand（PLAN，2×30 秒）→ 补齐形象缺口并推进 → confirmCast → bind_prompts
+    // 建项目 → understand（PLAN，2×15 秒）→ 补齐形象缺口并推进 → confirmCast → bind_prompts
     const projectId = await createAtStoryReview(idemKey);
     const { quoteId: looksQuote } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'cast_looks', projectId } }));
@@ -605,7 +605,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'project_render', projectId } }));
     await confirmCast(ctx.db, { userId, projectId, quoteId, idempotencyKey: `${idemKey}-cc`, config });
-    const llm = createMockLlm(llmScript ?? [JSON.stringify(timeline30(true)), JSON.stringify(timeline30(false))]);
+    const llm = createMockLlm(llmScript ?? [JSON.stringify(timeline15(true)), JSON.stringify(timeline15(false))]);
     const bindHandler = createBindPromptsHandler({ db: ctx.db, logger: silentLogger,
       storyAgent: createStoryAgent({ llm, logger: silentLogger }) });
     await bindHandler({ projectId }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
@@ -613,7 +613,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
   }
 
   test('串行链（C5/C6）：提交→轮询→转存→inspect→尾帧→结算→下一段→拼接→delivered', async () => {
-    const sample = await makeVideo('chain-30s.mp4', { duration: 30 });
+    const sample = await makeVideo('chain-15s.mp4', { duration: 15 });
     const projectId = await driveToRendering('c5-0001');
     const videoProvider = fakeVideoProvider({ pollResults: {
       up_1: [{ status: 'running' }, { status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }], usage: { total_tokens: 108900 } }],
@@ -678,7 +678,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.equal(detail.status, 'delivered');
     assert.ok(detail.deliveredAt && detail.expiresAt);
     assert.equal(detail.render.status, 'succeeded');
-    assert.ok(detail.render.durationSeconds >= 59 && detail.render.durationSeconds <= 61, `拼接时长约 60 秒，实际 ${detail.render.durationSeconds}`);
+    assert.ok(detail.render.durationSeconds >= 29 && detail.render.durationSeconds <= 31, `拼接时长约 30 秒，实际 ${detail.render.durationSeconds}`);
     const { rows: wallet } = await ctx.db.query(`SELECT frozen_fen, available_fen FROM wallets WHERE user_id = $1`, [userId]);
     assert.equal(wallet[0].frozen_fen, 0, '两段全部结算');
     // usage 透传落库（渠道按 token 计费的对账依据）：提交成功时驱动返回的 usage 要写进 gen_tasks.result
@@ -696,8 +696,8 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
   }, { timeout: 240_000 });
 
   test('inspect 不通过（全黑）：take failed、退回该段预占、项目 failed；retry 免费重建并交付', async () => {
-    const sample = await makeVideo('chain-30s.mp4', { duration: 30 });
-    const black = await makeVideo('black-30s.mp4', { video: `color=c=black:size=${'720x1280'}:rate=30`, duration: 30 });
+    const sample = await makeVideo('chain-15s.mp4', { duration: 15 });
+    const black = await makeVideo('black-15s.mp4', { video: `color=c=black:size=${'720x1280'}:rate=30`, duration: 15 });
     const projectId = await driveToRendering('c5-0002');
     const videoProvider = fakeVideoProvider({ pollResults: {
       up_1: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/bad.mp4', kind: 'video' }] }],
@@ -720,9 +720,9 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     assert.equal(detail.status, 'failed');
     assert.equal(detail.error.code, 'SEGMENT_FAILED');
     assert.match(detail.error.message, /技术检查/);
-    // §5① A 口径：失败保持冻结。已结算 = 形象费 60；冻结 = 视频预占 6000（含失败段与未跑段，100 分/秒）
+    // §5① A 口径：失败保持冻结。已结算 = 形象费 60；冻结 = 视频预占 3000（含失败段与未跑段，100 分/秒 × 15 秒/段）
     assert.equal(detail.pricing.settledFen, 60);
-    assert.equal(detail.pricing.frozenFen, 6000);
+    assert.equal(detail.pricing.frozenFen, 3000);
     // retry：免费重建失败片段（第 0 段）并走完全链
     await retryProject(ctx.db, { userId, projectId });
     detail = await getProjectDetail(ctx.db, { userId, projectId });
@@ -772,10 +772,10 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     await assert.rejects(() => retryProject(ctx.db, { userId, projectId }),
       (err) => err.code === 'PROJECT_STATE_INVALID');
     assert.equal(videoProvider.submissions.length, submissionsBefore, 'unknown 后不重提');
-    // 取消：unknown 段保持冻结，未提交的第 2 段退回（30 秒 × 100 分 = 3000 分）
+    // 取消：unknown 段保持冻结，未提交的第 2 段退回（15 秒 × 100 分 = 1500 分）
     const before = (await ctx.db.query(`SELECT frozen_fen FROM wallets WHERE user_id = $1`, [userId])).rows[0].frozen_fen;
     const cancelled = await cancelProject(ctx.db, { userId, projectId });
-    assert.equal(cancelled.refundedFen, 3000);
+    assert.equal(cancelled.refundedFen, 1500);
     assert.equal(cancelled.frozenFen, before - cancelled.refundedFen);
   });
 
@@ -803,7 +803,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const takeError = takeRows[0].error; // jsonb 列，pg 已解析为对象
     assert.equal(takeRows[0].status, 'failed');
     assert.equal(takeError.providerMessage, '人脸未过审', '上游原始信息只进技术详情');
-    assert.equal(detail.pricing.frozenFen, 6000, 'A 口径：明确失败保持冻结，由取消/重试消化');
+    assert.equal(detail.pricing.frozenFen, 3000, 'A 口径：明确失败保持冻结，由取消/重试消化');
     // retry：免费重建该段，渠道不再拒绝 → 提交成功回到 rendering
     await retryProject(ctx.db, { userId, projectId });
     await generate({ projectId, idx: 0 }, ctxOf());
@@ -813,7 +813,7 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
   });
 
   test('暂停/恢复：暂停后片段提交停住，恢复后续跑到交付', async () => {
-    const sample = await makeVideo('chain-30s.mp4', { duration: 30 });
+    const sample = await makeVideo('chain-15s.mp4', { duration: 15 });
     const projectId = await driveToRendering('c7-0001');
     const videoProvider = fakeVideoProvider({ pollResults: {
       up_1: [{ status: 'succeeded', outputs: [{ url: 'https://upstream.example/v1.mp4', kind: 'video' }] }],
@@ -1021,7 +1021,7 @@ describe('projects（M1-BE-05 复审修复）', () => {
         || name.startsWith('miv-frame-')).length;
     };
     const before = await countTempDirs();
-    const sample = await makeVideo('re-chain-30s.mp4', { duration: 30 });
+    const sample = await makeVideo('re-chain-15s.mp4', { duration: 15 });
     const projectId = await driveToRendering('rechain-0001');
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'project_render', projectId } }));
@@ -1067,7 +1067,7 @@ describe('projects（M1-BE-05 复审修复）', () => {
   // M2-OPS-03 复审必改 3：海报帧是展示增强——抽帧/转存失败只记日志，take 照常成功结算，
   // poster_key 保持 NULL（前端以「已完成」文案兜底），不得因此判片段失败。
   test('海报帧失败不阻塞：extractPosterFrame 抛错 → take 仍 succeeded、结算照常、poster_key 为空', async () => {
-    const sample = await makeVideo('poster-broken-30s.mp4', { duration: 30 });
+    const sample = await makeVideo('poster-broken-15s.mp4', { duration: 15 });
     const projectId = await driveToRendering('posterbad-0001');
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'project_render', projectId } }));

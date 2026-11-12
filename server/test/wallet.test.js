@@ -198,7 +198,7 @@ describe('wallet（M1-BE-02）', () => {
     assert.ok((await bad.json()).details.fields.cursor);
   });
 
-  test('报价估算：PRD 默认口径（30 秒下限，缺形象计入上下限），档位或风格非法 400，他人数字人 404', async () => {
+  test('报价估算：PRD 默认口径（下限=1 个最长单段，缺形象计入上下限），档位或风格非法 400，他人数字人 404', async () => {
     await insertCharacter(ctx.db, 'chr_a1', userA);
     await insertCharacter(ctx.db, 'chr_a2', userA);
     await ctx.db.query(`INSERT INTO characters (id, user_id, name) VALUES ('chr_a3', $1, '测试角色')`, [userA]);
@@ -213,16 +213,16 @@ describe('wallet（M1-BE-02）', () => {
     const estimate = (body) => post(base, '/quotes/estimate', body, { cookie, csrf });
     let res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 200);
-    // 迁移 008 aiide 定价：标准 100 分/秒
-    assert.deepEqual(await res.json(), { minFen: 3000, maxFen: 9000 });
+    // 迁移 008 aiide 定价：标准 100 分/秒；迁移 017 单段上限收窄 15 秒 → 下限 = 100×15
+    assert.deepEqual(await res.json(), { minFen: 1500, maxFen: 9000 });
 
     res = await estimate({ qualityTierId: 'standard', styleId: 'realistic', characterIds: ['chr_a1', 'chr_a2', 'chr_a3'] });
     assert.equal(res.status, 200);
-    // 3 个勾选中 2 个缺形象：min = 100×30 + 2×60，max = 100×90 + 2×60
-    assert.deepEqual(await res.json(), { minFen: 3120, maxFen: 9120 });
+    // 3 个勾选中 2 个缺形象：min = 100×15 + 2×60，max = 100×90 + 2×60
+    assert.deepEqual(await res.json(), { minFen: 1620, maxFen: 9120 });
 
     res = await estimate({ qualityTierId: 'hd', styleId: 'realistic', characterIds: [] });
-    assert.deepEqual(await res.json(), { minFen: 6000, maxFen: 18000 }); // 高清 200 分/秒
+    assert.deepEqual(await res.json(), { minFen: 3000, maxFen: 18000 }); // 高清 200 分/秒
 
     res = await estimate({ qualityTierId: 'nope', styleId: 'realistic', characterIds: [] });
     assert.equal(res.status, 400);
