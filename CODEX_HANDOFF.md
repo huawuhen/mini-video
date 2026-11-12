@@ -269,6 +269,7 @@
 - **背景**：Lead 三轮复审（§6 2026-11-06 @`943cf1f`）：产品代码通过，退回并发测试夹具 1 处——每轮只加钱包冻结 3000、未插 reserve 流水，`cancelProject` 按作品流水汇总可退额，判定先拿锁时取消退 0、误报冻结残留（全量第 3 轮失败、单独 5/5 失败）。
 - **修复**：① 并发测试每轮补 `ledger reserve`（amount_fen -3000 / frozen_delta_fen 3000 / ref_type 'project' / ref_id 本轮作品）；② 顺序覆盖按复审建议固定：`cancel-first`（取消先拿锁→unknown 保留→判定见 canceled 当场退「待核对退回」）与 `resolve-first`（判定先拿锁→保冻结→取消退差额「作品取消退回」）各 1 轮确定性断言两种先后顺序实际出现（退回标题集合断言两种都在），另保留 3 轮 `Promise.allSettled` 真竞争只断言不变量（冻结清零 / 3000 恰退一次 / ≤1 笔退款流水 / take failed / 作品 canceled）；③ 顺手（不阻塞）：`api/admin-auth.js` 的 `writeGuard` 从 router 级收窄为只挂 login/logout 两个路由。
 - **验证**：该测试单独跑 **5/5 次全过**（11/11），与 admin-users-orders、auth 组合 51/51；`test:server` **491/491**、`check`、`build` 全过。纯测试夹具 + 路由守卫收窄（Origin 用例仍过），无 UI 变化，未重复浏览器走查。
+- 局域网预览：`http://192.168.5.195:5173`（2026-11-12 推送时本机 IP 已从 192.168.10.249 变为 192.168.5.195；mock，判定/取消演示数据刷新即重置）。
 
 ### 2026-11-09 · BE-Core + Web · M3-ADM-03 二轮复审修复（并发锁 / 登录 Origin / 已注销手机号）
 
