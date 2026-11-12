@@ -278,7 +278,7 @@
 - **双端走查**（ego-browser，mock；⚠ 该环境 CDP 视口仿真会自动失效，采用「每个观察点前重设并验证 clientWidth」方式，截图宽度按 PNG 头逐一校验）：**1280**（真仿真视口）：登录 → SKU 列表（video.480p ¥1.00 v1）→ 调价 ¥1.20/成本 ¥0.68 → 二次确认 → 列表 v2/毛利率 43.3%（1280-01~04）→ 720p 设明天生效 → 当前价保持 ¥2.00、标「另有历史/未生效版本」（1280-05）→ 标准档换映射 video.480p→v6（1280-06）→ 新增风格上传封面→下架（1280-07/08）→ 新增音色上传试听 mp3（1280-09）→ 报价有效期 900→600 确认弹窗→保存（1280-10/11）→ 审计列表含上述全部操作（detail=价格变更明细、ip 127.0.0.1）→ 按 `settings.update` 过滤 1 条（1280-12/13）。**375×812 真仿真**（触屏 + iPhone UA）：价格与配置页/调价弹窗/运营参数/审计页全部可打开、主要按钮可点、`scrollWidth=clientWidth=375` 无横向溢出（375-01~04）。
 - **⚠ 运营参数白名单的运行时生效范围（请 Lead 知悉）**：`quote_ttl_seconds`、`max_duration_seconds`（首页估算+目录 limits）、`max_character_photos`、`min/max_story_chars`（目录 limits，服务端校验仍是写死的 3000）、`expiry_remind_days`、`retention_days` 已读 settings 表；**`daily_free_understanding`（运行时用 env `PROJECTS_FREE_DAILY_QUOTA`）与生成管线时长上限（`PROJECTS_MAX_SECONDS`）当前以环境变量为准**，后台改这两项不影响管线——建议后续任务把这两处切到 settings-first（涉及既有 env 文档与测试口径，未擅动）。
 - **未验证/遗留**：管理端真实后端联调（待 Ubuntu 栈 `admin:create`，与 ADM-01/02 同遗留）；审计 `ip` 依赖 `req.ip`，生产在 nginx 后需 `TRUST_PROXY_HOPS` 配置正确才记真实客户端 IP（PAY-04 既有项）。
-- 局域网预览：`http://192.168.10.58:5174`（本分支，mock；演示数据存浏览器内存，刷新即重置。5173 被上一任务遗留的旧 dev server 占用，本任务预览用 5174）。
+- 局域网预览：`http://192.168.5.195:5174` 或 `http://192.168.10.58:5174`（本机双网卡，本分支，mock；演示数据存浏览器内存，刷新即重置。5173 被上一任务遗留的旧 dev server 占用，已停掉旧进程，本任务预览用 5174）。
 
 ### 2026-11-10 · BE-Core · M3-ADM-03 三轮修复（并发测试夹具 + writeGuard 收窄）
 
