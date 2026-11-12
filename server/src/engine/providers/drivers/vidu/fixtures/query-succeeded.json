@@ -1,0 +1,15 @@
+{
+  "id": "task_3f9k2m8q0001",
+  "state": "success",
+  "err_code": "",
+  "credits": 35,
+  "payload": "",
+  "creations": [
+    {
+      "id": "creation_0001",
+      "url": "https://vidu-outputs.example.test/obj/demo.mp4?Expires=1799999999&Signature=test",
+      "cover_url": "https://vidu-outputs.example.test/obj/demo-cover.jpg?Expires=1799999999&Signature=test",
+      "watermarked_url": "https://vidu-outputs.example.test/obj/demo-wm.mp4?Expires=1799999999&Signature=test"
+    }
+  ]
+}
