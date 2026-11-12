@@ -10,7 +10,13 @@ const router = useRouter();
 const NAV = [
   { path: '/admin/users', label: '用户与余额' },
   { path: '/admin/orders', label: '充值订单' },
+  { path: '/admin/projects', label: '作品处理' },
   { path: '/admin/channels', label: '渠道管理' },
+];
+// 未完成的页面先占位置灰（TASKS M3-ADM-02 导航要求；M3-ADM-04 完成后接入）
+const NAV_PENDING = [
+  { label: '价格与配置' },
+  { label: '审计日志' },
 ];
 
 const routeIs = (path: string) => route.path === path;
@@ -28,6 +34,7 @@ async function logout() {
       <nav>
         <RouterLink v-for="item in NAV" :key="item.path" :to="item.path"
           class="nav" :class="{ current: routeIs(item.path) }">{{ item.label }}</RouterLink>
+        <span v-for="item in NAV_PENDING" :key="item.label" class="nav pending" :title="`${item.label}（M3-ADM-04 完成后开放）`">{{ item.label }}</span>
         <slot name="nav-extra" />
       </nav>
       <div class="actions">
@@ -48,6 +55,7 @@ async function logout() {
 nav { display: flex; align-items: center; gap: var(--miv-space-3); flex: 1; min-width: 0; }
 .nav { color: var(--miv-text-2); font-size: 14px; text-decoration: none; white-space: nowrap; }
 .nav.current { color: var(--miv-text); font-weight: 600; }
+.nav.pending { color: var(--miv-text-3); cursor: default; }
 .actions { display: flex; gap: var(--miv-space-2); }
 button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px solid var(--miv-border);
   border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; white-space: nowrap; }

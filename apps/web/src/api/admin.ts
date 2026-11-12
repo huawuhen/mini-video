@@ -48,6 +48,33 @@ export interface AdminOrderDetail extends AdminOrder { notifyCount: number; last
 export interface UsersQuery { phone?: string; userId?: string; status?: UserStatus | ''; cursor?: string; limit?: number }
 export interface OrdersQuery { status?: OrderStatus | ''; userId?: string; outTradeNo?: string; from?: string; to?: string; cursor?: string; limit?: number }
 
+// ── 作品与失败/待核对处理（M3-ADM-03，API.md §8.3） ──
+export type ProjectStatus = 'understanding' | 'story_review' | 'casting' | 'cast_review' | 'rendering'
+  | 'composing' | 'delivered' | 'expired' | 'paused' | 'failed' | 'canceled';
+export interface AdminProject {
+  id: string; userId: string; phoneMasked: string; title: string; status: ProjectStatus;
+  progress: { percent: number; message: string };
+  unknownTakes: number; createdAt: string; updatedAt: string;
+}
+export interface AdminTakeInfo {
+  id: string; status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown';
+  genTaskStatus: string | null; channel: string | null; upstreamTaskId: string | null;
+  frozenFen: number; error: { code?: string; message?: string } | null;
+  resolvedOutcome?: 'not_charged' | 'charged'; resolvedNote?: string; resolvedAt?: string;
+  createdAt: string;
+}
+export interface AdminSegmentInfo {
+  id: string; index: number; durationSeconds: number; plot: string;
+  selectedTakeId: string | null; takes: AdminTakeInfo[];
+}
+export interface AdminProjectDetail extends AdminProject {
+  money: { reservedFen: number; settledFen: number; refundedFen: number; frozenFen: number };
+  segments: AdminSegmentInfo[];
+  events: { id: number; status: string; progress: { percent?: number; message?: string }; createdAt: string }[];
+}
+export interface ProjectsQuery { status?: ProjectStatus | ''; userId?: string; hasUnknown?: boolean; cursor?: string; limit?: number }
+export type ResolveOutcome = 'not_charged' | 'charged';
+
 export interface AdminApi {
   login(username: string, password: string): Promise<{ admin: AdminSession; csrfToken: string }>;
   logout(): Promise<void>;
@@ -74,9 +101,14 @@ export interface AdminApi {
   order(id: string): Promise<AdminOrderDetail>;
   reconcileOrder(id: string): Promise<AdminOrder>;
   refundOrder(id: string, body: { amountFen: number; reason: string; idempotencyKey: string }): Promise<{ order: AdminOrder; entry: AdminLedgerItem }>;
+  // §8.3 作品与失败/待核对处理
+  projects(query?: ProjectsQuery): Promise<{ items: AdminProject[]; nextCursor: string | null }>;
+  project(id: string): Promise<AdminProjectDetail>;
+  resolveTake(takeId: string, body: { outcome: ResolveOutcome; note: string; idempotencyKey: string }): Promise<AdminProjectDetail>;
+  cancelProject(id: string, reason: string): Promise<AdminProjectDetail>;
 }
 
-const BASE = '/api';
+const BASE = '/api/v1'; // 管理端接口同挂在 /api/v1（真实后端联调发现：原 /api 缺 v1，全 404）
 
 async function request<T>(method: string, path: string, body?: unknown, csrf?: string): Promise<T> {
   const headers: Record<string, string> = {};
@@ -136,6 +168,11 @@ export const adminHttp: AdminApi = {
   order: (id) => request<AdminOrderDetail>('GET', `/admin/orders/${encodeURIComponent(id)}`),
   reconcileOrder: (id) => request<AdminOrder>('POST', `/admin/orders/${encodeURIComponent(id)}/reconcile`, undefined, adminCsrf),
   refundOrder: (id, body) => request('POST', `/admin/orders/${encodeURIComponent(id)}/refund`, body, adminCsrf),
+  // §8.3 作品与失败/待核对处理
+  projects: (query = {}) => request<{ items: AdminProject[]; nextCursor: string | null }>('GET', `/admin/projects${qs(query)}`),
+  project: (id) => request<AdminProjectDetail>('GET', `/admin/projects/${encodeURIComponent(id)}`),
+  resolveTake: (takeId, body) => request('POST', `/admin/takes/${encodeURIComponent(takeId)}/resolve`, body, adminCsrf),
+  cancelProject: (id, reason) => request<AdminProjectDetail>('POST', `/admin/projects/${encodeURIComponent(id)}/cancel`, { reason }, adminCsrf),
 };
 
 export const csrfOf = () => adminCsrf;

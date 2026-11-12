@@ -307,8 +307,13 @@ describe('cron（M1-BE-03）', () => {
     await insertSegment(db, 'seg_f3b', 'prj_f3', 1);
     await db.query(`UPDATE segments SET duration_seconds = 30 WHERE project_id = 'prj_f3'`);
     await insertTake(db, 'take_f3a', 'prj_f3', 'users/x/f3a.mp4');
+    // unknown take 必有 gen_task（真实不变量）；冻结金额取下单时写入的 request.amountFen（M3-ADM-03 复审必改①）
     await db.query(
-      `INSERT INTO segment_takes (id, segment_id, status) VALUES ('take_f3b', 'seg_f3b', 'unknown')`);
+      `INSERT INTO gen_tasks (id, user_id, kind, provider, status, request, idempotency_key)
+       VALUES ('gt_f3b', 'usr_cron00000001', 'video', 'test-provider', 'unknown', $1, 'test:gt-f3b')`,
+      [JSON.stringify({ takeId: 'take_f3b', projectId: 'prj_f3', amountFen: 3000 })]);
+    await db.query(
+      `INSERT INTO segment_takes (id, segment_id, status, gen_task_id) VALUES ('take_f3b', 'seg_f3b', 'unknown', 'gt_f3b')`);
     // 账本：succeeded 段 reserve+settle（冻结贡献 0）；unknown 段仅 reserve（冻结贡献 3000 = 30s×100 分/秒）
     const insertLedger = (id, kind, amountFen, frozenDelta, idem) => db.query(
       `INSERT INTO ledger (id, user_id, kind, amount_fen, frozen_delta_fen, title, ref_type, ref_id, idempotency_key)

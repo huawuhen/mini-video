@@ -668,24 +668,27 @@ export async function retryProject(db, { userId, projectId }) {
   });
 }
 
-export async function cancelProject(db, { userId, projectId }) {
+/** 取消作品：用户侧传 userId 做归属校验；管理端/系统任务显式传 asAdmin: true（复审建议 a）。
+ * unknown 片段的冻结保持待对账，其余冻结全额退回；保留金额按 take 下单时写入的
+ * gen_tasks.request.amountFen 汇总（复审必改①：不按当前价重算，与逐段结算同口径）。 */
+export async function cancelProject(db, { userId, projectId, asAdmin = false }) {
   return db.tx(async (t) => {
-    const project = await requireProject(t, { userId, projectId });
-    const money = await projectMoneySummary(t, { userId, projectId });
+    // 复审必改①：带锁读取作品行，与判定（FOR UPDATE OF st, p）串行化——锁内再判断状态、
+    // 汇总 unknown，避免「判定保冻结 vs 取消退差额」并发互判留下无出口的冻结
+    const project = await requireProject(t, { userId, projectId, asAdmin, forUpdate: true });
+    const money = await projectMoneySummary(t, { userId: project.user_id, projectId });
     // 提交结果未知（unknown）的片段金额保持冻结待对账（docs/ARCHITECTURE §4：只退未提交部分）
     const { rows: unknownRows } = await t.query(
-      `SELECT COALESCE(SUM(s.duration_seconds), 0)::bigint AS seconds
+      `SELECT COALESCE(SUM((gt.request->>'amountFen')::bigint), 0)::bigint AS frozen
          FROM segments s JOIN segment_takes st ON st.segment_id = s.id
+         JOIN gen_tasks gt ON gt.id = st.gen_task_id
         WHERE s.project_id = $1 AND st.status = 'unknown'`, [projectId]);
-    let unknownFrozen = 0;
-    if (Number(unknownRows[0].seconds) > 0) {
-      const unit = await videoUnitFen(t, project.tier_mapping_id);
-      unknownFrozen = Number(unknownRows[0].seconds) * unit;
-    }
+    const unknownFrozen = Number(unknownRows[0].frozen);
     const refundable = Math.max(0, money.frozenFen - unknownFrozen);
     const purpose = 'cancel'; // 状态迁移守卫保证 cancel 只会成功一次，幂等键固定即可
-    await refundProject(t, { userId, projectId, amountFen: refundable, purpose });
-    await transition(t, { projectId, userId,
+    // 账本与状态迁移都以作品属主为准（管理端取消不带调用方 userId）
+    await refundProject(t, { userId: project.user_id, projectId, amountFen: refundable, purpose });
+    await transition(t, { projectId, userId: project.user_id, asAdmin,
       from: ['understanding', 'story_review', 'casting', 'cast_review', 'rendering', 'composing', 'paused', 'failed'],
       to: 'canceled', progress: { percent: 0, message: '已取消' } });
     return { ok: true, refundedFen: refundable, frozenFen: unknownFrozen };

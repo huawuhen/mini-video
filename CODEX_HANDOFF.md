@@ -96,6 +96,7 @@
 | M3-PAY-04 | Ops（本机开发 Agent） | `agent/ops/M3-PAY-04-pay-ops` | `deploy/{PAY-SETUP.md,nginx.conf,README.md,.env.production.example}` `CODEX_HANDOFF.md` | ✅ 完成（Lead 复审通过并合并，2026-11-03） | 2026-11-03 |
 | M3-SMS-02 | BE-Core（本机开发 Agent） | `agent/be/M3-SMS-02-sms-errors` | `server/src/auth/{sms-aliyun.js,sms.js,config.js}` `server/.env.example` `deploy/.env.production.example` `server/test/sms-aliyun.test.js` `CODEX_HANDOFF.md` | ✅ 完成（Lead 审查通过并合并，2026-11-03；真实发送待 §3 授权的 Mac 联调） | 2026-11-03 |
 | M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},utils/idempotency.ts,pages/admin/*,pages/**,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 已合并（main `89d7c1f`，2026-11-05 复审通过） | 2026-11-05 |
+| M3-ADM-03 作品与失败/待核对处理 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-03-projects` | `server/migrations/015*.sql` `server/src/admin/projects.js`（新增） `server/src/api/{admin-projects,admin-auth}.js` `server/src/projects/{state.js,service.js}` `server/src/{http/errors.js,auth/session.js}` `server/src/app.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},pages/admin/*,router}` `docs/m3-adm03/`（走查截图） `CODEX_HANDOFF.md` | 待审查（三轮修复 @`6678e87`：并发测试夹具补 reserve/固定两种顺序/writeGuard 收窄；test:server 491/491、check、build 过） | 2026-11-12 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -263,6 +264,52 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-10 · BE-Core · M3-ADM-03 三轮修复（并发测试夹具 + writeGuard 收窄）
+
+- **背景**：Lead 三轮复审（§6 2026-11-06 @`943cf1f`）：产品代码通过，退回并发测试夹具 1 处——每轮只加钱包冻结 3000、未插 reserve 流水，`cancelProject` 按作品流水汇总可退额，判定先拿锁时取消退 0、误报冻结残留（全量第 3 轮失败、单独 5/5 失败）。
+- **修复**：① 并发测试每轮补 `ledger reserve`（amount_fen -3000 / frozen_delta_fen 3000 / ref_type 'project' / ref_id 本轮作品）；② 顺序覆盖按复审建议固定：`cancel-first`（取消先拿锁→unknown 保留→判定见 canceled 当场退「待核对退回」）与 `resolve-first`（判定先拿锁→保冻结→取消退差额「作品取消退回」）各 1 轮确定性断言两种先后顺序实际出现（退回标题集合断言两种都在），另保留 3 轮 `Promise.allSettled` 真竞争只断言不变量（冻结清零 / 3000 恰退一次 / ≤1 笔退款流水 / take failed / 作品 canceled）；③ 顺手（不阻塞）：`api/admin-auth.js` 的 `writeGuard` 从 router 级收窄为只挂 login/logout 两个路由。
+- **验证**：该测试单独跑 **5/5 次全过**（11/11），与 admin-users-orders、auth 组合 51/51；`test:server` **491/491**、`check`、`build` 全过。纯测试夹具 + 路由守卫收窄（Origin 用例仍过），无 UI 变化，未重复浏览器走查。
+- 局域网预览：`http://192.168.5.195:5173`（2026-11-12 推送时本机 IP 已从 192.168.10.249 变为 192.168.5.195；mock，判定/取消演示数据刷新即重置）。
+
+### 2026-11-09 · BE-Core + Web · M3-ADM-03 二轮复审修复（并发锁 / 登录 Origin / 已注销手机号）
+
+- **背景**：Lead 二轮复审退回（§6 2026-11-06 @`606a856`，3 处小改）。同分支追加 2 个提交（`7da62e4` 修复与测试 / `308d95e` §7），已 merge main（`38fa8be`）。
+- **必改①（判定/取消并发）**：`resolveTake` 锁扩展为 `FOR UPDATE OF st, p`（判定在锁内读作品状态）；`requireProject` 增 `forUpdate` 选项，`cancelProject` 用带锁读取——判定与取消在同一作品行上串行化，锁内再判断状态、汇总 unknown，消除「判定保冻结 vs 取消退差额」并发互判留下无出口冻结（Lead 已复现的路径）。**并发测试**：6 轮 `Promise.allSettled` 判定×取消真实竞争，每轮断言：冻结恰好清零、3000 恰好退回一次、退款流水 ≤1 笔、作品 canceled、take failed（两种先后顺序都被覆盖）。
+- **必改②（登录 Origin）**：`api/admin-auth.js` 登录/登出挂 `auth.writeGuard`（此处无管理员会话，只校验 Origin 白名单）——补齐 csrfGuard 豁免 `/admin/` 后缺失的防护。测试：恶意 Origin 登录 403 `CSRF_INVALID`、合法 Origin 200、登出同受 Origin 校验；**auth.test 补「浏览器持用户会话（miv_sid）时管理端登录仍成功」**（豁免不回退）。
+- **必改③（已注销手机号）**：作品列表/详情 SELECT 带 `u.status`，已注销用户手机号显示「已注销」（与 admin/users、admin/orders 同口径）；新增已注销用户夹具 u2/prjZ，列表与详情均断言。
+- **验证**：`test:server` **491/491**（488 + 并发/Origin/用户会话/已注销 4 用例；期间测试库容器随 Docker 休眠掉线一次，重开重跑）、`check`、`build` 全过。
+- **双端走查（mock，局域网 http 源；本轮改动涉及的判定/取消流程）**：**1280**——判定「上游已扣费」→ 冻结保持不变（¥50/已退 ¥0，UI 与库一致）、时间线统一文案；取消《城市夜跑》→ 已取消、阿澈余额 ¥32→¥68、冻结清零。**375（触屏 + iPhone UA）**——干净会话重走判定（charged）→ 冻结保持 ¥50、无横向溢出（`375-08/09`，PNG 头校验宽度）。
+- **局域网预览**：`http://192.168.10.249:5173`（本分支，mock；判定/取消演示数据刷新即重置）。
+
+### 2026-11-06 · BE-Core + Web · M3-ADM-03 复审修复（2 必改 + 建议 a~d）+ 真实后端走查修复
+
+- **背景**：Lead 复审退回（§6 2026-11-05 @`490f060`）+ 用户新决策「上游已扣费由平台承担」（§3；API.md §8.3 已改写）。同分支追加 4 个提交（`b8d7030` 后端 / `fe4f720` 前端文案 / `4dc5b96` 真实后端走查修复），已 merge main（`39be7b1`）。
+- **必改①（金额口径）**：resolve、详情 take `frozenFen`、`cancelProject` 的 `unknownFrozen` 一律取 take 下单时写入的 `gen_tasks.request.amountFen`（不按当前价重算，与逐段结算同口径；request 缺失按不变量破坏报 INTERNAL）。
+- **必改②（判定新规则）**：两种结论对用户资金处理相同、**不向用户结算**（`charged` 只进 resolved_outcome 与审计）：金额取下单金额；作品可重试（未取消/过期、非 redelivery）→ 保持冻结只把 take 置 failed（与普通片段失败一致，重试复用冻结）；redelivery 或作品已取消/过期 → 当场退回（「待核对退回」）；用户时间线统一「已核对：该片段生成失败，费用未扣除」。
+- **建议**：a. `requireProject`/`transition` 改显式 `asAdmin: true`（userId 缺省且未显式 → INTERNAL，不再静默管理员视角；cron 调用点传 userId 不变）；b. 同键不同结论 409 `IDEMPOTENCY_CONFLICT`；c. 重放跳过审计（resolve 返回 replayed，审计 detail 增实际退回金额）；d. mock resolve 按新规则重写 + 判定弹窗/确认弹层/toast 文案同步（不再有「按原价结算」）。
+- **测试**：admin-projects.test.js 重写为 9 用例——unknown 挡重试、判定保持冻结（不产生任何退回/结算流水）、**判定后重试闭环（retryProject 放行 → 新 take 成功 → 真实 settleSegment 结算 3000 → 冻结精确扣减、其他作品 8300 分文不动）**、redelivery 当场退回 2500、已取消作品 charged 判定当场退回 1800、**改价（插 version 99 price 500 SKU）后详情与判定仍按下单金额 3000**、同键换结论 409、重放不重复写审计、取消保留金额=下单金额；cron.test.js 旧夹具补 gen_task（unknown 必有 gen_task 的新不变量）。`test:server` **488/488**、check、build 过。
+- **真实后端走查（新增，隔离库 miv_w01 + local-mock 上游，零真实模型费用）抓到 4 个真实联调 bug 并修复（`4dc5b96`）**：① 管理端登录路由只在渠道路由里、仅 real 模式挂载——mock 开发模式管理端无法登录 → 抽出 `api/admin-auth.js` 无条件挂载；② 浏览器同时持有用户会话（miv_sid）时，用户 csrfGuard 把管理端登录拦成 403 → csrfGuard 对 `/admin/` 路径豁免（管理端有自己的 writeGuard，SSRF/防护零放宽）；③ **adminHttp BASE 是 `/api` 缺 `/v1`**——ADM-01 起真实联调从未做过，所有管理端接口在真实后端全 404；④ 判定清零最后一个 unknown 后作品 error 仍是 TAKE_UNKNOWN，用户端永远显示「等客服处理」、重试入口不出现 → 判定时恢复为 SEGMENT_FAILED（补断言）。
+- **双端走查**：
+  - **1280 真库**：判定 not_charged → 冻结保持 ¥60.00（无任何流水，psql 核对）、时间线统一文案、take 失败带判定说明（`1280-10..12`）；用户端重试按钮出现（`1280-15`）→ 点重试 → 流水线（`1280-16`）。**未走完交付**：本机 TUN 代理 fake-IP 把 cdnh5.redith.cn 解析成保留地址，产物下载被 safeFetch 正确拦截（M2-OPS-03 已知环境限制，SSRF 防护零放宽；生产用 compose extra_hosts/DoH 容器解决；/etc/hosts 需交互 sudo 无法写入）——**资金闭环由用例 5 覆盖（真实 PG + 真实 settleSegment）**，完整交付到浏览器展示属既有流水线行为。走查产生的七牛样片已用 storage.remove 清理。
+  - **1280 + 375 mock（局域网 http 源）**：判定弹窗新文案（平台承担/冻结去向/统一结论）、确认弹层、toast 统一、判定后冻结不变（`1280-04..07`、`375-05..07`，375 全程无横向溢出、截图按 PNG 头校验）。
+- **局域网预览**：`http://192.168.10.249:5173`（本分支，mock；判定/取消演示数据刷新即重置）。
+
+### 2026-11-05 · BE-Core + Web · M3-ADM-03 作品与失败/待核对处理（API.md §8.3）
+
+- **背景**：运营后台第二批第 2 个任务。分支 `agent/be/M3-ADM-03-projects`（基于 main `14b4d08`，4 个提交：认领 / 后端 / 前端 / 走查修正）。
+- **后端**：迁移 `015-admin-take-resolve.sql`（`segment_takes` 增 `resolved_outcome/note/key/by/at` + unknown 部分索引）；新模块 `server/src/admin/projects.js` + 路由 `api/admin-projects.js`（/admin 路径内挂载 + writeGuard + 审计）。
+  - **列表** `GET /admin/projects`：status/userId 精确过滤、`hasUnknown=true` 只列有待核对作品（`unknownTakes` 计数为「unknown 且未判定」）、微秒 keyset 游标。
+  - **详情** `GET /admin/projects/:id`：金额聚合（`projectMoneySummary`：预占/已结算/已退回/冻结中）+ 片段/take 树（take 状态、gen_task 状态、**渠道名来自 `gen_tasks.channel_id`**、上游任务 ID、unknown 未判定片段的冻结额=段时长×锁定档位单价，与 cancelProject 的 `unknownFrozen` 同口径）+ 事件时间线（近 50 条）。
+  - **判定** `POST /admin/takes/:id/resolve`：事务内 `FOR UPDATE` 锁 take → 已判定则同键重放放行 / 换键 409 `TAKE_ALREADY_RESOLVED` → 非 unknown 409 `TAKE_NOT_UNKNOWN` → `not_charged` 退还冻结（账本 title「待核对退回」，键 `admin:resolve:<takeId>:refund`）/ `charged` 按原价结算（「待核对结算」）→ take 标 failed + resolved_* 落库 + 作品事件「已核对：上游已计费 / 未扣费，费用已退回」；管理端幂等键带 `admin:resolve:` 前缀进审计，账本键按 take+结论确定性命名双保险。判定只改 take，不自动重提（AGENTS §5）；failed 后用户可重新生成（retry 建新 take）。
+  - **后台取消** `POST /admin/projects/:id/cancel`：**复用用户侧 `cancelProject`**（同一状态守卫、同一退款口径：unknown 保持冻结待判定）——为此把 `requireProject`/`transition` 改为 userId 可省略（管理端不做归属过滤、仍拒已删除），`cancelProject` 内的金额聚合、退款、状态迁移全部以 `project.user_id` 为准（顺带修掉管理端路径 undefined userId 的隐患）；missing → `PROJECT_NOT_FOUND`。
+- **前端**：`AdminProjectsPage.vue`（状态 chips + 「只看待核对」+ 用户 ID 搜索；详情含金额四格、片段/take 树、判定弹窗〔两种结论单选+说明必填+二次确认，**幂等键开窗生成、失败沿用、成功清空**〕、取消弹窗〔原因必填+二次确认〕、事件时间线）；`AdminShell` 导航加「作品处理」，**价格与配置 / 审计占位置灰**（M3-ADM-04 后开放，补齐 TASKS 对导航的要求）；mock 同步 3 个演示作品与四个方法（判定/取消改状态、写流水与事件线、同键重放、换键与非 unknown 同错误码）。
+- **走查抓到并修正 2 处演示口径**：①管理页 take/gen_task 的 unknown 显示用户侧的「确认中」——管理页统一改「待核对」；②mock 演示数据小满钱包冻结 0 与作品冻结 5000 不一致（判定后会变负数）——改为 5000。
+- **双端走查**（mock，局域网 http 源 `http://192.168.10.249:5173`，非安全上下文 `randomUUID===undefined`；截图 `docs/m3-adm03/` 1280×10 + 375×4，全部按 PNG 头校验宽度）：
+  - **1280**：列表三作品带「2 段」待核对徽标（`01`）→ 只看待核对 1 行（`02`）→ 详情金额 ¥80/¥30/¥0/¥50 + 三片段树（unknown 高亮、gen_task/渠道/上游任务 ID、判定按钮）+ 时间线（`03`）→ 判定弹窗（商户平台核实提示、两种结论、说明必填）（`04`）→ **不填说明提交被 400 拦截** → 二次确认文案完整（`05`）→ not_charged 成功：已退回 ¥30、冻结 ¥50→¥20、take 标失败带判定说明、时间线追加（`06`）→ charged 结算：已结算 ¥30→¥50、冻结→¥0、「已核对：上游已计费」（`07`）→ 取消 rendering 作品《城市夜跑》二次确认（`08`）→ 已取消，**阿澈余额 ¥32→¥68、冻结清零**（`09`）；delivered 作品无「取消」按钮。
+  - **375（触屏 + iPhone UA）**：列表 → 详情 → 判定弹窗 → not_charged 全程复现（`375-01..04`），全程 `scrollWidth ≤ clientWidth` 无横向溢出。
+- **验证**：`test:server` **486/486**（479 + 新增 7 用例：过滤/翻页/详情聚合/两种判定含账本与事件与审计/同键重放/换键 409/非 unknown 409/取消退款与状态守卫与审计；夹具金额按锁定档位单价动态推导，渠道记录测试内自插——009 不播种渠道）、`check`、`build` 全过。**未验证**：管理端真实后端联调（等 Ubuntu 栈，同 M3-ADM-01/02 遗留）；真实 unknown take 的判定（需真实上游复现，当前由单测与 mock 覆盖）。
+- **局域网预览**：`http://192.168.10.249:5173`（本分支，mock；登录任意用户名 + 6 位以上密码；演示作品可判定/取消，刷新即重置）。
+
 ### 2026-11-05 · BE-Core + Web · M3-ADM-02 复审修复（3 必改 + 建议 a~c + 用户端 randomUUID）
 
 - **背景**：Lead 复审退回（§6 2026-11-04 @`075b7bc`），同分支追加 3 个提交（`884464c` 后端 / `ff9b66d` 前端+mock / `f2e6a4d` 用户端单独提交），已 merge 最新 main（`4468c06`）。
