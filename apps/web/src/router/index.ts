@@ -38,6 +38,8 @@ export const router = createRouter({
     { path: '/admin/orders', component: () => import('@/pages/admin/AdminOrdersPage.vue'), meta: { title: '充值订单' } },
     { path: '/admin/projects', component: () => import('@/pages/admin/AdminProjectsPage.vue'), meta: { title: '作品处理' } },
     { path: '/admin/channels', component: () => import('@/pages/admin/ChannelsPage.vue'), meta: { title: '渠道管理' } },
+    { path: '/admin/pricing', component: () => import('@/pages/admin/PriceConfigPage.vue'), meta: { title: '价格与配置' } },
+    { path: '/admin/audit', component: () => import('@/pages/admin/AuditPage.vue'), meta: { title: '审计日志' } },
     { path: '/:pathMatch(.*)*', component: () => import('@/pages/NotFoundPage.vue'), meta: { title: '页面不存在' } },
   ],
 });

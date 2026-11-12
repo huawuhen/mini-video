@@ -75,6 +75,50 @@ export interface AdminProjectDetail extends AdminProject {
 export interface ProjectsQuery { status?: ProjectStatus | ''; userId?: string; hasUnknown?: boolean; cursor?: string; limit?: number }
 export type ResolveOutcome = 'not_charged' | 'charged';
 
+// ── 价格、档位、风格、音色、运营参数（M3-ADM-04，API.md §8.4） ──
+export type SkuKind = 'video' | 'image' | 'llm';
+export type SkuUnit = 'second' | 'image' | 'ktoken';
+export interface AdminSku {
+  skuCode: string; kind: SkuKind; model: string; resolution: string | null; unit: SkuUnit;
+  priceFen: number; costFen: number; version: number; versions: number;
+  effectiveAt: string; marginRate: number | null;
+}
+export interface AdminTierMapping {
+  id: string; videoSkuCode: string; version: number; effectiveAt: string;
+  priceFen: number | null;
+}
+export interface AdminTier {
+  id: string; name: string; note: string; sort: number; status: 'active' | 'inactive';
+  currentMapping: AdminTierMapping | null;
+}
+export interface AdminStyle {
+  id: string; name: string; description: string; coverUploadId: string | null;
+  coverUrl?: string; promptHint: string; sort: number; status: 'active' | 'inactive';
+}
+export interface AdminVoice {
+  id: string; name: string; category: string; gender: string; ageGroup: string; description: string;
+  sampleUploadId: string | null; refAudioUploadId: string | null; sampleUrl?: string;
+  sort: number; status: 'active' | 'inactive';
+}
+export interface AdminSettingItem {
+  key: string; label: string; type: 'int'; min: number; max: number; value: number | null;
+}
+export interface StyleDraft {
+  name: string; description?: string; coverUploadId?: string | null; promptHint?: string; sort?: number;
+}
+export interface VoiceDraft {
+  name: string; category: string; gender: string; ageGroup: string; description?: string;
+  sampleUploadId?: string | null; refAudioUploadId?: string | null; sort?: number;
+}
+export interface AuditQuery {
+  adminId?: string; action?: string; targetType?: string; targetId?: string;
+  from?: string; to?: string; cursor?: string; limit?: number;
+}
+export interface AdminAuditItem {
+  id: number; adminUsername: string; action: string; targetType: string; targetId: string;
+  detail: Record<string, unknown>; ip: string | null; createdAt: string;
+}
+
 export interface AdminApi {
   login(username: string, password: string): Promise<{ admin: AdminSession; csrfToken: string }>;
   logout(): Promise<void>;
@@ -106,6 +150,23 @@ export interface AdminApi {
   project(id: string): Promise<AdminProjectDetail>;
   resolveTake(takeId: string, body: { outcome: ResolveOutcome; note: string; idempotencyKey: string }): Promise<AdminProjectDetail>;
   cancelProject(id: string, reason: string): Promise<AdminProjectDetail>;
+  // §8.4 价格与配置
+  skus(): Promise<{ items: AdminSku[] }>;
+  createSkuVersion(skuCode: string, body: { priceFen: number; costFen?: number; effectiveAt?: string; idempotencyKey: string }): Promise<AdminSku>;
+  tiers(): Promise<{ items: AdminTier[] }>;
+  updateTier(id: string, body: Partial<{ name: string; note: string; sort: number; status: 'active' | 'inactive' }>): Promise<AdminTier>;
+  createTierMapping(id: string, videoSkuCode: string): Promise<AdminTierMapping>;
+  styles(): Promise<{ items: AdminStyle[] }>;
+  createStyle(body: StyleDraft): Promise<{ id: string }>;
+  updateStyle(id: string, body: Partial<StyleDraft & { status: 'active' | 'inactive' }>): Promise<{ ok: boolean }>;
+  voices(): Promise<{ items: AdminVoice[] }>;
+  createVoice(body: VoiceDraft): Promise<{ id: string }>;
+  updateVoice(id: string, body: Partial<VoiceDraft & { status: 'active' | 'inactive' }>): Promise<{ ok: boolean }>;
+  settings(): Promise<{ items: AdminSettingItem[] }>;
+  updateSettings(changes: Record<string, number>): Promise<{ items: AdminSettingItem[] }>;
+  upload(file: File): Promise<{ uploadId: string; url?: string }>;
+  // §8.5 审计（只读）
+  audit(query?: AuditQuery): Promise<{ items: AdminAuditItem[]; nextCursor: string | null }>;
 }
 
 const BASE = '/api/v1'; // 管理端接口同挂在 /api/v1（真实后端联调发现：原 /api 缺 v1，全 404）
@@ -124,6 +185,23 @@ async function request<T>(method: string, path: string, body?: unknown, csrf?: s
   const data = response.status === 204 ? undefined : await response.json().catch(() => undefined);
   if (!response.ok) throw new MivApiError(response.status, data || {});
   return data as T;
+}
+
+/** multipart 上传（§8.4 管理端上传）：Content-Type 交给浏览器（带 boundary），CSRF 照常携带。 */
+async function uploadFile(path: string, file: File, csrf?: string): Promise<{ uploadId: string; url?: string }> {
+  const headers: Record<string, string> = {};
+  if (csrf) headers['X-CSRF-Token'] = csrf;
+  const form = new FormData();
+  form.append('file', file, file.name);
+  let response: Response;
+  try {
+    response = await fetch(`${BASE}${path}`, { method: 'POST', headers, credentials: 'same-origin', body: form });
+  } catch {
+    throw new MivApiError(0, { code: 'NETWORK_ERROR', message: '网络连接失败，请检查网络后重试' });
+  }
+  const data = await response.json().catch(() => undefined);
+  if (!response.ok) throw new MivApiError(response.status, data || {});
+  return data as { uploadId: string; url?: string };
 }
 
 /** 管理端会话令牌存内存（后台是低频操作，刷新后重新登录即可，避免长期票据落 localStorage）。 */
@@ -173,6 +251,25 @@ export const adminHttp: AdminApi = {
   project: (id) => request<AdminProjectDetail>('GET', `/admin/projects/${encodeURIComponent(id)}`),
   resolveTake: (takeId, body) => request('POST', `/admin/takes/${encodeURIComponent(takeId)}/resolve`, body, adminCsrf),
   cancelProject: (id, reason) => request<AdminProjectDetail>('POST', `/admin/projects/${encodeURIComponent(id)}/cancel`, { reason }, adminCsrf),
+  // §8.4 价格与配置
+  skus: () => request<{ items: AdminSku[] }>('GET', '/admin/skus'),
+  createSkuVersion: (skuCode, body) =>
+    request<AdminSku>('POST', `/admin/skus/${encodeURIComponent(skuCode)}/versions`, body, adminCsrf),
+  tiers: () => request<{ items: AdminTier[] }>('GET', '/admin/tiers'),
+  updateTier: (id, body) => request<AdminTier>('PATCH', `/admin/tiers/${encodeURIComponent(id)}`, body, adminCsrf),
+  createTierMapping: (id, videoSkuCode) =>
+    request<AdminTierMapping>('POST', `/admin/tiers/${encodeURIComponent(id)}/mappings`, { videoSkuCode }, adminCsrf),
+  styles: () => request<{ items: AdminStyle[] }>('GET', '/admin/styles'),
+  createStyle: (body) => request<{ id: string }>('POST', '/admin/styles', body, adminCsrf),
+  updateStyle: (id, body) => request<{ ok: boolean }>('PATCH', `/admin/styles/${encodeURIComponent(id)}`, body, adminCsrf),
+  voices: () => request<{ items: AdminVoice[] }>('GET', '/admin/voices'),
+  createVoice: (body) => request<{ id: string }>('POST', '/admin/voices', body, adminCsrf),
+  updateVoice: (id, body) => request<{ ok: boolean }>('PATCH', `/admin/voices/${encodeURIComponent(id)}`, body, adminCsrf),
+  settings: () => request<{ items: AdminSettingItem[] }>('GET', '/admin/settings'),
+  updateSettings: (changes) => request<{ items: AdminSettingItem[] }>('PATCH', '/admin/settings', changes, adminCsrf),
+  upload: (file) => uploadFile('/admin/uploads', file, adminCsrf),
+  // §8.5 审计（只读）
+  audit: (query = {}) => request<{ items: AdminAuditItem[]; nextCursor: string | null }>('GET', `/admin/audit${qs(query)}`),
 };
 
 export const csrfOf = () => adminCsrf;

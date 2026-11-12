@@ -12,11 +12,9 @@ const NAV = [
   { path: '/admin/orders', label: '充值订单' },
   { path: '/admin/projects', label: '作品处理' },
   { path: '/admin/channels', label: '渠道管理' },
-];
-// 未完成的页面先占位置灰（TASKS M3-ADM-02 导航要求；M3-ADM-04 完成后接入）
-const NAV_PENDING = [
-  { label: '价格与配置' },
-  { label: '审计日志' },
+  // M3-ADM-04：价格与配置 / 审计上线，替换原占位置灰项
+  { path: '/admin/pricing', label: '价格与配置' },
+  { path: '/admin/audit', label: '审计日志' },
 ];
 
 const routeIs = (path: string) => route.path === path;
@@ -34,7 +32,6 @@ async function logout() {
       <nav>
         <RouterLink v-for="item in NAV" :key="item.path" :to="item.path"
           class="nav" :class="{ current: routeIs(item.path) }">{{ item.label }}</RouterLink>
-        <span v-for="item in NAV_PENDING" :key="item.label" class="nav pending" :title="`${item.label}（M3-ADM-04 完成后开放）`">{{ item.label }}</span>
         <slot name="nav-extra" />
       </nav>
       <div class="actions">
@@ -60,6 +57,8 @@ nav { display: flex; align-items: center; gap: var(--miv-space-3); flex: 1; min-
 button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px solid var(--miv-border);
   border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; white-space: nowrap; }
 main { max-width: 1200px; margin: 0 auto; padding: var(--miv-space-4); display: flex; flex-direction: column; gap: var(--miv-space-3); }
+/* flex item 防被内容（宽表格等）撑开——移动端 375 下防止文档横向溢出 */
+main > * { min-width: 0; max-width: 100%; }
 @media (max-width: 767px) {
   /* 手机端（后台只要求可打开、页面不横向溢出）：顶栏两行——品牌+动作一行，导航一行内滚 */
   .topbar { flex-wrap: wrap; height: auto; padding: var(--miv-space-2) var(--miv-space-3); row-gap: var(--miv-space-2); }
