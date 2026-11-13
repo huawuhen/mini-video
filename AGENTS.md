@@ -21,7 +21,7 @@
 
 | 角色 | 职责 | 拥有（可写）路径 |
 |---|---|---|
-| 主代理 (Lead) | 文档、接口契约、任务拆分、合并、独立验收、与用户沟通 | `AGENTS.md` `docs/**` `CODEX_HANDOFF.md` `README.md` 根配置 |
+| ~~主代理 (Lead)~~ → **负责人（本开发 Agent 兼任，用户 2026-11-13 决定取消独立 Lead 角色）** | 原 Lead 全部职责：文档、接口契约、任务拆分、审查与合并 `main`、独立验证、与用户沟通。合并前自查纪律不变：test:server / check / build 全过 + 对照 PRD/API 复核 + 双端走查，§6 记自查结论 | `AGENTS.md` `docs/**` `CODEX_HANDOFF.md` `README.md` 根配置（合并 `main` 后同权） |
 | 后端主线 (BE-Core) | 数据库→认证→钱包账本→项目状态机→队列→API→集成测试，**同一 Agent 串行负责**，禁止拆给多人并发猜接口 | `server/src/{config.js,http,db,auth,wallet,payments,catalog,characters,projects,queue,api}/**` `server/migrations/**` `server/test/**`（自己模块） |
 | 引擎迁移 (Engine) | 从超搭云迁移并适配生成引擎（剧本 LLM、渠道适配、转存、网络安全、对象存储），提供纯函数/可注入接口与单测 | `server/src/engine/**` `server/test/engine/**` |
 | 成片合成 (Render) | FFmpeg 拼接、响度统一、尾帧衔接、AI 生成标识（显式+隐式）、封面（**不做字幕、BGM**，PRD §4.4） | `server/src/render/**` `server/test/render/**` |
@@ -41,7 +41,7 @@
 ## 4. Git 与多 Agent 并行
 
 - 远端仓库：`github.com/huawuhen/mini-video`（**公开仓库**，禁止提交密钥与用户数据）。跨设备协作的完整步骤见 `CODEX_HANDOFF.md` §0。
-- 每个 Agent 在独立分支工作：`agent/<role>/<任务ID>-<简述>`（同一台机器上可配合 `git worktree`）；**只有主代理合并并推送 `main`**，开发 Agent 只推送自己的分支，审查结果见 `CODEX_HANDOFF.md` §6。
+- 每个 Agent 在独立分支工作：`agent/<role>/<任务ID>-<简述>`（同一台机器上可配合 `git worktree`）；**合并并推送 `main` 由负责人（本开发 Agent 兼任，2026-11-13 起）执行**——先独立复核（测试三项 + 对照 PRD/API + 双端走查）、在 `CODEX_HANDOFF.md` §6 记自查结论，再合并推送。
 - 随做随提交：一个功能/修复一个提交；提交信息写「背景 / 受影响模块 / 验证结果」。禁止 `reset --hard`、`clean -fd`、`push --force`、改写已合并历史；回退一律反向提交。
 - 推送前必须：`git merge origin/main` 跟上最新 `main` 并解决冲突（已推送的分支不要 rebase）、跑通 `npm run test:server` 与 `npm run check`、`npm run build`。
 
