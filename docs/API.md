@@ -474,7 +474,7 @@ type AdminOrder = { id: string; userId: string; phoneMasked: string; outTradeNo:
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
 | GET | `/admin/skus` | – | `{ items: AdminSku[] }`（每个 `skuCode` 当前生效版本 + 历史版本数） |
-| POST | `/admin/skus/:skuCode/versions` | `{ priceFen, costFen?, effectiveAt?, idempotencyKey }` | `AdminSku`（**新增版本**；立即生效时旧版本置 `inactive`，`effectiveAt` 在未来时新版本与旧版本都保持 `active`、到点自动切换；不覆盖历史；已确认的作品按确认时锁定的单价结算，未消费的旧报价按现契约重算不一致返回 `QUOTE_MISMATCH`） |
+| POST | `/admin/skus/:skuCode/versions` | `{ priceFen, costFen?, effectiveAt?, idempotencyKey }` | `AdminSku`（**新增版本**；立即生效时旧版本置 `inactive`，`effectiveAt` 在未来时新版本与旧版本都保持 `active`、到点自动切换；**再次新增立即生效版本会把该 SKU 下所有更早的 `active` 版本置 `inactive`（含尚未生效的未来版本）——最新调价决策覆盖旧安排**；不覆盖历史；已确认的作品按确认时锁定的单价结算，未消费的旧报价按现契约重算不一致返回 `QUOTE_MISMATCH`） |
 | GET | `/admin/tiers` · PATCH `/admin/tiers/:id` | `{ name?, note?, sort?, status? }` | 档位列表 / 更新后档位 |
 | POST | `/admin/tiers/:id/mappings` | `{ videoSkuCode }` | 新增档位映射版本（同上，不覆盖） |
 | GET | `/admin/styles` · POST `/admin/styles` · PATCH `/admin/styles/:id` | `{ name, description, coverUploadId?, promptHint, sort, status }` | 风格（下架 = `status:'inactive'`，不删除） |
@@ -488,6 +488,7 @@ type AdminSku = { skuCode: string; kind: 'video' | 'image' | 'llm'; model: strin
 ```
 
 - **价格锁定的影响范围**：作品确认时把视频单价锁进作品（`projects.video_unit_fen`），之后分段生成、续跑、失败重试都按锁定价结算，改价只影响新报价与新确认的作品；交付后的「重拍片段」是一次新的购买，按重拍时的新报价预占与结算。
+- **运营参数生效口径**：白名单参数**服务端以 settings 表为准、环境变量作缺省**（`daily_free_understanding`、`min/max_story_chars`、`retention_days` 直接影响运行时规则；`max_duration_seconds` 管首页估算与目录展示，生成管线时长上限仍取环境变量）。`retention_days` 只影响**之后交付**的成片（按交付时刻计算 `expiresAt`），已交付作品的保存期不随后台调整变化。
 - 音色、风格封面上传：复用管理端上传 `POST /admin/uploads`（multipart，图片 ≤5MB、音频 mp3/wav/m4a ≤5MB），返回 `{ uploadId }`。
 
 ### 8.5 运营后台·审计（M3-ADM-04）

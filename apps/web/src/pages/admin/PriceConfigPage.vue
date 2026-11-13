@@ -341,7 +341,7 @@ async function submitSettings() {
         </thead>
         <tbody>
           <tr v-for="sku in skus" :key="sku.skuCode">
-            <td><code>{{ sku.skuCode }}</code><span v-if="sku.version < sku.versions" class="tag retired">另有历史/未生效版本 {{ sku.versions - 1 }} 个</span></td>
+            <td><code>{{ sku.skuCode }}</code><span v-if="sku.versions > 1" class="tag retired">另有历史/未生效版本 {{ sku.versions - 1 }} 个</span></td>
             <td>{{ KIND_LABEL[sku.kind] }}</td>
             <td>{{ UNIT_LABEL[sku.unit] }}</td>
             <td class="num strong">{{ yuan(sku.priceFen) }}</td>
@@ -437,7 +437,7 @@ async function submitSettings() {
 
     <!-- 运营参数 -->
     <section class="miv-card table-wrap">
-      <h2 class="sec-title">运营参数 <span class="sec-hint">白名单项（整数，带上下限）；修改会记入审计日志</span></h2>
+      <h2 class="sec-title">运营参数 <span class="sec-hint">白名单项（整数，带上下限）；修改会记入审计日志。「成片保存期」只影响之后交付的成片，已交付作品不变化</span></h2>
       <div class="settings-grid">
         <label v-for="item in settings" :key="item.key">
           {{ item.label }}
