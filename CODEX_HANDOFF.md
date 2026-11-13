@@ -102,7 +102,7 @@
 > **2026-11-13 用户决定：Lead 角色退出，全部审查与合并职责移交开发 Agent。** 此后开发 Agent 自行完成走查、合并与推送 `main`，`CODEX_HANDOFF.md` 由开发 Agent 自己维护（§6 可改为自查记录）。
 
 | M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | ✅ 已合并（main `4ee4b9d`，2026-11-13 自查合并；真实冒烟 105 积分≈3.28 元已过，见 §3/§4 与 `docs/m0/` 之外的本任务 README） | 2026-11-13 |
-| M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | ✅ 已合并（main `4ee4b9d`，2026-11-13 自查合并；真实冒烟 105 积分≈3.28 元全过） | 2026-11-13 |
+| M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | ✅ 已合并（main `4ee4b9d`，2026-11-13 自查合并；真实冒烟 105 积分≈3.28 元全过；**2026-11-13 收尾完成：Mac 栈已登记 vidu 渠道（pch_m75rxfd419sspjyu，turbo，成本 480p=22/720p=31 分/秒）并切为 video 默认**） | 2026-11-13 |
 | M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定，叠在 ENG-01 之上须先合并 ENG-01） | Engine（本机开发 Agent，含 BE 配合：segment.js 音色码快照） | `agent/eng/M3-ENG-02-voice-id-map` | `server/src/engine/providers/drivers/vidu/**` `server/src/projects/segment.js` `server/test/**` `CODEX_HANDOFF.md` | ✅ 已合并（main `64b969b`，2026-11-13 自查合并；517/517） |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
@@ -281,6 +281,15 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-13 · 负责人 · Vidu 切默认（ENG-01 收尾）+ Mac 栈重建
+
+- **背景**：ENG-01 唯一剩余项「目标库录渠道 + 后台切默认」。分支 `agent/ops/vidu-default-switch`（3 提交，自查合并 main `c2faeb7`，537/537、check、build 过）。
+- **代码改动**：① `channel-cli` 新增 `create` 子命令（凭证只读环境变量 `CHANNEL_CREDENTIAL`/`<驱动>_TOKEN`，不经参数表；同名 flag 收集为数组；审计 actor=cli；隔离库实跑全路径验证）；② **修真 bug**：`extractPosterFrame` 回退判定从「异常」改为「文件产出」——重建镜像时容器内测试关卡（AGENTS §6）抓到新版 ffmpeg 对 `-ss` 越片尾**静默成功不产出文件**，原回退失灵（宿主机行为不同掩盖）；③ MAC-BETA.md 补「切换/登记视频渠道」章节。
+- **栈重建**：Mac 内测栈用最新 main 重建（api/worker/web），迁移 016/017 应用，既有渠道与数据完好；`deploy/.env` 的 `ALLOWED_ORIGINS` 补新 IP 192.168.5.195；新增 `VIDU_TOKEN` 占位（用户本人填写，Agent 未读取）。
+- **切换执行（零生成费用）**：`channel:create` 登记 vidu（pch_m75rxfd419sspjyu，model viduq3-turbo，cost_fen 480p=22/720p=31 分/秒——冒烟实测口径）→ `channel:test` 连接成功（429ms，真实鉴权通过）→ `channel:use video vidu` 切默认 → `channel:list` 确认 `* [video] vidu`，aiide/miaowuai 保留待命 → `/catalog` 档位价不变（标准 ¥30/高清 ¥60 每 30 秒，SKU 定价与渠道无关）。**在途任务无（近 1 小时无请求），切换即时生效。**
+- **遗留**：Vidu 渠道上的**完整真实交付**（用户手机全流程）尚未跑过——建议下次内测自然验证或用户授权一条（预估 90 秒 720p 成本 ≈28 元渠道积分≈9 元内）；aiide 渠道保留可随时 `channel:use video aiide` 切回。
+- 局域网：内测栈 `http://192.168.5.195:8080`（真实后端）；美工 mock 预览 `http://192.168.5.195:5173`。
+
 ### 2026-11-13 · 负责人（开发 Agent 兼任）· 角色接管 + 三分支自查合并
 
 - **背景**：用户决定 Lead 角色退出，本开发 Agent 全面负责项目（§3 同日决策；AGENTS.md §2/§4 已同步）。接手 Lead 移交（main `8179672`）后完成三条待审分支的自查与合并。
