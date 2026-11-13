@@ -46,6 +46,30 @@ docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/
 ⚠️ **码只显示这一次**（数据库只存哈希，丢了无法找回）：立刻复制发给用户（微信即可）。
 用户在 App「钱包 → 兑换码」输入即到账。每批生成都有审计记录（不含码本身）。
 
+## 3.5 切换视频渠道（Vidu / aiide）
+
+当前默认视频渠道与切换命令（切换只影响**新提交**，在途任务仍回原渠道，零费用）：
+
+```bash
+cd /Users/wuhen/Documents/mini-video/deploy
+# 看当前生效（* 号）
+docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/channel-cli.js list
+# 连接测试（免费，查渠道余额）
+docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/channel-cli.js test -- vidu
+# 切默认
+docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/channel-cli.js use video vidu
+# 切回 aiide
+docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/channel-cli.js use video aiide
+```
+
+首次登记新渠道（凭证只走 `deploy/.env` 的环境变量，不写在命令里）：
+在 `deploy/.env` 填 `VIDU_TOKEN=<控制台 api-keys 页的 Token>` 后：
+
+```bash
+docker compose -f compose.yml -f compose.mac-beta.yml run --rm api node scripts/channel-cli.js create video vidu vidu \
+  --model video=viduq3-turbo --cost video.480p=22 --cost video.720p=31
+```
+
 ## 4. 看费用 / 排队情况
 
 ```bash
