@@ -1,0 +1,11 @@
+{
+  "remains": [
+    { "type": "metered", "credit_remain": 160000, "concurrency_limit": 5, "current_concurrency": 1, "queue_count": 0 }
+  ],
+  "packages": [
+    { "id": "pkg_0001", "name": "标准资源包", "type": "metered", "concurrency": 5,
+      "credit_amount": 160000, "credit_remain": 160000,
+      "created_at": "2026-11-12T00:00:00Z", "purchase_at": "2026-11-12T00:00:00Z",
+      "valid_from": "2026-11-12T00:00:00Z", "valid_to": "2027-11-12T00:00:00Z" }
+  ]
+}

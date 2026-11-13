@@ -115,26 +115,22 @@ describe('projects API（M1-BE-06）', () => {
     bible: { mood: 'warm', characters: [{ castIndex: 0, handle: 'the girl', brief: 'a girl' }],
       scenes: [{ id: 's1', nameZh: '公园', description: 'a park lawn in daylight' }], props: [] },
     cast: [{ name: '宝宝', description: '活泼', gender: 'female', ageGroup: 'child', characterId: 'chr_baby00000001' }],
-    segments: [{ durationSeconds: 30, sceneId: 's1', propIds: [], endState: 'she sits', plot: '野餐。',
+    segments: [{ durationSeconds: 15, sceneId: 's1', propIds: [], endState: 'she sits', plot: '野餐。',
       cameraNotes: '', dialogue: [], ambience: '', transition: 'hard_cut', castIndexes: [0] }] };
   const timeline = JSON.stringify({ shots: [
-    { start: 0, end: 7, size: 'Medium shot', transition: 'cut', action: 'Shot 1.', dialogue: [],
+    { start: 0, end: 5, size: 'Medium shot', transition: 'cut', action: 'Shot 1.', dialogue: [],
       reaction: '', environment: '', camera: 'static' },
-    { start: 7, end: 14, size: 'Medium shot', transition: 'cut', action: 'Shot 2.', dialogue: [],
+    { start: 5, end: 10, size: 'Medium shot', transition: 'cut', action: 'Shot 2.', dialogue: [],
       reaction: '', environment: '', camera: 'static' },
-    { start: 14, end: 21, size: 'Medium shot', transition: 'cut', action: 'Shot 3.', dialogue: [],
-      reaction: '', environment: '', camera: 'static' },
-    { start: 21, end: 30, size: 'Medium shot', transition: 'cut', action: 'Shot 4.', dialogue: [],
+    { start: 10, end: 15, size: 'Medium shot', transition: 'cut', action: 'Shot 3.', dialogue: [],
       reaction: '', environment: '', camera: 'static' }], avoid: [] });
-  // 改剧情重绑定用的另一版时间线（30 秒需 4~8 个镜头；内容带 NEWPICNIC 标记，用于断言新提示词确实提交给了上游）
+  // 改剧情重绑定用的另一版时间线（15 秒需 2~4 个镜头；内容带 NEWPICNIC 标记，用于断言新提示词确实提交给了上游）
   const rebindTimeline = JSON.stringify({ shots: [
-    { start: 0, end: 8, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she chases butterflies',
+    { start: 0, end: 5, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she chases butterflies',
       dialogue: [], reaction: '', environment: '', camera: 'static' },
-    { start: 8, end: 15, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she laughs loudly',
+    { start: 5, end: 10, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she laughs loudly',
       dialogue: [], reaction: '', environment: '', camera: 'static' },
-    { start: 15, end: 23, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she tumbles on the lawn',
-      dialogue: [], reaction: '', environment: '', camera: 'static' },
-    { start: 23, end: 30, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she sits on the grass',
+    { start: 10, end: 15, size: 'Medium shot', transition: 'cut', action: 'NEWPICNIC she sits on the grass',
       dialogue: [], reaction: '', environment: '', camera: 'static' }], avoid: [] });
 
   before(async () => {
@@ -174,7 +170,8 @@ describe('projects API（M1-BE-06）', () => {
        VALUES ('lkv_baby_be6', 'look_baby_be6', 'succeeded', 'users/u/looks/a.png')`);
     await ctx.db.query(
       `UPDATE character_looks SET selected_version_id = 'lkv_baby_be6' WHERE id = 'look_baby_be6'`);
-    sample = await makeVideo(join(tmpdir(), 'be6-30s.mp4'));
+    // 样例时长须与片段请求一致（15 秒，迁移 017 后的 SKU 档），inspect 会核对实际时长
+    sample = await makeVideo(join(tmpdir(), 'be6-15s.mp4'), { duration: 15 });
   });
   after(async () => {
     await new Promise((resolve) => server.close(resolve));
@@ -353,8 +350,8 @@ describe('projects API（M1-BE-06）', () => {
       { body: { quoteId, idempotencyKey: 'api-refund-take-0001' }, cookie, csrf });
     assert.equal(takeRes.status, 200);
     const newTakeId = await latestTakeId(projectId);
-    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 3000, frozen: 3000 },
-      're-take 预占已冻结 3000（30 秒 × 100 分/秒，迁移 008）');
+    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 1500, frozen: 1500 },
+      're-take 预占已冻结 1500（15 秒 × 100 分/秒，迁移 008 定价 + 017 时长）');
     // 上游明确失败（提交即 failed）→ 当场退回该笔预占
     const failProvider = { id: 'fake-video-fail',
       prepare(input) { return input; },
@@ -371,7 +368,7 @@ describe('projects API（M1-BE-06）', () => {
     const refunds = (await ctx.db.query(
       `SELECT amount_fen FROM ledger WHERE idempotency_key = $1 AND kind = 'refund'`, [refundKey])).rows;
     assert.equal(refunds.length, 1);
-    assert.equal(Number(refunds[0].amount_fen), 3000);
+    assert.equal(Number(refunds[0].amount_fen), 1500);
     const states = (await ctx.db.query(
       `SELECT (SELECT status FROM projects WHERE id = $1) AS project_status,
               (SELECT selected_take_id FROM segments WHERE id = $2) AS selected,
@@ -396,7 +393,7 @@ describe('projects API（M1-BE-06）', () => {
     await flow.generate({ projectId, idx: 0 }, flow.ctxOf());
     await flow.poll({ takeId: await latestTakeId(projectId) }, flow.ctxOf());
     const baseAvailable = (await walletNumbers()).available;
-    // re-take 按当时价预占（100 分/秒 × 30 秒 = 3000），提交但不内联轮询
+    // re-take 按当时价预占（100 分/秒 × 15 秒 = 1500），提交但不内联轮询
     const { quoteId } = await ctx.db.tx((t) => createQuote(t, { userId,
       request: { kind: 'segment_take', projectId, segmentId } }));
     const takeRes = await request('POST', `/projects/${projectId}/segments/${segmentId}/takes`,
@@ -406,10 +403,10 @@ describe('projects API（M1-BE-06）', () => {
     await flow.generate({ projectId, idx: 0, takeId: newTakeId, redelivery: true },
       { db: ctx.db, logger: silent, enqueue: async () => {}, extendLease: async () => {} });
     // 提交后、结算前：逻辑 SKU 调价（M2-BE-03 解耦后 video.480p 加 version 2 = 150 分/秒；
-    // 若按结算时查价应付 4500）
+    // 若按结算时查价应付 2250）
     await ctx.db.query(
       `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations)
-       VALUES ('sku_logical480p00002', 'video.480p', 2, 'video', '', 'logical', '480p', 'second', 150, 0, '{5,10,15,30}')`);
+       VALUES ('sku_logical480p00002', 'video.480p', 2, 'video', '', 'logical', '480p', 'second', 150, 0, '{5,10,15}')`);
     const unitNow = (await ctx.db.query(
       `SELECT s.price_fen FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
@@ -418,14 +415,14 @@ describe('projects API（M1-BE-06）', () => {
     assert.equal(Number(unitNow), 150, '前置：调价已生效（否则本用例没有意义）');
     await flow.poll({ takeId: newTakeId }, flow.ctxOf());
     // settle 流水的 amount_fen 恒为 0，结算金额记在 frozen_delta_fen；若按调价后的单价结算
-    // 4500 会因冻结不足直接失败（审查必改 4 描述的「调高 → 结算失败」）
+    // 2250 会因冻结不足直接失败（审查必改 4 描述的「调高 → 结算失败」）
     const settleRow = (await ctx.db.query(
       `SELECT amount_fen, frozen_delta_fen FROM ledger WHERE idempotency_key = $1`,
       [`project:${projectId}:video:${newTakeId}:settle`])).rows[0];
-    assert.equal(Number(settleRow.frozen_delta_fen), -3000, '结算按下单时的 3000，不是调价后的 4500');
+    assert.equal(Number(settleRow.frozen_delta_fen), -1500, '结算按下单时的 1500，不是调价后的 2250');
     assert.equal(Number(settleRow.amount_fen), 0);
-    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 3000, frozen: 0 },
-      '钱包对账：3000 冻结全部转结算（可用额在预占时已扣），无残留');
+    assert.deepEqual(await walletNumbers(), { available: baseAvailable - 1500, frozen: 0 },
+      '钱包对账：1500 冻结全部转结算（可用额在预占时已扣），无残留');
   });
 
   test('复审必改2：交付后改剧情，re-take 提交前重新绑定提示词（没改不调 LLM）', async () => {
@@ -595,7 +592,7 @@ describe('projects API（M1-BE-06）', () => {
         scenes: [{ id: 's1', nameZh: '公园', description: 'a park lawn in daylight' }], props: [] },
       cast: [{ name: '妈妈', description: '温柔', gender: 'female', ageGroup: 'middle' },
         { name: '宝宝', description: '活泼', gender: 'female', ageGroup: 'child', characterId: 'chr_baby00000001' }],
-      segments: [{ durationSeconds: 30, sceneId: 's1', propIds: [], endState: 'both sit', plot: '野餐。',
+      segments: [{ durationSeconds: 15, sceneId: 's1', propIds: [], endState: 'both sit', plot: '野餐。',
         cameraNotes: '', dialogue: [], ambience: '', transition: 'hard_cut', castIndexes: [0, 1] }] };
     const created = await createProject(ctx.db, { userId,
       input: { storyText: '妈妈说：「慢一点。」宝宝说：「好。」', sourceType: 'text', styleId: 'anime',

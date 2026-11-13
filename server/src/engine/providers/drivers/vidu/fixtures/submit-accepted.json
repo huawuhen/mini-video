@@ -1,0 +1,14 @@
+{
+  "task_id": "task_3f9k2m8q0001",
+  "state": "created",
+  "model": "viduq3-turbo",
+  "prompt": "SCENE: ... A girl waves at the camera.",
+  "duration": 5,
+  "seed": 0,
+  "aspect_ratio": "9:16",
+  "resolution": "540p",
+  "payload": "",
+  "off_peak": false,
+  "credits": 35,
+  "created_at": "2026-11-12T10:00:00.000Z"
+}

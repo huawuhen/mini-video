@@ -36,7 +36,9 @@ export function createScriptedFetch(steps) {
     (async () => {
       const index = remaining.findIndex((step) => href.includes(step.match)
         && (!step.method || step.method.toUpperCase() === method));
-      calls.push({ url: href, method, hasAuth: /Bearer .+/.test(String(init.headers?.Authorization ?? '')),
+      calls.push({ url: href, method,
+        // 鉴权方案不限于 Bearer（如 Vidu 用 `Token <key>`）：断言「携带 鉴权方案+值」即可
+        hasAuth: /^(Bearer|Token) .+/.test(String(init.headers?.Authorization ?? '')),
         body: typeof init.body === 'string' ? init.body : undefined, form: init.body instanceof FormData });
       if (index < 0) throw new Error(`scripted_fetch_unexpected: ${method} ${href}`);
       const step = remaining.splice(index, 1)[0];
