@@ -98,7 +98,7 @@
 | M3-ADM-02 用户与余额 / 订单与人工退款 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-02-users-orders` | `server/migrations/014*.sql` `server/src/admin/**`（新增） `server/src/api/admin*.js` `server/src/{wallet/service.js,http/errors.js,app.js}` `server/src/auth/{sms.js,session.js}` `server/src/payments/recharge.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},utils/idempotency.ts,pages/admin/*,pages/**,router}` `docs/m3-adm02/`（走查截图） `CODEX_HANDOFF.md` | ✅ 已合并（main `89d7c1f`，2026-11-05 复审通过） | 2026-11-05 |
 | M3-ADM-03 作品与失败/待核对处理 | BE-Core + Web（本机开发 Agent） | `agent/be/M3-ADM-03-projects` | `server/migrations/015*.sql` `server/src/admin/projects.js`（新增） `server/src/api/{admin-projects,admin-auth}.js` `server/src/projects/{state.js,service.js}` `server/src/{http/errors.js,auth/session.js}` `server/src/app.js` `server/test/**` `apps/web/src/{api/{admin.ts,adminMock.ts},pages/admin/*,router}` `docs/m3-adm03/`（走查截图） `CODEX_HANDOFF.md` | ✅ 已合并（main `294598f`，2026-11-12 三轮复审通过） | 2026-11-12 |
 | M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | 待审查（test:server 512/512、check、build 过；驱动契约 21/21；真实冒烟已过，105 积分） | 2026-11-12 |
-| M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定，叠在 ENG-01 之上须先合并 ENG-01） | Engine（本机开发 Agent，含 BE 配合：segment.js 音色码快照） | `agent/eng/M3-ENG-02-voice-id-map` | `server/src/engine/providers/drivers/vidu/**` `server/src/projects/segment.js` `server/test/**` `CODEX_HANDOFF.md` | 进行中 | 2026-11-13 |
+| M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定，叠在 ENG-01 之上须先合并 ENG-01） | Engine（本机开发 Agent，含 BE 配合：segment.js 音色码快照） | `agent/eng/M3-ENG-02-voice-id-map` | `server/src/engine/providers/drivers/vidu/**` `server/src/projects/segment.js` `server/test/**` `CODEX_HANDOFF.md` | 待审查（test:server 517/517、check、build 过；aiide 回归断言请求体不变；@aa1c742） | 2026-11-13 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -271,6 +271,16 @@
 | 2026-10-17 | `agent/be/M1-BE-01-auth` @ `25564b9`（M1-BE-01） | 🔁 需修改（修完 1、2 即可合并） | 整体质量好：结构清晰、只改了自己的路径、无需迁移、Cookie/CSRF/会话设计正确，测试 48/48 通过、check/build 通过，测试覆盖全面。Lead 用并发探针复现了 2 个问题：<br>**必须修改**<br>1. `server/src/auth/sms.js:42-58` 发码冷却有竞态：`checkCooldown` 的查询和后面的作废/插入不在同一把锁里。探针直接并发调用 10 次 `sendSmsCode`（同一手机号），3 次运行均为 6 次成功、实际发出 6 条短信、库里同时有 6 条未作废验证码。后果：并发请求可绕过 60 秒冷却刷短信费用（只剩每日上限兜底），且「只认最新一条」不成立。期望：同一手机号的「冷却检查 → 作废旧码 → 插入新码」放进一个短事务并加按手机号的锁（如 `pg_advisory_xact_lock(hashtext('sms:' \|\| phone))`），短信发送仍在事务外；补并发回归测试（并发 10 次只成功 1 次、只发 1 条）。<br>2. `server/src/auth/sms.js:72-95` 错误次数上限有竞态：先读 `attempts` 再比对哈希，最后才自增，并发提交时多个请求读到同一个旧值。探针并发提交 15 个错误码，最终 `attempts=10`，即 10 次猜测被实际比对，超过「错 5 次作废」。期望：先原子地占用一次尝试再比对，例如 `UPDATE sms_codes SET attempts = attempts + 1 WHERE id = $1 AND consumed_at IS NULL AND attempts < $max RETURNING attempts`，没返回行就直接 `SMS_CODE_INVALID`；补并发回归测试（并发 15 个错误码后被比对的次数 ≤ 5）。<br>**建议修改（可同分支顺手改）**<br>3. `server/src/auth/sms.js:19` 控制台文案写死「10 分钟内有效」，实际默认 `codeTtlSeconds=300`（5 分钟），改为按配置输出。<br>4. `server/src/auth/routes.js:48` `logout` 挂了 `requireAuth`，会话已过期时返回 401 且不清 Cookie。建议无会话时也清 Cookie 并返回 `{ ok: true }`（API.md §1 未要求登录态）。<br>**不需本分支处理（Lead 已登记到 TASKS）**：`rate_counters` / 过期 `sms_codes` / 过期 `sessions` 的清理并入 M1-BE-03；面向用户的「每天」限额（免费故事理解）按北京时间切日，见 M1-BE-05。短信每日上限按 UTC 切日可接受。 |
 
 ## 7. 变更记录（最新在上）
+### 2026-11-13 · Engine（含 BE 配合） · M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定）
+
+- **背景**：用户拍板执行「给角色加 voice_id 映射」（M3-ENG-01 冒烟后的遗留项），硬约束：**不破坏 aiide 等现有渠道**。分支叠在 ENG-01 @`5e85a08` 之上，**合并顺序须先 ENG-01**。
+- **改动**：`server/src/projects/segment.js`（BE 配合：音色码快照） `server/src/engine/providers/drivers/vidu/{index.js,README.md}`（voiceIdMap 渠道参数） `server/src/engine/providers/drivers/aiide-ark/driver.test.js`（回归） `server/test/projects/projects.test.js`（快照断言）。
+- **核心实现**：链路「产品音色码（project_cast.voice_id）→ gen_tasks.request.voiceCode 快照 → 驱动经渠道参数 voiceIdMap 映射为厂商 voice_id」，厂商 id 不进业务层。**单说话人规则**：片段对白恰好 1 位说话人（按 segments.dialogue 的 castId/castIndex 去重）才锁定其音色；无对白/多说话人不传——厂商 voice_id 是任务级单值，多说话人强绑会多人同声。voice_id 只进参考生接口（官方文生页未列）；未命中映射记 `vidu_voice_unmapped` 交渠道自动分配。voiceIdMap 由管理员配渠道参数（官方音色表：飞书表格 shengshu.feishu.cn/sheets/EgFvs6DShhiEBStmjzccr5gonOg，需登录；自定义音色走声音复刻后把所得 voice_id 填入映射）。
+- **不破坏现有渠道的保证**：aiide-ark 驱动零改动；voiceCode 是可选透传字段被 aiide 忽略——新增回归测试断言带/不带 voiceCode 的请求体 deepEqual；现有 audioRefs（seedance 参考音频）行为完全不变；全量测试无 aiide 用例改动。
+- **验证**：vidu driver **25/25**（+4：映射命中/未映射+日志/`*` 兜底/文生不带）；aiide **20/20**（+1 回归）；`test:server` **517/517**（512+5）；`check`、`build` 过。串行链断言：第 1 段（妈妈独说）快照妈妈音色码、第 2 段（宝宝独说）快照宝宝音色码、两角色音色不同。
+- **未验证**：voice_id 在真实参考生接口的效果（冒烟未覆盖，端到端联调时验证）；多音色角色对白的自动分配观感。**流程提醒**：本目录多 Agent 共用，开工时工作区曾停在 ADM-04 分支（@a755725）——已用 `git switch -C` 把 ENG-02 重建到 ENG-01 头部，未触碰 ADM-04 分支。
+- 局域网预览：`http://192.168.5.195:5173`（mock，无 UI 变化）。
+
 ### 2026-11-12 · Engine · M3-ENG-01 Vidu Q3 真实冒烟（用户已充值并授权）
 
 - **背景**：用户确认首页报价下限 ¥15（§4 第 10 条关闭）、充值 Vidu 并在聊天中提供 API Token、问询参考音频支持情况。按 §4 第 11 条授权执行真实冒烟（上限 10 元）。
