@@ -2,7 +2,7 @@
 // All external dependencies (ffmpeg/ffprobe binaries, work dir) are injected or defaulted
 // here; no process.env reads, no real model costs.
 import { fileURLToPath } from 'node:url';
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { access, mkdir, mkdtemp } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -68,6 +68,11 @@ function createPosterFrameExtractor({ run, timeoutMs }) {
   const grab = (runArgs, videoPath, imagePath) => run(
     ['-y', ...runArgs, '-i', videoPath, '-frames:v', '1', '-q:v', '3', imagePath],
     { timeoutMs: Math.min(timeoutMs, 60_000) });
+  // 回退判定看「文件是否产出」而不是退出码：新版 ffmpeg 对 -ss 越过片尾会静默成功且不写文件
+  // （M3 切 Vidu 渠道时的 Linux 容器构建实测，宿主机 ffmpeg 行为不同掩盖了该路径）
+  const produced = async (imagePath) => {
+    try { await access(imagePath); return true; } catch { return false; }
+  };
   return async function extractPosterFrame(videoPath, { workDir, atSeconds = 1 } = {}) {
     const baseDir = typeof workDir === 'string' && workDir.trim() ? workDir
       : await mkdtemp(join(tmpdir(), 'miv-frame-'));
@@ -75,7 +80,8 @@ function createPosterFrameExtractor({ run, timeoutMs }) {
     const imagePath = join(baseDir, `poster-${randomUUID()}.jpg`);
     try {
       await grab(['-ss', String(atSeconds)], videoPath, imagePath);
-    } catch {
+    } catch { /* 旧版 ffmpeg 越尾报错：走下面的回退 */ }
+    if (!await produced(imagePath)) {
       await grab([], videoPath, imagePath); // 片长不足 atSeconds 等：回退首帧
     }
     return imagePath;

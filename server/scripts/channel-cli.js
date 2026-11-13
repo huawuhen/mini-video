@@ -3,6 +3,7 @@
 //   npm run channel:use -- <video|image|llm> <渠道名>   把该能力的生效渠道切到指定渠道（只影响新提交）
 //   npm run channel:test -- <渠道名>           连接测试（免费，走驱动 catalog()）
 //   npm run channel:seed                       首次部署：环境变量种子渠道写库（仅表空时）
+//   npm run channel:create -- <kind> <名称> <驱动> [选项]   登记渠道（凭证从环境变量读，不进参数表）
 // 写操作走 service 层（同后台一致）并写审计（actor=cli）。
 import { loadConfig } from '../src/config.js';
 import { createDb } from '../src/db/pool.js';
@@ -20,10 +21,14 @@ const USAGE = `用法：
   npm run channel:list
   npm run channel:use -- <video|image|llm> <渠道名>
   npm run channel:test -- <渠道名>
-  npm run channel:seed [-- --mock]   # --mock：写入并激活 local-mock 联调渠道（M2-WEB-01）`;
+  npm run channel:seed [-- --mock]   # --mock：写入并激活 local-mock 联调渠道（M2-WEB-01）
+  npm run channel:create -- <video|image|llm> <名称> <驱动> [--base-url URL]
+      [--model 能力=模型 ...] [--cost 逻辑SKU=分 ...] [--param k=v ...] [--remark 文本]
+    # 凭证读环境变量 CHANNEL_CREDENTIAL（缺省回退 <驱动大写>_TOKEN，如 VIDU_TOKEN）——
+    # 不走命令行参数，避免落 shell 历史/日志；地址缺省 https://api.vidu.cn 仅适用 vidu`;
 
 async function main() {
-  if (!command || !['list', 'use', 'test', 'seed'].includes(command)) {
+  if (!command || !['list', 'use', 'test', 'seed', 'create'].includes(command)) {
     console.error(USAGE);
     process.exit(1);
   }
@@ -50,6 +55,65 @@ async function main() {
       const result = await seedChannels({ config, db, service, logger });
       console.log(result.seeded ? `已写入种子渠道 ${result.channels.length} 个（此后以数据库为准）`
         : '渠道表非空：跳过种子（以数据库为准）');
+      return;
+    }
+
+    if (command === 'create') {
+      const [kind, name, driver] = rest.filter((arg) => !arg.startsWith('--'));
+      const opts = {};
+      for (let i = 0; i < rest.length; i += 1) {
+        const arg = rest[i];
+        if (!arg.startsWith('--')) continue;
+        const key = arg.slice(2);
+        const next = rest[i + 1];
+        const value = (next === undefined || next.startsWith('--')) ? true : next;
+        if (value !== true) i += 1;
+        if (key in opts) {
+          // 同名 flag 允许重复（--model/--cost/--param 多条）：收集为数组
+          opts[key] = Array.isArray(opts[key]) ? [...opts[key], value] : [opts[key], value];
+        } else {
+          opts[key] = value;
+        }
+      }
+      if (!['video', 'image', 'llm'].includes(kind) || !name || !driver) {
+        console.error('用法：npm run channel:create -- <video|image|llm> <名称> <驱动> [--base-url URL] [--model 能力=模型 ...] [--cost 逻辑SKU=分 ...] [--param k=v] [--remark 文本]');
+        process.exit(1);
+      }
+      // 凭证只走环境变量（CHANNEL_CREDENTIAL，缺省回退 <驱动大写>_TOKEN），不进参数表
+      const credential = process.env.CHANNEL_CREDENTIAL
+        ?? process.env[`${driver.toUpperCase().replace(/-/g, '_')}_TOKEN`];
+      if (!credential) {
+        console.error(`缺少凭证：请在环境变量 CHANNEL_CREDENTIAL（或 ${driver.toUpperCase().replace(/-/g, '_')}_TOKEN）中提供，不要写在命令行里。`);
+        process.exit(1);
+      }
+      const existing = await service.getChannelByName(kind, name);
+      if (existing) throw new Error(`${kind} 类渠道「${name}」已存在（${existing.status}）；如需改配置请用后台编辑`);
+      const baseUrl = opts['base-url']
+        ?? (driver === 'vidu' ? 'https://api.vidu.cn' : undefined);
+      const listOf = (key) => Array.isArray(opts[key])
+        ? opts[key] : (opts[key] !== undefined ? [String(opts[key])] : []);
+      const toPairs = (entries) => Object.fromEntries(entries.map((item) => {
+        const idx = item.indexOf('=');
+        return [item.slice(0, idx), item.slice(idx + 1)];
+      }));
+      const modelMap = toPairs(listOf('model').filter((item) => item.includes('=')));
+      const costFen = toPairs(listOf('cost').filter((item) => item.includes('=')).map((item) => {
+        const idx = item.indexOf('=');
+        return `${item.slice(0, idx)}=${Number(item.slice(idx + 1))}`;
+      }));
+      const params = toPairs(listOf('param').filter((item) => item.includes('=')));
+      const channel = await service.createChannel(
+        { kind, name, driver, baseUrl, credential, modelMap,
+          ...(Object.keys(params).length ? { params } : {}),
+          ...(Object.keys(costFen).length ? { costFen } : {}),
+          ...(opts.remark ? { remark: String(opts.remark) } : {}) },
+        async (entry) => {
+          await db.query(
+            `INSERT INTO admin_audit_logs (actor, action, target_type, target_id, detail)
+             VALUES ('cli', $1, $2, $3, $4)`,
+            [entry.action, entry.targetType, entry.targetId, JSON.stringify(entry.detail)]);
+        });
+      console.log(`已登记渠道「${name}」（${channel.id}，驱动 ${driver}）；连接测试：npm run channel:test -- ${name}；切换生效：npm run channel:use -- ${kind} ${name}`);
       return;
     }
 
