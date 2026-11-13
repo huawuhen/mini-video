@@ -102,6 +102,8 @@
 > **2026-11-13 用户决定：Lead 角色退出，全部审查与合并职责移交开发 Agent。** 此后开发 Agent 自行完成走查、合并与推送 `main`，`CODEX_HANDOFF.md` 由开发 Agent 自己维护（§6 可改为自查记录）。
 
 | M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | 待审查（test:server 512/512、check、build 过；驱动契约 21/21；零真实费用，真实冒烟待 §4 第 11 条授权） | 2026-11-12 |
+| M3-ENG-01 Vidu Q3 渠道接入（新默认视频渠道） | Engine（本机开发 Agent，含 BE 配合：迁移 017 与测试联动） | `agent/eng/M3-ENG-01-vidu-q3` | `server/src/engine/providers/drivers/vidu/**`（新增） `server/src/engine/providers/contract-test.js`（鉴权断言放宽） `server/migrations/017*.sql`（新增） `server/test/**`（联动修正） `CODEX_HANDOFF.md` | 待审查（test:server 512/512、check、build 过；驱动契约 21/21；真实冒烟已过，105 积分） | 2026-11-12 |
+| M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定，叠在 ENG-01 之上须先合并 ENG-01） | Engine（本机开发 Agent，含 BE 配合：segment.js 音色码快照） | `agent/eng/M3-ENG-02-voice-id-map` | `server/src/engine/providers/drivers/vidu/**` `server/src/projects/segment.js` `server/test/**` `CODEX_HANDOFF.md` | 待审查（test:server 517/517、check、build 过；aiide 回归断言请求体不变；@aa1c742） | 2026-11-13 |
 
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
@@ -313,6 +315,16 @@
 - **⚠ 运营参数白名单的运行时生效范围（请 Lead 知悉）**：`quote_ttl_seconds`、`max_duration_seconds`（首页估算+目录 limits）、`max_character_photos`、`min/max_story_chars`（目录 limits，服务端校验仍是写死的 3000）、`expiry_remind_days`、`retention_days` 已读 settings 表；**`daily_free_understanding`（运行时用 env `PROJECTS_FREE_DAILY_QUOTA`）与生成管线时长上限（`PROJECTS_MAX_SECONDS`）当前以环境变量为准**，后台改这两项不影响管线——建议后续任务把这两处切到 settings-first（涉及既有 env 文档与测试口径，未擅动）。
 - **未验证/遗留**：管理端真实后端联调（待 Ubuntu 栈 `admin:create`，与 ADM-01/02 同遗留）；审计 `ip` 依赖 `req.ip`，生产在 nginx 后需 `TRUST_PROXY_HOPS` 配置正确才记真实客户端 IP（PAY-04 既有项）。
 - 局域网预览：`http://192.168.5.195:5174` 或 `http://192.168.10.58:5174`（本机双网卡，本分支，mock；演示数据存浏览器内存，刷新即重置。5173 被上一任务遗留的旧 dev server 占用，已停掉旧进程，本任务预览用 5174）。
+### 2026-11-13 · Engine（含 BE 配合） · M3-ENG-02 角色 voice_id 映射（Vidu 音色锁定）
+
+- **背景**：用户拍板执行「给角色加 voice_id 映射」（M3-ENG-01 冒烟后的遗留项），硬约束：**不破坏 aiide 等现有渠道**。分支叠在 ENG-01 @`5e85a08` 之上，**合并顺序须先 ENG-01**。
+- **改动**：`server/src/projects/segment.js`（BE 配合：音色码快照） `server/src/engine/providers/drivers/vidu/{index.js,README.md}`（voiceIdMap 渠道参数） `server/src/engine/providers/drivers/aiide-ark/driver.test.js`（回归） `server/test/projects/projects.test.js`（快照断言）。
+- **核心实现**：链路「产品音色码（project_cast.voice_id）→ gen_tasks.request.voiceCode 快照 → 驱动经渠道参数 voiceIdMap 映射为厂商 voice_id」，厂商 id 不进业务层。**单说话人规则**：片段对白恰好 1 位说话人（按 segments.dialogue 的 castId/castIndex 去重）才锁定其音色；无对白/多说话人不传——厂商 voice_id 是任务级单值，多说话人强绑会多人同声。voice_id 只进参考生接口（官方文生页未列）；未命中映射记 `vidu_voice_unmapped` 交渠道自动分配。voiceIdMap 由管理员配渠道参数（官方音色表：飞书表格 shengshu.feishu.cn/sheets/EgFvs6DShhiEBStmjzccr5gonOg，需登录；自定义音色走声音复刻后把所得 voice_id 填入映射）。
+- **不破坏现有渠道的保证**：aiide-ark 驱动零改动；voiceCode 是可选透传字段被 aiide 忽略——新增回归测试断言带/不带 voiceCode 的请求体 deepEqual；现有 audioRefs（seedance 参考音频）行为完全不变；全量测试无 aiide 用例改动。
+- **验证**：vidu driver **25/25**（+4：映射命中/未映射+日志/`*` 兜底/文生不带）；aiide **20/20**（+1 回归）；`test:server` **517/517**（512+5）；`check`、`build` 过。串行链断言：第 1 段（妈妈独说）快照妈妈音色码、第 2 段（宝宝独说）快照宝宝音色码、两角色音色不同。
+- **未验证**：voice_id 在真实参考生接口的效果（冒烟未覆盖，端到端联调时验证）；多音色角色对白的自动分配观感。**流程提醒**：本目录多 Agent 共用，开工时工作区曾停在 ADM-04 分支（@a755725）——已用 `git switch -C` 把 ENG-02 重建到 ENG-01 头部，未触碰 ADM-04 分支。
+- 局域网预览：`http://192.168.5.195:5173`（mock，无 UI 变化）。
+
 ### 2026-11-12 · Engine · M3-ENG-01 Vidu Q3 真实冒烟（用户已充值并授权）
 
 - **背景**：用户确认首页报价下限 ¥15（§4 第 10 条关闭）、充值 Vidu 并在聊天中提供 API Token、问询参考音频支持情况。按 §4 第 11 条授权执行真实冒烟（上限 10 元）。
