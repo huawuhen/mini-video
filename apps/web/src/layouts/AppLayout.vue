@@ -37,6 +37,10 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
     </aside>
     <main class="content">
       <router-view />
+      <!-- ICP 备案（工信部要求：网站底部标明备案号并链接备案系统） -->
+      <footer class="icp-foot">
+        <a href="https://beian.miit.gov.cn" target="_blank" rel="noopener noreferrer">浙ICP备2026058479号-1</a>
+      </footer>
     </main>
     <!-- route 模式会按当前路径自匹配，/wallet 匹配不到任何 tab 而回退亮「首页」；去掉 route 完全受控（active 已含 /wallet→「我的」映射） -->
     <van-tabbar v-if="!isDesktop && !hideTabbar" :model-value="active" safe-area-inset-bottom>
@@ -46,6 +50,10 @@ const hideTabbar = computed(() => route.meta.hideTabbar === true);
 </template>
 
 <style scoped>
+.icp-foot { padding: var(--miv-space-4) 0 calc(var(--miv-space-3) + env(safe-area-inset-bottom));
+  text-align: center; font-size: 12px; color: var(--miv-text-3); }
+.icp-foot a { color: var(--miv-text-3); text-decoration: none; }
+.icp-foot a:hover { color: var(--miv-text-2); }
 .layout.mobile .content { padding-bottom: calc(var(--miv-tabbar-height) + env(safe-area-inset-bottom)); }
 .layout.mobile.no-tabbar .content { padding-bottom: 0; }
 .layout.desktop { display: flex; min-height: 100vh; }
