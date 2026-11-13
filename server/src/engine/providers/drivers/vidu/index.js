@@ -42,6 +42,7 @@ export const DEFAULT_PARAMS = Object.freeze({
   audio: true,             // 音视频直出：台词 + 背景音（对白已由提示词嵌入，见 engine README）
   offPeak: false,          // 错峰半价但 48h 内出片：仅适合后台批量，交互路径必须 false
   watermark: false,        // 渠道侧「内容由AI生成」水印；AI 标识由成片渲染层统一处理
+  voiceIdMap: {},          // { "音色码(vc_*)": "Vidu voice_id" }，可含 "*" 兜底；见 README 音色映射
   requestTimeoutMs: 180_000,
 });
 
@@ -80,6 +81,7 @@ export default {
       audio: 'boolean（缺省 true；音视频直出：台词与背景音由模型生成）',
       offPeak: 'boolean（缺省 false；true 则 48 小时内出片、积分减半，仅适合非实时批量）',
       watermark: 'boolean（缺省 false；渠道侧水印）',
+      voiceIdMap: 'object（{ "音色码(vc_*)": "Vidu voice_id" }，可含 "*" 兜底；仅参考生接口生效，缺省 {}）',
       requestTimeoutMs: 'int（缺省 180000）',
     },
   },
@@ -104,6 +106,9 @@ export default {
       baseUrl: channel.baseUrl, credential: channel.credential,
       timeoutMs: params.requestTimeoutMs, fetchImpl: deps.fetchImpl,
     });
+    // 音色码 → Vidu voice_id 映射（渠道参数；值非字符串的条目忽略，不把脏值传给上游）
+    const voiceIdMap = Object.fromEntries(Object.entries(params.voiceIdMap ?? {})
+      .filter(([code, id]) => typeof code === 'string' && code && typeof id === 'string' && id));
     // Vidu 用 Token 方案鉴权（transport 默认 Bearer），逐请求覆盖
     const authHeaders = { Authorization: `Token ${channel.credential}` };
 
@@ -179,6 +184,14 @@ export default {
             code: 'PROVIDER_INPUT_INVALID', submitted: false });
         }
 
+        // 音色锁定（M3-ENG-02）：业务层只对单说话人片段传 voiceCode（产品音色码）；
+        // 渠道参数 voiceIdMap 把音色码映射为 Vidu voice_id，缺失时记日志交渠道自动分配
+        const voiceCode = typeof input.voiceCode === 'string' ? input.voiceCode.trim() : '';
+        let voiceId;
+        if (voiceCode) {
+          voiceId = voiceIdMap[voiceCode] ?? voiceIdMap['*'];
+          if (!voiceId) logger?.warn?.('vidu_voice_unmapped', { voiceCode });
+        }
         const common = {
           prompt,
           audio: params.audio,
@@ -188,8 +201,10 @@ export default {
           off_peak: params.offPeak,
           watermark: params.watermark,
         };
+        // voice_id 仅进参考生接口（官方文档在参考生/图生的 audio 参数下列该项；文生页未列，避免 FieldUnwanted）
         return images.length > 0
-          ? { endpoint: '/ent/v2/reference2video', body: { model, images, ...common } }
+          ? { endpoint: '/ent/v2/reference2video',
+              body: { model, images, ...(voiceId ? { voice_id: voiceId } : {}), ...common } }
           : { endpoint: '/ent/v2/text2video', body: { model, ...common } };
       },
 

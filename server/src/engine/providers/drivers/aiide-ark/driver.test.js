@@ -124,6 +124,15 @@ test('aiide-ark：prepare 校验（时长/分辨率/画幅/提示词）', () => 
   assert.throws(() => instance.prepare({ ...base, ratio: '' }), ProviderError);
 });
 
+// M3-ENG-02 回归：管线新增 voiceCode 透传字段（Vidu 音色映射用）后，aiide 请求体必须逐字节不变
+test('aiide-ark：prepare 忽略 voiceCode 透传字段（不影响现有渠道行为）', () => {
+  const instance = build({ fetchImpl: createScriptedFetch([]).fetchImpl, logger: consoleCapture() });
+  const base = { prompt: 'p', imageRefs: ['asset://mat_voice1'], audioRefs: ['asset://mat_voice2'],
+    durationSeconds: 5, ratio: '9:16', resolution: '480p' };
+  assert.deepEqual(instance.prepare({ ...base, voiceCode: 'vc_childf_sweet' }, {}).metadata,
+    instance.prepare(base, {}).metadata, 'voiceCode 不得改变 aiide 请求体');
+});
+
 // 素材库客户端单测（缓存、扩展名预检、签名参数归一）
 test('materials：asset:// 与 mat_ 原样返回；缓存去重签名参数', async () => {
   const scripted = createScriptedFetch([

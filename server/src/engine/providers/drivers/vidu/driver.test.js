@@ -175,3 +175,63 @@ test('vidu：pickVideoUrl 拒绝非 https 用户名链接', () => {
   assert.equal(pickVideoUrl({ creations: [{ url: 'ftp://x/y.mp4' }] }), null);
   assert.equal(pickVideoUrl({ creations: [{ url: 'https://ok.example/a.mp4' }] }), 'https://ok.example/a.mp4');
 });
+
+// ───────── M3-ENG-02：音色码 → voice_id 映射（渠道参数，单说话人由业务层判定） ─────────
+
+const voiceChannel = (voiceIdMap) => contractChannel({
+  kind: 'video', driver: 'vidu', modelMap: { video: 'viduq3-turbo' },
+  params: { voiceIdMap },
+});
+const voiceInput = (voiceCode) => ({
+  prompt: 'p', imageRefs: ['https://cdn.example.test/a.png'], audioRefs: [],
+  durationSeconds: 5, ratio: '9:16', resolution: '480p', ...(voiceCode ? { voiceCode } : {}),
+});
+/** 建一个注入 scripted fetch 的实例（reference2video 单步回放），submit 后返回请求体。 */
+const makeVoice = (voiceIdMap, { endpoint = '/ent/v2/reference2video' } = {}) => {
+  const scripted = createScriptedFetch([
+    { match: endpoint, method: 'POST', status: 200, json: fixture('submit-accepted.json') },
+  ]);
+  const logger = consoleCapture();
+  const instance = driver.create(voiceChannel(voiceIdMap), { logger, deps: { fetchImpl: scripted.fetchImpl } });
+  return {
+    instance, scripted, logger,
+    async submitBody(prepared) {
+      await instance.submit(prepared, {});
+      return JSON.parse(scripted.calls[0].body);
+    },
+  };
+};
+
+test('vidu：voiceIdMap 命中 → 参考生请求带 voice_id（映射为厂商音色）', async () => {
+  const voice = makeVoice({ vc_childf_sweet: 'vidu_voice_01' });
+  const body = await voice.submitBody(voice.instance.prepare(voiceInput('vc_childf_sweet'), {}));
+  assert.equal(body.voice_id, 'vidu_voice_01', '音色码映射为厂商 voice_id');
+  assert.ok(!JSON.stringify(body).includes('vc_childf_sweet'), '产品音色码不进上游请求');
+});
+
+test('vidu：未映射音色码 → 不传 voice_id 交渠道自动分配 + 记日志', async () => {
+  const voice = makeVoice({ vc_childf_sweet: 'vidu_voice_01' });
+  const body = await voice.submitBody(voice.instance.prepare(voiceInput('vc_unknown'), {}));
+  assert.ok(!('voice_id' in body), '未知音色码不透传给上游');
+  assert.ok(voice.logger.entries.some((e) => e.event === 'vidu_voice_unmapped' && e.fields.voiceCode === 'vc_unknown'));
+});
+
+test('vidu：voiceIdMap 的 "*" 兜底生效；无映射参数时不带 voice_id', async () => {
+  const fallback = makeVoice({ '*': 'vidu_default' });
+  const body = await fallback.submitBody(fallback.instance.prepare(voiceInput('vc_any'), {}));
+  assert.equal(body.voice_id, 'vidu_default');
+  const none = makeVoice(undefined);
+  const body2 = await none.submitBody(none.instance.prepare(voiceInput('vc_any'), {}));
+  assert.ok(!('voice_id' in body2));
+});
+
+test('vidu：voice_id 只进参考生接口；文生不带（官方文生页未列该参数）', async () => {
+  const voice = makeVoice({ vc_childf_sweet: 'vidu_voice_01' }, { endpoint: '/ent/v2/text2video' });
+  const prepared = voice.instance.prepare({
+    prompt: 'p', imageRefs: [], audioRefs: [], voiceCode: 'vc_childf_sweet',
+    durationSeconds: 5, ratio: '16:9', resolution: '720p',
+  }, {});
+  const result = await voice.instance.submit(prepared, {});
+  assert.equal(result.status, 'running');
+  assert.equal(JSON.parse(voice.scripted.calls[0].body).voice_id, undefined, '文生请求不带 voice_id');
+});

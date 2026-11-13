@@ -25,8 +25,26 @@ M3-ENG-01（2026-11-12）接入。官方文档 <https://platform.vidu.cn/docs/ap
 - 参考图上限 7 张（管线默认上限 9）：保序截断（尾帧优先），超出量记 `vidu_ref_truncated` 日志。
   8~9 个形象的极端分段会丢后面的形象参考——出现频率高时应把 `maxImageRefs` 收到 7（待定）。
 - **无音频参考入参**：`audioRefs` 不进请求体（`refAudio: 0`）。台词与背景音由 `audio=true`
-  （缺省）音视频直出，对白原文已在提示词中；**跨段角色音色一致性**目前依赖模型自动推荐，
-  后续如需锁定需引入 voice_id / 声音复刻（300 积分/音色，前 10 个免费）——遗留项见 handoff §4。
+  （缺省）音视频直出，对白原文已在提示词中；跨段音色锁定见下方「音色映射（M3-ENG-02）」。
+
+## 音色映射（M3-ENG-02：角色音色 → Vidu voice_id）
+
+Vidu 不支持音频参考文件，音色靠 `voice_id` 指定（为空时系统自动推荐）。厂商 voice_id 属渠道配置，
+不进业务层——链路是「产品音色码 → 渠道参数映射 → 请求体 voice_id」：
+
+1. **业务层（`projects/segment.js`）**：片段对白**恰好 1 位说话人**时，把该角色的
+   `project_cast.voice_id`（产品音色码，如 `vc_childf_sweet`）快照进 `gen_tasks.request.voiceCode`
+   并传给驱动；无对白/多位说话人不传（厂商 voice_id 是任务级单值，多说话人强绑会把多人配成同声）。
+2. **渠道参数 `voiceIdMap`**：`{ "vc_childf_sweet": "<Vidu voice_id>", …, "*": "<兜底 voice_id>" }`。
+   命中 → 请求体带 `voice_id`；未命中且无 `"*"` → 记 `vidu_voice_unmapped` 日志，交渠道自动分配。
+   `voice_id` **只进参考生接口**（官方文生页未列该参数）。
+3. **Vidu voice_id 取值**：官方音色列表（飞书表格，需登录）
+   <https://shengshu.feishu.cn/sheets/EgFvs6DShhiEBStmjzccr5gonOg>，由管理员录入渠道参数；
+   自定义音色走「声音复刻」API（300 积分/音色，前 10 个免费），复刻得的 voice_id 同样填进 voiceIdMap。
+4. **对其他渠道零影响**：`voiceCode` 是管线透传的可选字段，aiide-ark 等驱动直接忽略
+   （回归测试断言请求体逐字节不变）；现有「参考音频」（audioRefs → seedance 音色参考）行为不变。
+
+注：voice_id 参数在真实参考生接口上的效果尚未实测（冒烟未覆盖），端到端联调时验证。
 - 分辨率映射：产品 SKU `480p` → Vidu `540p`（只升不降），`720p`/`1080p` 原样。
 - 鉴权 `Authorization: Token <key>`（非 Bearer），经 transport 逐请求覆盖。
 - 协议无创建幂等键：重提防护靠 `gen_tasks` 状态守卫（与 aiide-ark 相同）。

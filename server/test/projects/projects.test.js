@@ -645,6 +645,11 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
     const stored = typeof storedRequest === 'string' ? JSON.parse(storedRequest) : storedRequest;
     assert.ok(stored.imageRefs.every((key) => !/^https?:\/\//.test(key) && key.includes('looks/')),
       'gen_tasks.request 保存存储 key');
+    // M3-ENG-02：单说话人片段快照音色码（第 1 段仅妈妈说话 → 妈妈的音色码；产品码，驱动再映射厂商 voice_id）
+    const { rows: motherCast } = await ctx.db.query(
+      `SELECT voice_id FROM project_cast WHERE project_id = $1 AND name = '妈妈'`, [projectId]);
+    assert.ok(motherCast[0].voice_id, '前置：妈妈已推荐音色');
+    assert.equal(stored.voiceCode, motherCast[0].voice_id, '单说话人片段快照该说话人的音色码');
 
     await poll({ takeId: (await ctx.db.query(
       `SELECT id FROM segment_takes WHERE segment_id = (SELECT id FROM segments WHERE project_id = $1 AND idx = 0)`,
@@ -693,6 +698,15 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
        WHERE s.project_id = $1 ORDER BY s.idx`, [projectId]);
     assert.ok(takes.every((take) => take.status === 'succeeded' && take.video_key));
     assert.ok(takes.every((take) => take.poster_key), '每段 take 都有海报帧 key');
+    // M3-ENG-02：第 2 段仅宝宝说话 → 快照宝宝的音色码（与第 1 段妈妈的音色不同）
+    const seg2Stored = (await ctx.db.query(
+      `SELECT gt.request FROM gen_tasks gt JOIN segment_takes t ON t.gen_task_id = gt.id
+         JOIN segments s ON s.id = t.segment_id WHERE s.project_id = $1 AND s.idx = 1`, [projectId])).rows[0].request;
+    const storedSeg2 = typeof seg2Stored === 'string' ? JSON.parse(seg2Stored) : seg2Stored;
+    const { rows: babyCast } = await ctx.db.query(
+      `SELECT voice_id FROM project_cast WHERE project_id = $1 AND name = '宝宝'`, [projectId]);
+    assert.equal(storedSeg2.voiceCode, babyCast[0].voice_id, '第 2 段单说话人（宝宝）快照其音色码');
+    assert.notEqual(stored.voiceCode, storedSeg2.voiceCode, '两个角色锁定不同音色');
   }, { timeout: 240_000 });
 
   test('inspect 不通过（全黑）：take failed、退回该段预占、项目 failed；retry 免费重建并交付', async () => {

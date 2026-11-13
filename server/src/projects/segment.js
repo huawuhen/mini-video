@@ -74,6 +74,8 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
     }
     const imageRefs = [...(finalPrompt.imageRefs ?? [])];
     if (tailRef) imageRefs.unshift(tailRef); // 尾帧排最前（与提示词 图1 口径一致）
+    // 单说话人片段的音色码快照（M3-ENG-02）：进 request（重试/改剧情重绑定后不漂移），提交时传驱动
+    const voiceCode = await voiceCodeForSegment(db, projectId, segment);
 
     const takeIdResolved = takeId ?? newId('take');
     await db.tx(async (t) => {
@@ -97,6 +99,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
           [genTaskId, userId, skuRows[0].sku_code, skuRows[0].version, JSON.stringify({
             takeId: takeIdResolved, projectId, segmentId: segment.id, idx,
             prompt: finalPrompt.prompt, imageRefs, audioRefs: finalPrompt.audioRefs ?? [],
+            voiceCode,
             durationSeconds: segment.duration_seconds, ratio: project.ratio,
             videoKey: `users/${userId}/projects/${projectId}/takes/${takeIdResolved}.mp4`,
             lastFrameKey: `users/${userId}/projects/${projectId}/takes/${takeIdResolved}.last.jpg`,
@@ -177,6 +180,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
         prompt: request.prompt,
         imageRefs: await toUrls(submitImageRefs),
         audioRefs: await toUrls(request.audioRefs),
+        voiceCode: request.voiceCode,
         durationSeconds: request.durationSeconds, ratio: request.ratio, resolution: request.resolution,
       }, { durations: request.allowedDurations });
       const submittedAt = Date.now();
@@ -239,6 +243,25 @@ export async function markTakeUnknown(db, ctx, { take, projectId, userId, genTas
     });
   });
   logger.error('segment_take_unknown', { take, projectId });
+}
+
+/** 单说话人片段的音色码（M3-ENG-02）：片段对白恰好 1 位说话人时返回其 project_cast.voice_id（产品音色码，
+ * 非厂商 id——驱动再经渠道参数映射为厂商音色）；无对白/多位说话人返回 undefined，交渠道按角色自动分配
+ * （厂商 voice_id 是任务级单值，多说话人强绑会把多人配成同声）。说话人用 castId 或 castIndex（=pc.idx）。 */
+async function voiceCodeForSegment(db, projectId, segment) {
+  const dialogue = Array.isArray(segment.dialogue) ? segment.dialogue : [];
+  const speakerKeys = [...new Set(dialogue
+    .map((line) => (line && typeof line === 'object' ? (line.castId ?? line.castIndex) : undefined))
+    .filter((key) => key !== undefined && key !== null))];
+  if (speakerKeys.length !== 1) return undefined;
+  const key = speakerKeys[0];
+  const column = typeof key === 'number' ? 'idx' : 'id';
+  const { rows } = await db.query(
+    `SELECT pc.voice_id FROM project_cast pc
+       JOIN voices v ON v.id = pc.voice_id
+      WHERE pc.project_id = $1 AND pc.voice_id IS NOT NULL AND pc.${column} = $2`,
+    [projectId, key]);
+  return rows[0]?.voice_id;
 }
 
 /** 交付后 re-take 的剧情重绑定（复审必改 2）：PATCH plot 只改展示列，提交前在这里生效——
@@ -307,7 +330,8 @@ async function rebindRetakePrompt(db, { logger, storyAgent, project, segment, re
     skillId: entry.skillId, skillVersion: entry.skillVersion, degraded: entry.degraded,
     plot: segment.plot, // 绑定时的剧情快照：下一次改动以此为基准比对
   };
-  const updated = { ...request, prompt: entry.prompt, imageRefs: entry.imageRefs, audioRefs: entry.audioRefs };
+  const updated = { ...request, prompt: entry.prompt, imageRefs: entry.imageRefs, audioRefs: entry.audioRefs,
+    voiceCode: await voiceCodeForSegment(db, project.id, segment) }; // 重绑定后音色码按当前对白说话人重算
   await db.tx(async (t) => {
     await t.query(`UPDATE segments SET final_prompt = $2 WHERE id = $1`,
       [segment.id, JSON.stringify(finalPrompt)]);
