@@ -38,9 +38,39 @@ Vidu 不支持音频参考文件，音色靠 `voice_id` 指定（为空时系统
 2. **渠道参数 `voiceIdMap`**：`{ "vc_childf_sweet": "<Vidu voice_id>", …, "*": "<兜底 voice_id>" }`。
    命中 → 请求体带 `voice_id`；未命中且无 `"*"` → 记 `vidu_voice_unmapped` 日志，交渠道自动分配。
    `voice_id` **只进参考生接口**（官方文生页未列该参数）。
-3. **Vidu voice_id 取值**：官方音色列表（飞书表格，需登录）
+3. **Vidu voice_id 取值**：官方音色表（飞书表格，免登录只读）
    <https://shengshu.feishu.cn/sheets/EgFvs6DShhiEBStmjzccr5gonOg>，由管理员录入渠道参数；
    自定义音色走「声音复刻」API（300 积分/音色，前 10 个免费），复刻得的 voice_id 同样填进 voiceIdMap。
+
+   **中文（普通话）音色清单**（2026-11-13 浏览器逐屏核对全表，序号 1~58；表内还有粤语/英/日/西/葡等）：
+
+   | 类别 | voice_id → 名称 |
+   |---|---|
+   | 基础青年/女声 1~8 | `male-qr-qingse` 青涩青年、`male-qr-jingying` 精英青年、`male-qr-badao` 霸道青年、`male-qr-daxuesheng` 青年大学生、`female-shaonv` 少女、`female-yujie` 御姐、`female-chengshu` 成熟女性、`female-tianmei` 甜美女性 |
+   | 精品版 9~16 | 上列 8 个各加 `-jingpin` 后缀（名称 +「-beta」，音色与基础版不同） |
+   | 童声/卡通 17~21 | `clever_boy` 聪明男童、`cute_boy` 可爱男童、`lovely_girl` 萌萌女童、`cartoon_pig` 卡通猪小琪、`bingjiao_ddi` 病娇弟弟 |
+   | 言情/校园 22~30 | `junlang_nanyou` 俊朗男友、`chunzhen_xuedi` 纯真学弟、`lengdan_xuezhang` 冷淡学长、`badao_shaoye` 霸道少爷、`tianxin_xiaoling` 甜心小伶、`diaopi_mengmei` 俏皮萌妹、`wumei_yujie` 妩媚御姐、`diadia_xuemei` 嗲嗲学妹、`danya_xuejie` 淡雅学姐 |
+   | 职业/角色 31~58 | `Chinese (Mandarin)_Reliable_Executive` 沉稳高管、`_News_Anchor` 新闻女声、`_Mature_Woman` 傲娇御姐、`_Unrestrained_Young_Man` 不羁青年、`Arrogant_Miss` 嚣张小姐、`Robot_Amor` 机械战甲、`_Kind-hearted_Antie` 热心大婶、`_HK_Flight_Attendant` 港普空姐、`_Humorous_Elder` 搞笑大爷、`_Gentleman` 温润男声、`_Warm_Bestie` 温暖闺蜜、`_Male_Announcer` 播报男声、`_Sweet_Lady` 甜美女声、`_Southern_Young_Man` 南方小哥、`_Wise_Women` 闯历姐姐、`_Gentle_Youth` 温润青年、`_Warm_Girl` 温暖少女、`_Kind-hearted_Elder` 花甲奶奶、`_Cute_Spirit` 憨憨萌兽、`_Radio_Host` 电台男主播、`_Lyrical_Voice` 抒情男声、`_Straightforward_Boy` 率真弟弟、`_Sincere_Adult` 真诚青年、`_Gentle_Senior` 温柔学姐、`_Stubborn_Friend` 嘴硬竹马、`_Crisp_Girl` 清脆少女、`_Pure-hearted_Boy` 清澈邻家弟弟、`_Soft_Girl` 软软女孩（31~58 前缀均为 `Chinese (Mandarin)_`，仅 `Arrogant_Miss`/`Robot_Amor` 例外） |
+
+   **建议的预置映射**（产品 14 音色 → Vidu，可直接粘贴进渠道参数；多对一允许，童声女只有 1 个）：
+
+   ```json
+   { "vc_girl_gentle": "female-shaonv",
+     "vc_girl_lively": "Chinese (Mandarin)_Crisp_Girl",
+     "vc_boy_sunny": "male-qr-qingse",
+     "vc_boy_calm": "male-qr-jingying",
+     "vc_childf_sweet": "lovely_girl",
+     "vc_childf_lively": "female-shaonv-jingpin",
+     "vc_childm_naughty": "clever_boy",
+     "vc_childm_good": "cute_boy",
+     "vc_youngf_smart": "Chinese (Mandarin)_Wise_Women",
+     "vc_youngm_warm": "Chinese (Mandarin)_Gentle_Youth",
+     "vc_middlef_mom": "female-chengshu",
+     "vc_middlem_dad": "Chinese (Mandarin)_Reliable_Executive",
+     "vc_elderf_grandma": "Chinese (Mandarin)_Kind-hearted_Elder",
+     "vc_elderm_grandpa": "Chinese (Mandarin)_Humorous_Elder" }
+   ```
+
 4. **对其他渠道零影响**：`voiceCode` 是管线透传的可选字段，aiide-ark 等驱动直接忽略
    （回归测试断言请求体逐字节不变）；现有「参考音频」（audioRefs → seedance 音色参考）行为不变。
 
