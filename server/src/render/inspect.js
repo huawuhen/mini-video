@@ -7,7 +7,9 @@ const DURATION_TOLERANCE_SECONDS = 2;
 const SILENT_MAX_DB = -60;
 // 画幅比例 2% 相对误差；短边达到档位 90% 即算达标（上游模型常输出 16 的倍数，如 1088x1920），
 // 高于档位不算问题。
-const ASPECT_TOLERANCE = 0.02;
+// 3%：Vidu 540p 实际输出 528x960（16 倍对齐），与 9:16 的相对偏差 2.2%（真实验证实测，
+// 2026-11-13）；明显变形（如 3:4 冒充 9:16 偏差 ~25%）仍远超容差被拒。aiide 输出贴标准比例不受影响。
+const ASPECT_TOLERANCE = 0.03;
 const MIN_SHORT_SIDE_RATIO = 0.9;
 
 function seconds(value) {
@@ -63,7 +65,7 @@ export function createInspector({ run, probe, blackRatio = 0.9, frozenRatio = 0.
       const actualShort = Math.min(video.width, video.height);
       const actualAspect = Math.max(video.width, video.height) / actualShort;
       const aspectError = Math.abs(actualAspect - expectedAspect) / expectedAspect;
-      // 比例在 2% 相对误差内、且短边不低于档位的 90%（高于档位不算问题）
+      // 比例在 3% 相对误差内、且短边不低于档位的 90%（高于档位不算问题）
       if (aspectError > ASPECT_TOLERANCE || actualShort < expectedShort * MIN_SHORT_SIDE_RATIO) {
         issues.push({ code: 'RESOLUTION_MISMATCH',
           message: `画面为 ${video.width}x${video.height}，预期 ${ratio}、分辨率不低于 ${expectedShort}，`

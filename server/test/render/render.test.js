@@ -184,6 +184,13 @@ describe('render（M1-RND-01）', () => {
     const square = await makeVideo('square.mp4', { video: 'testsrc2=size=720x720:rate=30' });
     const squareResult = await render.inspect(square, { ratio: RATIO, resolution: RESOLUTION });
     assert.ok(squareResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'));
+    // Vidu 540p 实际输出 528x960（16 倍对齐）：与 9:16 相对偏差 2.2%，容差 3% 内应通过
+    // （真实验证实测被 2% 容差误拒，2026-11-13）
+    const vidu = await makeVideo('vidu528.mp4', { video: 'testsrc2=size=528x960:rate=30' });
+    // 480p 档（SKU video.480p → Vidu 540p 实际输出）：短边下限 432，528 通过
+    const viduResult = await render.inspect(vidu, { ratio: RATIO, resolution: '480p' });
+    assert.ok(!viduResult.issues.some((issue) => issue.code === 'RESOLUTION_MISMATCH'),
+      `Vidu 528x960 应通过：${JSON.stringify(viduResult.issues)}`);
   });
 
   test('inspect：全黑/静止阈值可调（frozenRatio 调低后 80% 静止被检出）', async () => {
