@@ -12,6 +12,7 @@
     "channel:list": "node scripts/channel-cli.js list",
     "channel:seed": "node scripts/channel-cli.js seed",
     "channel:test": "node scripts/channel-cli.js test",
+    "channel:create": "node scripts/channel-cli.js create",
     "channel:use": "node scripts/channel-cli.js use",
     "driver:new": "node scripts/driver-new.js",
     "migrate": "node src/db/migrate.js",
