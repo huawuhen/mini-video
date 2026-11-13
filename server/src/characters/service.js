@@ -441,7 +441,7 @@ export function createLookGenerateHandler({ db, logger, storage, imageProvider, 
     if (request.skuCode) {
       const { rows: skuRows } = await db.query(
         `SELECT resolution FROM skus WHERE sku_code = $1 AND kind = 'image' AND status = 'active'
-          ORDER BY version DESC LIMIT 1`,
+           AND effective_at <= now() ORDER BY version DESC LIMIT 1`,
         [request.skuCode],
       );
       if (skuRows[0]?.resolution) {

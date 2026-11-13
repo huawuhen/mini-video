@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { newId } from '../db/ids.js';
 import { PermanentJobError } from '../queue/index.js';
 import { transition, updateProgress } from './state.js';
+import { settingNumber } from './service.js';
 
 export function createComposeHandler({ db, logger, config, storage, render, fetchLocal }) {
   return async function projectCompose(payload, ctx) {
@@ -29,6 +30,7 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
     const { rows: skuRows } = await db.query(
       `SELECT s.resolution FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+         AND s.effective_at <= now()
         WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`, [project.tier_mapping_id]);
     const resolution = skuRows[0]?.resolution ?? '720p';
 
@@ -62,7 +64,9 @@ export function createComposeHandler({ db, logger, config, storage, render, fetc
       const coverKey = `users/${userId}/projects/${projectId}/renders/${renderId}.cover.jpg`;
       await storage.put(videoKey, await readFile(composed.outputPath));
       await storage.put(coverKey, await readFile(composed.coverPath));
-      const expiresAt = new Date(Date.now() + config.projects.retentionDays * 86_400_000);
+      // 保存期按运营参数（settings）优先、env 作默认——后台改了要真实生效（ADM-04 复审必改③）
+      const retentionDays = await settingNumber(db, 'retention_days', config.projects.retentionDays);
+      const expiresAt = new Date(Date.now() + retentionDays * 86_400_000);
       await db.tx(async (t) => {
         const claimed = await t.query(
           `UPDATE renders SET status = 'succeeded', video_key = $2, cover_key = $3,

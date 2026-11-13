@@ -16,6 +16,7 @@ import { adminRoutes } from './api/admin.js';
 import { adminAuthRoutes } from './api/admin-auth.js';
 import { adminUsersOrdersRoutes } from './api/admin-users-orders.js';
 import { adminProjectsRoutes } from './api/admin-projects.js';
+import { adminConfigRoutes } from './api/admin-config.js';
 import { createPaymentsContext } from './payments/context.js';
 import { extractText } from './engine/extract/index.js';
 import { createStorageFromConfig } from './engine/storage/index.js';
@@ -94,6 +95,8 @@ export function createApp({ config, db, logger, urlFor = () => undefined, smsPro
   api.use(adminUsersOrdersRoutes({ db, config, logger, storage: objectStorage, payments: paymentsCtx }));
   // 管理端·作品与待核对（M3-ADM-03，API.md §8.3）：同上
   api.use(adminProjectsRoutes({ db, config, logger }));
+  // 管理端·价格与配置 / 审计（M3-ADM-04，API.md §8.4~8.5）：同上
+  api.use(adminConfigRoutes({ db, config, logger, storage: objectStorage, urlFor }));
 
   api.use(notFound());
   api.use(errorHandler(logger));

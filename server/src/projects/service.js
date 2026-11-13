@@ -112,10 +112,24 @@ export async function consumeFreeQuota(t, { userId, max }) {
   }
 }
 
-function assertStoryText(storyText) {
+/** 运营参数：settings 表优先、env 配置作默认（M3-ADM-04 复审必改③——后台改了必须对服务端
+ * 生效，不能「看着生效、实际没用」）。调用方传入当前事务 t，与该次操作的其余校验同源。 */
+export async function settingNumber(t, key, fallback) {
+  const { rows } = await t.query(`SELECT value FROM settings WHERE key = $1`, [key]);
+  const value = rows[0]?.value;
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** 故事长度校验：上下限按运营参数（settings），不再写死 3000。 */
+async function assertStoryText(t, storyText) {
   const value = typeof storyText === 'string' ? storyText.trim() : '';
   if (!value) throw appError('STORY_TOO_SHORT', '故事内容不能为空');
-  if (value.length > 3000) throw appError('STORY_TOO_LONG', '故事最长 3000 字');
+  const minChars = await settingNumber(t, 'min_story_chars', 1);
+  if (value.length < minChars) {
+    throw appError('STORY_TOO_SHORT', minChars > 1 ? `故事有点短，至少写 ${minChars} 个字吧` : '故事内容不能为空');
+  }
+  const maxChars = await settingNumber(t, 'max_story_chars', 3000);
+  if (value.length > maxChars) throw appError('STORY_TOO_LONG', `故事最长 ${maxChars} 字`);
   return value;
 }
 
@@ -156,7 +170,6 @@ export async function createProject(db, { userId, input, config, channelRouter =
   // M2-BE-03：用户侧门禁——无生效 LLM 渠道时创建即报 NO_ACTIVE_CHANNEL（503，明确中文文案）；
   // mock 链路（无 router）不拦截。放在事务外：pickRow 只读渠道表，无上游调用。
   if (channelRouter) await channelRouter.pick('llm');
-  const storyText = assertStoryText(input.storyText);
   if (!['text', 'file'].includes(input.sourceType)) {
     throw appError('VALIDATION_FAILED', undefined, { fields: { sourceType: '取值不正确' } });
   }
@@ -166,6 +179,8 @@ export async function createProject(db, { userId, input, config, channelRouter =
   }
   const characterIds = [...new Set(input.characterIds ?? [])];
   return db.tx(async (t) => {
+    // 故事长度上下限按运营参数（settings）校验，与消费免费次数同事务
+    const storyText = await assertStoryText(t, input.storyText);
     const replayKey = `project.create:${userId}:${input.idempotencyKey}`;
     await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [replayKey]);
     const { rows: replayed } = await t.query(
@@ -187,7 +202,7 @@ export async function createProject(db, { userId, input, config, channelRouter =
     await requireActiveStyle(t, input.styleId);
     await requireActiveTier(t, input.qualityTierId);
     await requireOwnCharacters(t, userId, characterIds);
-    await consumeFreeQuota(t, { userId, max: config.projects.freeDailyQuota });
+    await consumeFreeQuota(t, { userId, max: await settingNumber(t, 'daily_free_understanding', config.projects.freeDailyQuota) });
     const tierMappingId = await lockTierMapping(t, input.qualityTierId);
     const id = newId('prj');
     await t.query(
@@ -209,14 +224,15 @@ export async function createProject(db, { userId, input, config, channelRouter =
   });
 }
 
-/** 重新整理（确认点 A）：消耗 1 次免费次数、按剧本处理（不再扩写）、清空旧规划后重跑。 */
+/** 重新整理（确认点 A）：消耗 1 次免费次数、按剧本处理（不再扩写）、清空旧规划后重跑。
+ * 校验顺序：状态 → 文本长度（按运营参数）→ 免费次数——避免短文本把「状态错误」盖成文案错误。 */
 export async function reanalyzeProject(db, { userId, projectId, storyText, config }) {
-  const text = assertStoryText(storyText);
   return db.tx(async (t) => {
     const project = await requireProject(t, { userId, projectId });
     if (project.status !== 'story_review') throw appError('PROJECT_STATE_INVALID');
     await t.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [`project:reanalyze:${projectId}`]);
-    await consumeFreeQuota(t, { userId, max: config.projects.freeDailyQuota });
+    const text = await assertStoryText(t, storyText);
+    await consumeFreeQuota(t, { userId, max: await settingNumber(t, 'daily_free_understanding', config.projects.freeDailyQuota) });
     await t.query(`DELETE FROM segments WHERE project_id = $1`, [projectId]);
     await t.query(`DELETE FROM project_cast WHERE project_id = $1`, [projectId]);
     await t.query(`UPDATE projects SET story_text = $2, story = NULL, updated_at = now() WHERE id = $1`,
@@ -239,16 +255,19 @@ async function existingLookVersionId(t, characterId, styleId) {
   return rows[0]?.id ?? null;
 }
 
-/** Pricing（API §6.2）：形象缺口按当前图片 SKU 计价，视频按锁定档位映射的当前 SKU 计价。 */
+/** Pricing（API §6.2）：形象缺口按当前图片 SKU 计价；视频单价按确认点 B 锁定价
+ * （video_unit_fen，M3-ADM-04；确认前为 NULL，回退当前价以便报价与展示一致）。 */
 export async function buildPricing(t, { userId, project }) {
   const { rows: cast } = await t.query(
     `SELECT look_version_id FROM project_cast WHERE project_id = $1`, [project.id]);
   const { rows: segments } = await t.query(
     `SELECT duration_seconds FROM segments WHERE project_id = $1 ORDER BY idx`, [project.id]);
   const { rows: imageSku } = await t.query(
-    `SELECT price_fen FROM skus WHERE kind = 'image' AND status = 'active'
-      ORDER BY version DESC, effective_at DESC LIMIT 1`);
-  const unit = await videoUnitFen(t, project.tier_mapping_id);
+    `SELECT price_fen FROM skus WHERE kind = 'image' AND status = 'active' AND effective_at <= now()
+      ORDER BY version DESC LIMIT 1`);
+  const unit = Number.isSafeInteger(project.video_unit_fen) && project.video_unit_fen > 0
+    ? project.video_unit_fen
+    : await videoUnitFen(t, project.tier_mapping_id);
   const looksToGenerate = cast.filter((member) => !member.look_version_id).length;
   const looksFen = looksToGenerate * (imageSku[0]?.price_fen ?? 0);
   const videoFen = segments.reduce((sum, segment) => sum + segment.duration_seconds, 0) * unit;
@@ -333,7 +352,7 @@ export async function confirmStory(db, { userId, projectId, quoteId, idempotency
       const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [project.style_id]);
       const { rows: imageSku } = await t.query(
         `SELECT sku_code, version, price_fen FROM skus WHERE kind = 'image' AND status = 'active'
-          ORDER BY version DESC, effective_at DESC LIMIT 1`);
+           AND effective_at <= now() ORDER BY version DESC LIMIT 1`);
       for (const member of missing) {
         const { rows: photos } = await t.query(
           `SELECT up.storage_key FROM character_photos cp JOIN uploads up ON up.id = cp.upload_id
@@ -483,8 +502,15 @@ export async function confirmCast(db, { userId, projectId, quoteId, idempotencyK
     }
     if (!quoteId) throw appError('VALIDATION_FAILED', '需要先获取视频生成报价');
 
-    const { quote } = await consumeQuote(t, { userId, quoteId, kind: 'project_render', refType: 'project', refId: projectId });
+    const { quote, priced } = await consumeQuote(t, { userId, quoteId, kind: 'project_render', refType: 'project', refId: projectId });
     await reserveProjectVideo(t, { userId, projectId, amountFen: quote.amount_fen });
+    // 价格锁定（M3-ADM-04）：视频单价以确认时点为准（consumeQuote 重算通过，报价额与冻结额一致），
+    // 之后 segment.generate、失败重试、详情 pricing 都按锁定价，改价只影响新报价。
+    const unitFen = priced.priceSnapshot?.video?.unitFen;
+    if (!Number.isSafeInteger(unitFen) || unitFen <= 0) {
+      throw appError('INTERNAL', '报价缺少视频单价，无法锁定价格');
+    }
+    await t.query(`UPDATE projects SET video_unit_fen = $2 WHERE id = $1`, [projectId, unitFen]);
     await t.query(`UPDATE project_cast SET locked_at = now() WHERE project_id = $1`, [projectId]);
     await transition(t, { projectId, userId, from: ['cast_review'], to: 'rendering',
       progress: { percent: 45, message: `正在生成片段 1/${segmentCount}` }, changed: ['pricing'] });
@@ -623,7 +649,7 @@ export async function retryProject(db, { userId, projectId }) {
       const { rows: styleRows } = await t.query(`SELECT prompt_hint FROM styles WHERE id = $1`, [project.style_id]);
       const { rows: imageSku } = await t.query(
         `SELECT sku_code, version FROM skus WHERE kind = 'image' AND status = 'active'
-          ORDER BY version DESC, effective_at DESC LIMIT 1`);
+           AND effective_at <= now() ORDER BY version DESC LIMIT 1`);
       for (const member of failedCasts) {
         const original = typeof member.original_request === 'string'
           ? JSON.parse(member.original_request) : member.original_request ?? {};
@@ -825,6 +851,7 @@ export async function createSegmentTake(db, { userId, projectId, segmentId, quot
     const { rows: skuRows } = await t.query(
       `SELECT s.sku_code, s.version, s.resolution FROM tier_mappings tm
          JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+            AND s.effective_at <= now()
         WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`, [project.tier_mapping_id]);
     const { rows: castRows } = await t.query(`SELECT id FROM project_cast WHERE project_id = $1 ORDER BY idx`, [projectId]);
     await t.query(

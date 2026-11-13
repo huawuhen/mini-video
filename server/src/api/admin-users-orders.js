@@ -36,6 +36,7 @@ export function adminUsersOrdersRoutes({ db, config, logger, storage, payments =
 
   const audit = (req, action, targetType, targetId, detail = {}) => auth.audit({
     adminId: req.admin?.id ?? null, actor: 'admin', action, targetType, targetId: String(targetId ?? ''), detail,
+    ip: req.ip ?? null, // 审计统一带 IP（ADM-04 复审建议 a）
   });
 
   // ── 用户（§8.1） ──

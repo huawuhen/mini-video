@@ -124,7 +124,8 @@ export function createChannelService({ db, secretKey, registry, logger }) {
    */
   async function costVsPrice(channel) {
     const { rows: skus } = await db.query(
-      `SELECT sku_code, price_fen FROM skus WHERE channel = 'logical' AND status = 'active'`);
+      `SELECT sku_code, price_fen FROM skus WHERE channel = 'logical' AND status = 'active'
+       AND effective_at <= now()`);
     const priceByCode = new Map(skus.map((s) => [s.sku_code, s.price_fen]));
     const over = [];
     for (const [capability, cost] of Object.entries(channel.cost_fen ?? {})) {

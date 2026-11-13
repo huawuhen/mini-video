@@ -61,7 +61,11 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
       }
     }
 
-    const unit = await videoUnitFen(db, project.tier_mapping_id);
+    // 价格锁定（M3-ADM-04）：确认点 B 锁定的单价优先——重试/续跑不因改价与冻结额不一致；
+    // 旧数据（迁移 016 前确认）为 NULL 时回退当前价（原行为）
+    const unit = Number.isSafeInteger(project.video_unit_fen) && project.video_unit_fen > 0
+      ? project.video_unit_fen
+      : await videoUnitFen(db, project.tier_mapping_id);
     const amountFen = unit * segment.duration_seconds;
     // prev_tail：调用方在生成前先取上一段尾帧作为普通参考图（尽力而为，不保证首帧衔接）
     let tailRef;
@@ -85,6 +89,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
         const { rows: skuRows } = await t.query(
           `SELECT s.sku_code, s.version, s.resolution FROM tier_mappings tm
              JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+             AND s.effective_at <= now()
             WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`, [project.tier_mapping_id]);
         const genTaskId = newId('gt');
         await t.query(

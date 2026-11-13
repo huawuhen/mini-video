@@ -128,7 +128,7 @@ export function createAdminAuth({ config, db }) {
     if (!admin || !verifyAdminPassword(admin.password_hash, String(password ?? '')) || admin.status !== 'active') {
       const banned = await recordLoginFailure(ip);
       await audit({ actor: 'admin', action: banned ? 'auth.login_banned' : 'auth.login_failed',
-        targetType: 'admin_user', targetId: String(username ?? ''),
+        targetType: 'admin_user', targetId: String(username ?? ''), ip,
         detail: { ip: ip ?? null } });
       return null;
     }
@@ -140,23 +140,25 @@ export function createAdminAuth({ config, db }) {
       [tokenHash, admin.id, csrfToken, config.sessionTtlDays * 86_400],
     );
     await db.query(`UPDATE admin_users SET last_login_at = now(), updated_at = now() WHERE id = $1`, [admin.id]);
-    await audit({ adminId: admin.id, actor: 'admin', action: 'auth.login', targetType: 'admin_user', targetId: admin.id, detail: {} });
+    await audit({ adminId: admin.id, actor: 'admin', action: 'auth.login', targetType: 'admin_user', targetId: admin.id, ip, detail: {} });
     return { token, csrfToken, admin: { id: admin.id, username: admin.username, displayName: admin.display_name } };
   }
 
   async function logout(token) {
-    if (!token) return;
+    if (!token) return null;
     const tokenHash = adminSessionTokenHash(token);
-    const { rowCount } = await db.query(`DELETE FROM admin_sessions WHERE token_hash = $1`, [tokenHash]);
-    return rowCount > 0;
+    // 返回 admin_id 供路由层写登出审计（审计统一带 IP，ADM-04 复审建议 a）
+    const { rows } = await db.query(`DELETE FROM admin_sessions WHERE token_hash = $1 RETURNING admin_id`, [tokenHash]);
+    return rows[0]?.admin_id ?? null;
   }
 
-  /** 审计（后台 / CLI / 种子 / 试生成全部留痕；detail 里禁止放明文凭证）。 */
-  async function audit({ adminId = null, actor, action, targetType, targetId, detail = {} }) {
+  /** 审计（后台 / CLI / 种子 / 试生成全部留痕；detail 里禁止放明文凭证）。
+   * ip 由管理端路由传入（§8.5 审计列表展示；迁移 016 起落库）。 */
+  async function audit({ adminId = null, actor, action, targetType, targetId, detail = {}, ip = null }) {
     await db.query(
-      `INSERT INTO admin_audit_logs (admin_id, actor, action, target_type, target_id, detail)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [adminId, actor, action, targetType, String(targetId ?? ''), JSON.stringify(detail)],
+      `INSERT INTO admin_audit_logs (admin_id, actor, action, target_type, target_id, detail, ip)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [adminId, actor, action, targetType, String(targetId ?? ''), JSON.stringify(detail), ip],
     );
   }
 

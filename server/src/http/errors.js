@@ -55,6 +55,8 @@ export const ERROR_CODES = {
   TAKE_ALREADY_RESOLVED: [409, '该片段已核对过，不能重复判定'],
   TAKE_NOT_UNKNOWN: [409, '该片段不是待核对状态，无法判定'],
   PROJECT_NOT_FOUND: [404, '作品不存在'],
+  // M3-ADM-04（API.md §8.4~8.5）：运营参数白名单外的键
+  SETTING_KEY_NOT_ALLOWED: [400, '该配置项不允许修改'],
 };
 
 /** 按错误码创建 AppError；message 省略时用默认中文提示。 */

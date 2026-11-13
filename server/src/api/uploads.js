@@ -13,8 +13,9 @@ import { asyncHandler } from '../http/middleware.js';
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const STORY_MAX_BYTES = 2 * 1024 * 1024;
 
-/** 读取 multipart 里的第一个文件；超过 maxBytes 立即中断并抛 UPLOAD_TOO_LARGE。 */
-function readSingleFile(req, maxBytes) {
+/** 读取 multipart 里的第一个文件；超过 maxBytes 立即中断并抛 UPLOAD_TOO_LARGE。
+ * 导出供管理端上传（M3-ADM-04 §8.4 POST /admin/uploads）复用。 */
+export function readSingleFile(req, maxBytes) {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (err, file) => {
@@ -41,8 +42,8 @@ function readSingleFile(req, maxBytes) {
   });
 }
 
-/** 文件头识别（要点 a：不信扩展名和 Content-Type）。 */
-function detectImageMime(buffer) {
+/** 文件头识别（要点 a：不信扩展名和 Content-Type）。导出供管理端上传复用。 */
+export function detectImageMime(buffer) {
   if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) return 'image/jpeg';
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
   if (buffer.length >= 12 && buffer.subarray(0, 4).toString('latin1') === 'RIFF' && buffer.subarray(8, 12).toString('latin1') === 'WEBP') return 'image/webp';
@@ -50,6 +51,24 @@ function detectImageMime(buffer) {
 }
 
 const storyTitle = (filename) => (filename || '我的故事').replace(/\.[a-zA-Z0-9]+$/, '').trim() || '我的故事';
+
+/** 音频文件头识别（M3-ADM-04 管理端上传：mp3 / wav / m4a）。 */
+export function detectAudioMime(buffer) {
+  // mp3：ID3v2 头或 MPEG 帧同步字（0xFF Ex/Fx）
+  if (buffer.length >= 3 && buffer.subarray(0, 3).toString('latin1') === 'ID3') return 'audio/mpeg';
+  if (buffer.length >= 2 && buffer[0] === 0xff && (buffer[1] & 0xe0) === 0xe0) return 'audio/mpeg';
+  // wav：RIFF....WAVE
+  if (buffer.length >= 12 && buffer.subarray(0, 4).toString('latin1') === 'RIFF'
+    && buffer.subarray(8, 12).toString('latin1') === 'WAVE') return 'audio/wav';
+  // m4a：偏移 4 起为 ftyp box，且 brand 里带 'M4A'（普通 MP4 视频的 isom/mp42 等品牌不收——
+  // 纯 ftyp 判断会把视频当音频收下，ADM-04 复审建议 b）。ftyp 的 major brand 在偏移 8~12，
+  // compatible brands 紧随其后；M4A 文件两者必有其一，只扫 box 头部 64 字节足够。
+  if (buffer.length >= 12 && buffer.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const head = buffer.subarray(0, Math.min(buffer.length, 64)).toString('latin1');
+    if (head.includes('M4A')) return 'audio/mp4';
+  }
+  return null;
+}
 
 export function uploadRoutes({ config, db, logger, storage, urlFor, extractText }) {
   const router = Router();

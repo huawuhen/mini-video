@@ -19,7 +19,11 @@ button.ghost { background: var(--miv-bg); color: var(--miv-text-2); border: 1px 
 button.danger-solid { background: var(--miv-danger); color: var(--miv-on-primary); border: 0;
   border-radius: var(--miv-radius-sm); padding: 8px 16px; font: inherit; cursor: pointer; }
 
-.table-wrap { overflow-x: auto; padding: var(--miv-space-2) var(--miv-space-3) var(--miv-space-3); }
+/* min-width:0：main 是 flex column，本区块作为 flex item 默认 min-width:auto 会被宽表格的
+   min-content 撑开（375px 移动端仿真下把文档撑出横向溢出，M3-ADM-04 走查发现）；
+   收缩后宽表格在本区块内部滚动（overflow-x:auto）。max-width:100% 兜底普通块级流。 */
+.table-wrap { overflow-x: auto; padding: var(--miv-space-2) var(--miv-space-3) var(--miv-space-3);
+  min-width: 0; max-width: 100%; }
 .table-wrap table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th { text-align: left; font-weight: 600; color: var(--miv-text-2); padding: 10px; border-bottom: 1px solid var(--miv-border); white-space: nowrap; }
 td { padding: 10px; border-bottom: 1px solid var(--miv-border); vertical-align: top; }

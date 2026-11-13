@@ -101,6 +101,7 @@
 
 > **2026-11-13 用户决定：Lead 角色退出，全部审查与合并职责移交开发 Agent。** 此后开发 Agent 自行完成走查、合并与推送 `main`，`CODEX_HANDOFF.md` 由开发 Agent 自己维护（§6 可改为自查记录）。
 
+
 状态取值：待认领 / 进行中 / 待审查 / 🔁 需修改 / ✅ 完成 / ⛔ 阻塞（写原因）。
 
 **建议开工顺序**（只有一个开发 Agent 时）：M1-BE-01 → M1-BE-02 → M1-BE-03 → M1-ENG-01 / 02 / 03 → M1-BE-04 → M1-RND-01 → M1-BE-05 → M1-BE-06 → M1-WEB-01 / 02。ENG 与 BE 无代码依赖，有多个 Agent 时可并行。BE 系列必须串行，同一时间只开一个 BE 分支。
@@ -281,6 +282,32 @@
 - **开发 Agent 接手后的收尾**：① 双端走查（PC 1280 + 移动端真仿真 375/390）并截图；② 处理 §6 最新条目的 4 条新发现（至少 API.md §8.4 补「立即生效会作废尚未生效的未来版本」一句、后台文案补一句）；③ 合并 `main` 后跑 `test:server` / `check` / `build`，推送 `main`，并按 AGENTS.md §9 开局域网 mock 预览。
 - **安全说明**：本次提交只有文档与截图，未包含任何密钥、凭据、管理员密码或用户数据，符合 AGENTS.md §4「公开仓库禁止提交密钥与用户数据」。
 - **本地残留（供参考，未入库）**：审查用的 worktree `/root/mini-ai-video-wt`（detached @`a755725`，含 `node_modules`）、隔离库 `miv_ui`（测试库容器 `miv-test-postgres-1`）、`/root/miv-review/` 下的临时脚本与日志。开发 Agent 不需要这些，可直接删除。
+
+### 2026-11-13 · BE-Core + Web · M3-ADM-04 复审修复（3 必改 + 建议 a~c）
+
+- **背景**：Lead 退回（§6 2026-11-13 @`de1fc41`）。同分支追加 2 个提交（`1d9bef0` 修复与测试 / 本条 §7+截图）。
+- **必改①（写失败仍提示成功）**：`PriceConfigPage` 的 `run()` 改为返回成功与否，10 处写操作只有成功才关窗/提示/刷新；失败弹窗与已填内容保留、幂等键沿用（幂等键只在成功时落库占用，改对参数后同键重试不会被 409 拒）；`submitSettings` 失败不清 `draftSettings`。
+- **必改②（未来生效价被当当前价）**：10 处「取当前价」查询统一补 `effective_at <= now()`（与 `latestActiveSku` 同口径）：`videoUnitFen`、`buildPricing` 形象 SKU、确认点 A 形象任务、`retryProject` 形象任务、`createSegmentTake`、`segment.js`、`understand.js`、`compose.js` 分辨率、`channels/service.js` 成本对照、`characters/service.js` 分辨率解析。
+- **必改③（参数改了不生效）**：四键改服务端 settings 优先、env 作默认（新导出 `settingNumber(t, key, fallback)`，同一事务内读取）：`daily_free_understanding`（createProject/reanalyze 的 `consumeFreeQuota`）、`max/min_story_chars`（`assertStoryText` 进事务按 settings 校验上下限，不再写死 3000；api 层 `max` 放宽到白名单硬上限 20000）、`retention_days`（compose 写 `expires_at`）；reanalyze 校验顺序改为状态 → 文本 → 次数。catalog limits 本就回 settings，现在前后端与实际规则同源。
+- **建议**：a. 审计 IP 统一——ADM-02/03 路由 helper、登录成功/失败/封禁（ip 落列）、登出（`logout` 改返回 admin_id，路由层写 `auth.logout` 审计）；b. 音频识别加 M4A brand 校验，ftyp isom 的 MP4 视频不再被当 m4a 收下；c. 调价 `priceFen` 上限 10000 分（¥100/单位，现行最高 200 分/秒），路由 + 前端提示 + mock 同口径。
+- **测试**：`pricing-lock` 新用例「未来生效版本：旧作品回退与详情都按当前价，到点后才切换」（生效前下单 3000/详情 6000，effective_at 改到过去后下单 15000）；`projects` 免费次数用例改走 settings（env 已不是生效来源）+ 新增「故事长度按 settings 校验」用例（UPDATE min/max → 拒/过 → finally 恢复）；`admin-config` 补 MP4 拒收 + M4A 可收、价格上限、catalog 档位价断言。`test:server` **511/511**、check、build 过。
+- **双端走查**（ego-browser，mock；每个观察点前重设并验证视口）：**1280**：llm.story 调价 ¥1 → 400「LLM 的用户价固定为 0」→ **弹窗保留、无成功提示**（1280-20）→ 改 ¥0 同键重试 → 成功（1280-21）→ video.480p 设明天生效 ¥1.50 → 列表当前价仍 ¥1.00 +「另有历史/未生效版本 1 个」（1280-22）→ 审计列表含本次调价（detail 含 effectiveAt）（1280-23）。**375×812 真仿真**（触屏 + iPhone UA）：价格页/失败弹窗全程 `scrollWidth=clientWidth=375`（375-10/11）。
+- **插曲（已恢复，无影响）**：走查开始时工作目录被另一会话切到 `agent/eng/M3-ENG-01-vidu-q3` 分支，首轮 merge 与部分编辑落在其工作树上；已 stash → 恢复 ENG-01 到其推送点 `5e85a08` → 切回本分支 → stash pop（service.js 一处冲突手工合并：价格锁定与 effective_at 两个改动都保留）。ENG-01 分支已恢复原位（其改动仅脚本与文档，与本次修改无交集）。
+- 局域网预览：`http://192.168.5.195:5173` 或 `http://192.168.10.58:5173`（本分支，mock；刷新即重置）。
+
+### 2026-11-12 · BE-Core + Web · M3-ADM-04 价格锁定 + 价格与配置 / 审计（API.md §8.4~8.5）
+
+- **背景**：运营后台第二批第 3 个任务；TASKS 要求改价功能上线前先补价格锁定（ADM-03 复审发现的旧逻辑：`segment.generate` 按当前生效价算 `amountFen`，与确认时冻结额不一致）。分支 `agent/be/M3-ADM-04-pricing-config`（基于 main `250bf78`，5 个提交：认领 / 后端核心 / 测试 / 前端 / 本记录）。
+- **价格锁定（先做）**：确认点 B 消费报价通过时把重算快照的单价写进 `projects.video_unit_fen`（迁移 016 新列；含回填：已确认作品回填当前生效价）。此后 `segment.generate`（首次/续跑/失败重试都走这里建新 take）与详情 `buildPricing` 一律按锁定价；`videoUnitFen()` 仅作旧数据（NULL）回退=原行为。`createSegmentTake`（交付后重拍）保持「新报价+新预占」不受锁影响。**「已出的报价按原价执行」的实现口径**：未消费报价在消费时重算 → 改价后 409 `QUOTE_MISMATCH`（M1-BE-02 既有契约，未改，pricing.js 补注释）；已确认作品按锁定价。⚠ 若「旧报价按旧价」本意是未消费报价也可按旧价消费，属契约变更，请 Lead 定夺（当前按前者实现与测试）。
+- **§8.4 后端**（`admin/pricing-config.js` + `api/admin-config.js`，app.js 挂载）：SKU 版本（`POST /admin/skus/:code/versions`，幂等键落 `skus.idempotency_key` 唯一索引、LLM 价必须 0、**未来生效版本先入库为 active 且旧版本保持 active**——latestActiveSku 取「active 且已生效的最大 version」到点自动切换，提前下线旧版会在生效前出现无价 INTERNAL；立即生效才置旧版 inactive，⚠ 与 API.md「旧版本置 inactive」字面在「未来生效」场景有出入，按安全口径实现请 Lead 确认；响应返回新版本行本身）；档位 PATCH 与映射新增版本（不覆盖历史；映射指向无生效价 SKU 400）；风格/音色 CRUD+下架（经 `POST /admin/uploads` multipart：图片 jpg/png/webp、音频 mp3/wav/m4a ≤5MB、`uploads.kind` 扩 `'audio'`+`user_id` 可空、被引用时置 referenced_at 避开 sweep）；运营参数白名单 8 键（类型+上下限校验、白名单外 `SETTING_KEY_NOT_ALLOWED` 400、`min_story_chars≤max_story_chars` 跨键校验；**上下限数值为开发定值请 Lead 复核**）。`admin_audit_logs` 增 `ip` 列（迁移 016），`auth.audit()` 增 ip 参数，管理路由传 `req.ip`。
+- **§8.5**：`GET /admin/audit` 只读（adminId/action 前缀/targetType/targetId/from/to/cursor 分页；`adminUsername` 取 admin_users.username 否则 actor）。
+- **前端**：`PriceConfigPage`（SKU 调价弹窗含「已确认作品按锁定单价不受影响」提示、档位换映射、风格/音色上传表单、参数改动项计数）、`AuditPage`（过滤+分页）；`admin.ts` 类型与方法 + multipart `upload()`；`adminMock` 同构演示数据（SKU 与迁移 009 同口径、mock 审计随操作写入、未来生效版本不显示为当前价——与后端 `latestActiveSku` 同口径）；AdminShell 导航替换置灰占位。
+- **走查抓到并修复 2 个真 bug（影响全部后台页）**：① `AuditPage`/`PriceConfigPage` 未引入共用 `admin-page.css`——`table-wrap` 的 `overflow-x:auto` 与弹窗样式整体缺失，375 仿真下宽表格把文档撑出 42~187px 横向溢出（PC 上被 max-width 掩盖不易察觉）；② `main` 为 flex column，`table-wrap` 作 flex item 默认 `min-width:auto` 被表格 min-content 撑开——补 `min-width:0/max-width:100%` 与 `main > *` 收缩保护。修复后 375 全程无横向溢出。
+- **测试**：新增 `pricing-lock.test.js` 5 用例（确认锁定单价、**渲染中途改价**两段均按 100 分/秒下单结算且冻结归零可用只扣确认价、**重试前改价**失败 take/重试 take/后续段全部按锁定价且冻结归零、改价后新报价用新价+旧报价消费 `QUOTE_MISMATCH`+详情 pricing 按锁定价、NULL 回退当前价）；`admin-config.test.js` 13 用例（SKU 版本立即/未来生效、幂等同参重放/异参 409/缺键 400、LLM 价 0、档位/映射/风格/音色/上传/参数白名单外键与越界 400、审计过滤分页 ip、缺 CSRF 403）。`test:server` **509/509**（491 基线 + 18）、`check`、`build` 过。
+- **双端走查**（ego-browser，mock；⚠ 该环境 CDP 视口仿真会自动失效，采用「每个观察点前重设并验证 clientWidth」方式，截图宽度按 PNG 头逐一校验）：**1280**（真仿真视口）：登录 → SKU 列表（video.480p ¥1.00 v1）→ 调价 ¥1.20/成本 ¥0.68 → 二次确认 → 列表 v2/毛利率 43.3%（1280-01~04）→ 720p 设明天生效 → 当前价保持 ¥2.00、标「另有历史/未生效版本」（1280-05）→ 标准档换映射 video.480p→v6（1280-06）→ 新增风格上传封面→下架（1280-07/08）→ 新增音色上传试听 mp3（1280-09）→ 报价有效期 900→600 确认弹窗→保存（1280-10/11）→ 审计列表含上述全部操作（detail=价格变更明细、ip 127.0.0.1）→ 按 `settings.update` 过滤 1 条（1280-12/13）。**375×812 真仿真**（触屏 + iPhone UA）：价格与配置页/调价弹窗/运营参数/审计页全部可打开、主要按钮可点、`scrollWidth=clientWidth=375` 无横向溢出（375-01~04）。
+- **⚠ 运营参数白名单的运行时生效范围（请 Lead 知悉）**：`quote_ttl_seconds`、`max_duration_seconds`（首页估算+目录 limits）、`max_character_photos`、`min/max_story_chars`（目录 limits，服务端校验仍是写死的 3000）、`expiry_remind_days`、`retention_days` 已读 settings 表；**`daily_free_understanding`（运行时用 env `PROJECTS_FREE_DAILY_QUOTA`）与生成管线时长上限（`PROJECTS_MAX_SECONDS`）当前以环境变量为准**，后台改这两项不影响管线——建议后续任务把这两处切到 settings-first（涉及既有 env 文档与测试口径，未擅动）。
+- **未验证/遗留**：管理端真实后端联调（待 Ubuntu 栈 `admin:create`，与 ADM-01/02 同遗留）；审计 `ip` 依赖 `req.ip`，生产在 nginx 后需 `TRUST_PROXY_HOPS` 配置正确才记真实客户端 IP（PAY-04 既有项）。
+- 局域网预览：`http://192.168.5.195:5174` 或 `http://192.168.10.58:5174`（本机双网卡，本分支，mock；演示数据存浏览器内存，刷新即重置。5173 被上一任务遗留的旧 dev server 占用，已停掉旧进程，本任务预览用 5174）。
 
 ### 2026-11-10 · BE-Core · M3-ADM-03 三轮修复（并发测试夹具 + writeGuard 收窄）
 

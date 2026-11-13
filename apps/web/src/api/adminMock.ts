@@ -2,7 +2,9 @@
 // 管理员任意用户名 + 6 位密码可登录；试生成返回「演示模式不产生真实费用」。
 // M3-ADM-02：§8.1 用户与余额 / §8.2 订单与人工退款同步实现（错误码与校验口径与后端一致）。
 import { MivApiError } from './http';
-import type { AdminApi, AdminLedgerItem, AdminOrder, AdminProject, AdminProjectDetail, AdminUser, Channel, DriverInfo, LedgerKind, ResolveOutcome, RouteRow, UserStatus } from './admin';
+import type { AdminApi, AdminAuditItem, AdminLedgerItem, AdminOrder, AdminProject, AdminProjectDetail,
+  AdminSettingItem, AdminSku, AdminStyle, AdminTier, AdminUser, AdminVoice, Channel, DriverInfo,
+  LedgerKind, ResolveOutcome, RouteRow, UserStatus } from './admin';
 
 const now = () => new Date().toISOString();
 const uid = (prefix: string) => `${prefix}_${Math.random().toString(36).slice(2, 12)}`;
@@ -49,6 +51,10 @@ const state: {
   loggedIn: boolean; adminName: string | null;
   channels: Channel[]; routes: Record<string, string[]>;
   users: MockUser[]; ledger: MockLedgerEntry[]; orders: MockOrder[]; projects: MockProject[]; idem: Map<string, string>;
+  skus: MockSku[]; tiers: MockTier[]; styles: MockStyle[]; voices: MockVoice[];
+  settings: Map<string, number>; settingsMeta: Map<string, AdminSettingItem>;
+  uploads: Map<string, { kind: 'image' | 'audio'; referenced: boolean }>;
+  audit: MockAudit[]; auditSeq: number; skuIdem: Map<string, number>;
 } = {
   loggedIn: false,
   adminName: null,
@@ -59,8 +65,25 @@ const state: {
     llm: ['pch_demo_zhipu_llm'],
   },
   users: [], ledger: [], orders: [], projects: [], idem: new Map(),
+  skus: [], tiers: [], styles: [], voices: [],
+  settings: new Map(), settingsMeta: new Map(),
+  uploads: new Map(),
+  audit: [], auditSeq: 0, skuIdem: new Map(),
 };
 seedDemoData(); // 用户/流水/订单演示数据（users 在上面对象里先初始化为空数组，这里填充）
+/** 运营参数白名单（与后端 SETTING_DEFS 同口径：label / 上下限）。 */
+const SETTING_DEFS: Array<{ key: string; label: string; min: number; max: number; value: number }> = [
+  { key: 'daily_free_understanding', label: '每天免费整理次数', min: 0, max: 1000, value: 20 },
+  { key: 'max_story_chars', label: '故事最长字数', min: 50, max: 20000, value: 3000 },
+  { key: 'min_story_chars', label: '故事最短字数', min: 1, max: 1000, value: 5 },
+  { key: 'max_character_photos', label: '每个数字人照片上限', min: 1, max: 20, value: 5 },
+  { key: 'max_duration_seconds', label: '作品最长时长（秒）', min: 30, max: 300, value: 90 },
+  { key: 'quote_ttl_seconds', label: '报价有效期（秒）', min: 60, max: 86400, value: 900 },
+  { key: 'expiry_remind_days', label: '到期前提醒（天）', min: 0, max: 90, value: 7 },
+  { key: 'retention_days', label: '成片保存期（天）', min: 7, max: 365, value: 90 },
+];
+
+seedPricingData(); // §8.4 SKU/档位/风格/音色/运营参数 + §8.5 审计演示数据
 
 const wait = (ms = 150) => new Promise((resolve) => setTimeout(resolve, ms));
 // 与真实后端同形：抛 MivApiError（code/status），前端按 e.status/e.code 判断
@@ -101,6 +124,16 @@ interface MockProject {
   createdAt: string; updatedAt: string;
 }
 interface MockOrder extends AdminOrder { _notifyCount: number; _lastNotifyAt: string | null; _ledgerId: string | null }
+
+// ── §8.4/§8.5 mock 数据结构 ──
+interface MockSku extends AdminSku { status: 'active' | 'inactive'; kind: AdminSku['kind'] }
+interface MockTierMapping { id: string; version: number; videoSkuCode: string; effectiveAt: string }
+interface MockTier extends Omit<AdminTier, 'currentMapping'> { mappings: MockTierMapping[]; status: 'active' | 'inactive' }
+interface MockStyle extends Omit<AdminStyle, 'coverUploadId'> { coverUploadId: string | null }
+interface MockVoice extends Omit<AdminVoice, 'sampleUploadId' | 'refAudioUploadId'> {
+  sampleUploadId: string | null; refAudioUploadId: string | null;
+}
+interface MockAudit extends AdminAuditItem { }
 
 // function 声明（非 const）：seedDemoData() 在模块初始化时执行，必须先于其可用
 function daysAgo(days: number, hours = 0): string {
@@ -229,6 +262,87 @@ function seedDemoData(): void {
       ],
       createdAt: daysAgo(6), updatedAt: daysAgo(5) },
   ];
+}
+
+
+/** §8.4/§8.5 演示数据：SKU 与迁移 009 同口径（video.480p 100 / video.720p 200 / image.look 60）。 */
+function seedPricingData(): void {
+  const sku = (skuCode: string, kind: AdminSku['kind'], unit: AdminSku['unit'], priceFen: number,
+    resolution: string | null = null): MockSku => ({
+    skuCode, kind, model: kind === 'llm' ? 'glm-5.3-flash' : '', resolution, unit,
+    priceFen, costFen: 0, version: 1, versions: 1,
+    effectiveAt: daysAgo(30), marginRate: priceFen > 0 ? 1 : null, status: 'active',
+  });
+  state.skus = [
+    sku('video.480p', 'video', 'second', 100, '480p'),
+    sku('video.720p', 'video', 'second', 200, '720p'),
+    sku('image.look', 'image', 'image', 60, '1k'),
+    sku('llm.story', 'llm', 'ktoken', 0),
+  ];
+  state.tiers = [
+    { id: 'standard', name: '标准', note: '清晰流畅', sort: 10, status: 'active',
+      mappings: [{ id: 'tm_standard_demo', version: 5, videoSkuCode: 'video.480p', effectiveAt: daysAgo(30) }] },
+    { id: 'hd', name: '高清', note: '细节更丰富', sort: 20, status: 'active',
+      mappings: [{ id: 'tm_hd_demo', version: 5, videoSkuCode: 'video.720p', effectiveAt: daysAgo(30) }] },
+  ];
+  state.styles = [
+    { id: 'style_realistic_demo', name: '真人写实', description: '接近真实拍摄的家庭影像', coverUploadId: null, promptHint: 'photorealistic', sort: 10, status: 'active' },
+    { id: 'style_manga_demo', name: '漫剧', description: '国漫或短剧漫画风，适合剧情类', coverUploadId: null, promptHint: 'manhua drama', sort: 20, status: 'active' },
+    { id: 'style_cartoon3d_demo', name: '卡通 3D', description: '类皮克斯 3D 动画，温馨', coverUploadId: null, promptHint: '3d animation', sort: 30, status: 'active' },
+    { id: 'style_anime_demo', name: '日系动漫', description: '2D 赛璐璐', coverUploadId: null, promptHint: 'anime cel', sort: 40, status: 'active' },
+    { id: 'style_book_demo', name: '绘本水彩', description: '儿童绘本质感', coverUploadId: null, promptHint: 'picture book', sort: 50, status: 'inactive' },
+  ];
+  state.voices = [
+    { id: 'vc_demo_1', name: '温柔少女', category: 'girl', gender: 'female', ageGroup: 'teen', description: '轻柔细腻，适合温馨叙述',
+      sampleUploadId: null, refAudioUploadId: null, sort: 10, status: 'active' },
+    { id: 'vc_demo_2', name: '沉稳青年男', category: 'young_m', gender: 'male', ageGroup: 'young', description: '低沉有磁性',
+      sampleUploadId: null, refAudioUploadId: null, sort: 20, status: 'active' },
+    { id: 'vc_demo_3', name: '亲切中年女', category: 'middle_f', gender: 'female', ageGroup: 'middle', description: '温暖亲和',
+      sampleUploadId: null, refAudioUploadId: null, sort: 30, status: 'active' },
+  ];
+  for (const def of SETTING_DEFS) {
+    state.settings.set(def.key, def.value);
+    state.settingsMeta.set(def.key, { key: def.key, label: def.label, type: 'int', min: def.min, max: def.max, value: def.value });
+  }
+  state.audit = [
+    { id: ++state.auditSeq, adminUsername: 'admin', action: 'channel.create', targetType: 'provider_channel',
+      targetId: 'pch_demo_aiide_video', detail: { name: 'aiide' }, ip: '192.168.5.12', createdAt: daysAgo(6) },
+    { id: ++state.auditSeq, adminUsername: 'admin', action: 'wallet.adjust', targetType: 'user',
+      targetId: 'usr_demo0000000001', detail: { amountFen: 500, reason: '活动奖励补偿' }, ip: '192.168.5.12', createdAt: daysAgo(0, 5) },
+  ];
+}
+
+function skuView(row: MockSku): AdminSku {
+  const versions = state.skus.filter((item) => item.skuCode === row.skuCode).length;
+  return { ...row, versions, marginRate: row.priceFen > 0 ? Math.round(((row.priceFen - row.costFen) / row.priceFen) * 10_000) / 10_000 : null };
+}
+
+/** 当前生效版本：active 且已到生效时间的最大 version（与后端 latestActiveSku 同口径）。 */
+function currentSkuView(skuCode: string): AdminSku | null {
+  const nowIso = new Date().toISOString();
+  const rows = state.skus
+    .filter((item) => item.skuCode === skuCode && item.status === 'active' && item.effectiveAt <= nowIso)
+    .sort((a, b) => b.version - a.version);
+  return rows.length ? skuView(rows[0]) : null;
+}
+
+function tierView(tier: MockTier): AdminTier {
+  const mapping = [...tier.mappings].sort((a, b) => b.version - a.version)[0] ?? null;
+  const price = mapping ? currentSkuView(mapping.videoSkuCode)?.priceFen ?? null : null;
+  return {
+    id: tier.id, name: tier.name, note: tier.note, sort: tier.sort, status: tier.status,
+    currentMapping: mapping ? { ...mapping, priceFen: price } : null,
+  };
+}
+
+function pushAudit(action: string, targetType: string, targetId: string, detail: Record<string, unknown>): void {
+  state.audit.unshift({ id: ++state.auditSeq, adminUsername: state.adminName ?? 'admin',
+    action, targetType, targetId, detail, ip: '127.0.0.1', createdAt: now() });
+}
+
+function requireUpload(uploadId: string, kinds: Array<'image' | 'audio'>): void {
+  const upload = state.uploads.get(uploadId);
+  if (!upload || !kinds.includes(upload.kind)) throw fail(400, 'VALIDATION_FAILED', '填写的内容有误，请检查后重试');
 }
 
 function requireUser(id: string): MockUser {
@@ -589,6 +703,239 @@ export const adminMock: AdminApi = {
     project.events.unshift({ id: (project.events[0]?.id ?? 0) + 1, status: 'canceled', progress: { percent: 0, message: '已取消' }, createdAt: now() });
     project.updatedAt = now();
     return clone(projectDetail(project));
+  },
+
+  // ── §8.4 价格与配置 ──
+
+  async skus() {
+    await wait(); requireLogin();
+    const items = [...new Set(state.skus.map((row) => row.skuCode))]
+      .map((code) => currentSkuView(code))
+      .filter((row): row is AdminSku => row !== null);
+    return { items: clone(items) };
+  },
+
+  async createSkuVersion(skuCode, body) {
+    await wait(); requireLogin();
+    const rows = state.skus.filter((row) => row.skuCode === skuCode);
+    if (!rows.length) throw fail(404, 'NOT_FOUND', 'SKU 不存在');
+    if (!Number.isInteger(body.priceFen) || body.priceFen < 0 || body.priceFen > 10_000) {
+      throw fail(400, 'VALIDATION_FAILED', '价格需为 0~100 元（最多两位小数）');
+    }
+    const latest = [...rows].sort((a, b) => b.version - a.version)[0];
+    if (latest.kind === 'llm' && body.priceFen !== 0) throw fail(400, 'VALIDATION_FAILED', 'LLM 的用户价固定为 0（平台承担），不能设置价格');
+    if (state.skuIdem.has(body.idempotencyKey)) {
+      const version = state.skuIdem.get(body.idempotencyKey)!;
+      const row = rows.find((item) => item.version === version);
+      const same = row && row.priceFen === body.priceFen
+        && (body.costFen === undefined || row.costFen === body.costFen)
+        && (body.effectiveAt === undefined || row.effectiveAt === body.effectiveAt);
+      if (!same) throw fail(409, 'IDEMPOTENCY_CONFLICT', '请求重复，请刷新后重试');
+      return clone(row!);
+    }
+    const immediate = body.effectiveAt === undefined || new Date(body.effectiveAt).getTime() <= Date.now();
+    const row: MockSku = {
+      ...latest, version: latest.version + 1, priceFen: body.priceFen,
+      costFen: body.costFen ?? latest.costFen,
+      effectiveAt: body.effectiveAt ?? now(),
+      status: 'active',
+    };
+    state.skus.push(row);
+    state.skuIdem.set(body.idempotencyKey, row.version);
+    if (immediate) {
+      for (const other of state.skus) {
+        if (other.skuCode === skuCode && other.version < row.version) other.status = 'inactive';
+      }
+    }
+    pushAudit('sku.version.create', 'sku', skuCode,
+      { priceFen: body.priceFen, ...(body.costFen !== undefined ? { costFen: body.costFen } : {}),
+        ...(body.effectiveAt ? { effectiveAt: body.effectiveAt } : {}), newVersion: row.version });
+    return clone(row);
+  },
+
+  async tiers() {
+    await wait(); requireLogin();
+    return { items: state.tiers.map(tierView).sort((a, b) => a.sort - b.sort) };
+  },
+
+  async updateTier(id, body) {
+    await wait(); requireLogin();
+    const tier = state.tiers.find((row) => row.id === id);
+    if (!tier) throw fail(404, 'NOT_FOUND', '档位不存在');
+    if (body.name !== undefined) tier.name = body.name;
+    if (body.note !== undefined) tier.note = body.note;
+    if (body.sort !== undefined) tier.sort = body.sort;
+    if (body.status !== undefined) tier.status = body.status;
+    pushAudit('tier.update', 'quality_tier', id, { ...body });
+    return clone(tierView(tier));
+  },
+
+  async createTierMapping(id, videoSkuCode) {
+    await wait(); requireLogin();
+    const tier = state.tiers.find((row) => row.id === id);
+    if (!tier) throw fail(404, 'NOT_FOUND', '档位不存在');
+    if (!currentSkuView(videoSkuCode)) throw fail(400, 'VALIDATION_FAILED', '该 SKU 暂无生效价格，不能设为档位映射');
+    const version = Math.max(0, ...tier.mappings.map((row) => row.version)) + 1;
+    const mapping = { id: uid('tm'), version, videoSkuCode, effectiveAt: now() };
+    tier.mappings.push(mapping);
+    pushAudit('tier.mapping.create', 'tier_mapping', mapping.id, { videoSkuCode, version });
+    return clone({ ...mapping, priceFen: currentSkuView(videoSkuCode)?.priceFen ?? null });
+  },
+
+  async styles() {
+    await wait(); requireLogin();
+    return { items: clone(state.styles.map((row) => ({ ...row })).sort((a, b) => a.sort - b.sort)) };
+  },
+
+  async createStyle(body) {
+    await wait(); requireLogin();
+    if (!body.name?.trim()) throw fail(400, 'VALIDATION_FAILED', '填写的内容有误，请检查后重试');
+    if (body.coverUploadId) requireUpload(body.coverUploadId, ['image']);
+    const style: MockStyle = {
+      id: uid('style'), name: body.name.trim(), description: body.description ?? '',
+      coverUploadId: body.coverUploadId ?? null, promptHint: body.promptHint ?? '',
+      sort: body.sort ?? 0, status: 'active',
+    };
+    state.styles.push(style);
+    if (body.coverUploadId) {
+      const upload = state.uploads.get(body.coverUploadId);
+      if (upload) upload.referenced = true;
+    }
+    pushAudit('style.create', 'style', style.id, { name: style.name });
+    return { id: style.id };
+  },
+
+  async updateStyle(id, body) {
+    await wait(); requireLogin();
+    const style = state.styles.find((row) => row.id === id);
+    if (!style) throw fail(404, 'NOT_FOUND', '风格不存在');
+    if (body.coverUploadId !== undefined) {
+      if (body.coverUploadId === null) style.coverUploadId = null;
+      else {
+        requireUpload(body.coverUploadId, ['image']);
+        style.coverUploadId = body.coverUploadId;
+        const upload = state.uploads.get(body.coverUploadId);
+        if (upload) upload.referenced = true;
+      }
+    }
+    if (body.name !== undefined) style.name = body.name;
+    if (body.description !== undefined) style.description = body.description;
+    if (body.promptHint !== undefined) style.promptHint = body.promptHint;
+    if (body.sort !== undefined) style.sort = body.sort;
+    if (body.status !== undefined) style.status = body.status;
+    pushAudit('style.update', 'style', id, { ...body, coverUploadId: undefined });
+    return { ok: true };
+  },
+
+  async voices() {
+    await wait(); requireLogin();
+    return { items: clone(state.voices.map((row) => ({ ...row })).sort((a, b) => a.sort - b.sort)) };
+  },
+
+  async createVoice(body) {
+    await wait(); requireLogin();
+    if (!body.name?.trim() || !body.category || !body.gender || !body.ageGroup) {
+      throw fail(400, 'VALIDATION_FAILED', '填写的内容有误，请检查后重试');
+    }
+    if (body.sampleUploadId) requireUpload(body.sampleUploadId, ['audio']);
+    if (body.refAudioUploadId) requireUpload(body.refAudioUploadId, ['audio']);
+    const voice: MockVoice = {
+      id: uid('vc'), name: body.name.trim(), category: body.category, gender: body.gender,
+      ageGroup: body.ageGroup, description: body.description ?? '',
+      sampleUploadId: body.sampleUploadId ?? null, refAudioUploadId: body.refAudioUploadId ?? null,
+      sort: body.sort ?? 0, status: 'active',
+    };
+    state.voices.push(voice);
+    pushAudit('voice.create', 'voice', voice.id, { name: voice.name });
+    return { id: voice.id };
+  },
+
+  async updateVoice(id, body) {
+    await wait(); requireLogin();
+    const voice = state.voices.find((row) => row.id === id);
+    if (!voice) throw fail(404, 'NOT_FOUND', '音色不存在');
+    if (body.sampleUploadId !== undefined) {
+      if (body.sampleUploadId === null) voice.sampleUploadId = null;
+      else { requireUpload(body.sampleUploadId, ['audio']); voice.sampleUploadId = body.sampleUploadId; }
+    }
+    if (body.refAudioUploadId !== undefined) {
+      if (body.refAudioUploadId === null) voice.refAudioUploadId = null;
+      else { requireUpload(body.refAudioUploadId, ['audio']); voice.refAudioUploadId = body.refAudioUploadId; }
+    }
+    if (body.name !== undefined) voice.name = body.name;
+    if (body.category !== undefined) voice.category = body.category;
+    if (body.gender !== undefined) voice.gender = body.gender;
+    if (body.ageGroup !== undefined) voice.ageGroup = body.ageGroup;
+    if (body.description !== undefined) voice.description = body.description;
+    if (body.sort !== undefined) voice.sort = body.sort;
+    if (body.status !== undefined) voice.status = body.status;
+    pushAudit('voice.update', 'voice', id, { ...body });
+    return { ok: true };
+  },
+
+  async settings() {
+    await wait(); requireLogin();
+    const items = [...state.settingsMeta.values()].map((meta) => ({ ...meta, value: state.settings.get(meta.key) ?? null }));
+    return { items };
+  },
+
+  async updateSettings(changes) {
+    await wait(); requireLogin();
+    const entries = Object.entries(changes ?? {});
+    if (!entries.length) throw fail(400, 'VALIDATION_FAILED', '至少要修改一项');
+    const changes2: Record<string, number> = {};
+    for (const [key, value] of entries) {
+      const meta = state.settingsMeta.get(key);
+      if (!meta) throw fail(400, 'SETTING_KEY_NOT_ALLOWED', '该配置项不允许修改');
+      if (!Number.isInteger(value) || value < meta.min || value > meta.max) {
+        throw fail(400, 'VALIDATION_FAILED', `「${meta.label}」需为 ${meta.min}~${meta.max} 的整数`);
+      }
+      changes2[key] = value;
+    }
+    if ((changes2.min_story_chars ?? state.settings.get('min_story_chars')!)
+      > (changes2.max_story_chars ?? state.settings.get('max_story_chars')!)) {
+      throw fail(400, 'VALIDATION_FAILED', '故事最短字数不能大于最长字数');
+    }
+    for (const [key, value] of Object.entries(changes2)) {
+      pushAudit('settings.update', 'setting', key, { from: state.settings.get(key) ?? null, to: value });
+      state.settings.set(key, value);
+    }
+    const items = [...state.settingsMeta.values()].map((meta) => ({ ...meta, value: state.settings.get(meta.key) ?? null }));
+    return { items };
+  },
+
+  async upload(file) {
+    await wait(); requireLogin();
+    if (file.size > 5 * 1024 * 1024) throw fail(400, 'UPLOAD_TOO_LARGE', '文件太大了');
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const kind: 'image' | 'audio' | null =
+      ['png', 'jpg', 'jpeg', 'webp'].includes(ext) ? 'image'
+        : ['mp3', 'wav', 'm4a'].includes(ext) ? 'audio' : null;
+    if (!kind) throw fail(400, 'UPLOAD_TYPE_INVALID', '只支持图片（jpg/png/webp）或音频（mp3/wav/m4a）');
+    const uploadId = uid('upl');
+    state.uploads.set(uploadId, { kind, referenced: false });
+    pushAudit('upload.create', 'upload', uploadId, { kind, sizeBytes: file.size });
+    return { uploadId };
+  },
+
+  // ── §8.5 审计（只读） ──
+
+  async audit(query = {}) {
+    await wait(); requireLogin();
+    const limit = query.limit ?? 20;
+    let items = [...state.audit];
+    if (query.adminId) items = items.filter((row) => row.adminUsername === query.adminId);
+    if (query.action) items = items.filter((row) => row.action.startsWith(query.action!));
+    if (query.targetType) items = items.filter((row) => row.targetType === query.targetType);
+    if (query.targetId) items = items.filter((row) => row.targetId === query.targetId);
+    if (query.from) items = items.filter((row) => row.createdAt >= new Date(`${query.from}T00:00:00Z`).toISOString());
+    if (query.to) items = items.filter((row) => row.createdAt < new Date(`${query.to}T00:00:00Z`).toISOString());
+    const offset = decodeCursor(query.cursor);
+    const page = items.slice(offset, offset + limit);
+    return {
+      items: clone(page),
+      nextCursor: offset + limit < items.length ? encodeCursor(offset + limit) : null,
+    };
   },
 };
 

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 
 const ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
-const PREFIXES = new Set(['usr', 'chr', 'cph', 'look', 'lkv', 'vc', 'upl', 'prj', 'cast', 'seg', 'take', 'rnd', 'qt', 'led', 'gt', 'sku', 'tm', 'pch', 'adm', 'po', 'cns']);
+const PREFIXES = new Set(['usr', 'chr', 'cph', 'look', 'lkv', 'vc', 'upl', 'prj', 'cast', 'seg', 'take', 'rnd', 'qt', 'led', 'gt', 'sku', 'tm', 'pch', 'adm', 'po', 'cns', 'style']);
 
 const LENGTH = 16;
 
