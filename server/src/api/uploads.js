@@ -60,8 +60,13 @@ export function detectAudioMime(buffer) {
   // wav：RIFF....WAVE
   if (buffer.length >= 12 && buffer.subarray(0, 4).toString('latin1') === 'RIFF'
     && buffer.subarray(8, 12).toString('latin1') === 'WAVE') return 'audio/wav';
-  // m4a/mp4：偏移 4 起为 ftyp box
-  if (buffer.length >= 8 && buffer.subarray(4, 8).toString('latin1') === 'ftyp') return 'audio/mp4';
+  // m4a：偏移 4 起为 ftyp box，且 brand 里带 'M4A'（普通 MP4 视频的 isom/mp42 等品牌不收——
+  // 纯 ftyp 判断会把视频当音频收下，ADM-04 复审建议 b）。ftyp 的 major brand 在偏移 8~12，
+  // compatible brands 紧随其后；M4A 文件两者必有其一，只扫 box 头部 64 字节足够。
+  if (buffer.length >= 12 && buffer.subarray(4, 8).toString('latin1') === 'ftyp') {
+    const head = buffer.subarray(0, Math.min(buffer.length, 64)).toString('latin1');
+    if (head.includes('M4A')) return 'audio/mp4';
+  }
   return null;
 }
 

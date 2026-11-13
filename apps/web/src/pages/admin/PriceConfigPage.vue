@@ -42,16 +42,22 @@ function parseYuanToFen(input: string): number | null {
   return Math.round(Number(text) * 100);
 }
 
-async function run(action: () => Promise<void>) {
+/** 执行写操作；返回是否成功——只有成功才允许关窗/提示成功（复审必改①，
+ * 此前吞异常导致失败仍提示「已保存」）。失败时弹窗与已填内容原样保留，幂等键沿用可重试。 */
+async function run(action: () => Promise<void>): Promise<boolean> {
   loading.value = true;
-  try { await action(); } catch (e) {
+  try {
+    await action();
+    return true;
+  } catch (e) {
     const status = (e as { status?: number }).status;
     const code = (e as { code?: string }).code;
     if (status === 401 || code === 'ADMIN_AUTH_REQUIRED' || code === 'CSRF_INVALID') {
       router.replace({ path: '/admin/login', query: { redirect: route.fullPath } });
-      return;
+      return false;
     }
     showFailToast((e as Error).message);
+    return false;
   } finally { loading.value = false; }
 }
 
@@ -87,6 +93,7 @@ async function submitSku() {
   if (!target) return;
   const priceFen = parseYuanToFen(skuForm.value.priceInput);
   if (priceFen === null || priceFen < 0) { showFailToast('价格需为不小于 0 的金额（最多两位小数）'); return; }
+  if (priceFen > 10_000) { showFailToast('价格不能超过 ¥100（与后端上限一致，防误输入）'); return; }
   const costFen = skuForm.value.costInput.trim() === '' ? undefined : parseYuanToFen(skuForm.value.costInput);
   if (costFen === null) { showFailToast('成本需为金额（最多两位小数），留空表示不变'); return; }
   const effectiveAt = skuForm.value.effectiveAt ? new Date(skuForm.value.effectiveAt).toISOString() : undefined;
@@ -97,12 +104,13 @@ async function submitSku() {
       + `${effectiveAt ? `将于 ${fmtTime(effectiveAt)} 起生效` : '立即生效'}；已确认的作品按锁定单价结算，不受影响。`,
   }).then(() => true).catch(() => false);
   if (!ok) return;
-  await run(async () => {
+  const saved = await run(async () => {
     await adminApi.createSkuVersion(target.skuCode, {
       priceFen, ...(costFen !== undefined ? { costFen } : {}),
       ...(effectiveAt ? { effectiveAt } : {}), idempotencyKey: skuIdem.value,
     });
   });
+  if (!saved) return; // 失败：弹窗与已填内容保留，幂等键沿用重试
   skuDialog.value = false;
   showSuccessToast('已保存新价格版本');
   await loadAll();
@@ -123,12 +131,13 @@ async function submitTier() {
   const target = tierTarget.value;
   if (!target) return;
   if (!tierForm.value.name.trim()) { showFailToast('档位名称必填'); return; }
-  await run(async () => {
+  const saved = await run(async () => {
     await adminApi.updateTier(target.id, {
       name: tierForm.value.name.trim(), note: tierForm.value.note.trim(),
       sort: tierForm.value.sort, status: tierForm.value.status,
     });
   });
+  if (!saved) return;
   showSuccessToast('档位已更新');
   tierDialog.value = false;
   await loadAll();
@@ -147,9 +156,10 @@ async function submitMapping() {
     message: `${tier.name}：${mappingTier.value?.currentMapping?.videoSkuCode ?? '未配置'} → ${mappingSkuCode.value}\n新增一版映射，只影响之后新创建的作品。`,
   }).then(() => true).catch(() => false);
   if (!ok) return;
-  await run(async () => {
+  const saved = await run(async () => {
     await adminApi.createTierMapping(tier.id, mappingSkuCode.value);
   });
+  if (!saved) return;
   showSuccessToast('已新增映射版本');
   mappingDialog.value = false;
   await loadAll();
@@ -184,7 +194,7 @@ async function onCoverPick(event: Event) {
 
 async function submitStyle() {
   if (!styleForm.value.name.trim()) { showFailToast('风格名称必填'); return; }
-  await run(async () => {
+  const saved = await run(async () => {
     const body = {
       name: styleForm.value.name.trim(), description: styleForm.value.description.trim(),
       promptHint: styleForm.value.promptHint.trim(), sort: styleForm.value.sort,
@@ -193,6 +203,7 @@ async function submitStyle() {
     if (styleTarget.value) await adminApi.updateStyle(styleTarget.value.id, body);
     else await adminApi.createStyle(body);
   });
+  if (!saved) return;
   showSuccessToast(styleTarget.value ? '风格已更新' : '风格已新增');
   styleDialog.value = false;
   await loadAll();
@@ -205,7 +216,8 @@ async function toggleStyle(style: AdminStyle) {
     : `重新上架「${style.name}」？`;
   const ok = await showConfirmDialog({ title: next === 'inactive' ? '下架风格' : '上架风格', message: tip }).then(() => true).catch(() => false);
   if (!ok) return;
-  await run(async () => { await adminApi.updateStyle(style.id, { status: next }); });
+  const saved = await run(async () => { await adminApi.updateStyle(style.id, { status: next }); });
+  if (!saved) return;
   showSuccessToast(next === 'inactive' ? '已下架' : '已上架');
   await loadAll();
 }
@@ -243,7 +255,7 @@ async function onVoicePick(event: Event, field: 'sampleUploadId' | 'refAudioUplo
 
 async function submitVoice() {
   if (!voiceForm.value.name.trim()) { showFailToast('音色名称必填'); return; }
-  await run(async () => {
+  const saved = await run(async () => {
     const body = {
       name: voiceForm.value.name.trim(), category: voiceForm.value.category, gender: voiceForm.value.gender,
       ageGroup: voiceForm.value.ageGroup, description: voiceForm.value.description.trim(), sort: voiceForm.value.sort,
@@ -253,6 +265,7 @@ async function submitVoice() {
     if (voiceTarget.value) await adminApi.updateVoice(voiceTarget.value.id, body);
     else await adminApi.createVoice(body);
   });
+  if (!saved) return;
   showSuccessToast(voiceTarget.value ? '音色已更新' : '音色已新增');
   voiceDialog.value = false;
   await loadAll();
@@ -265,7 +278,8 @@ async function toggleVoice(voice: AdminVoice) {
     message: next === 'inactive' ? `下架后新作品不能选「${voice.name}」，已有作品不受影响。` : `重新上架「${voice.name}」？`,
   }).then(() => true).catch(() => false);
   if (!ok) return;
-  await run(async () => { await adminApi.updateVoice(voice.id, { status: next }); });
+  const saved = await run(async () => { await adminApi.updateVoice(voice.id, { status: next }); });
+  if (!saved) return;
   showSuccessToast(next === 'inactive' ? '已下架' : '已上架');
   await loadAll();
 }
@@ -305,11 +319,12 @@ async function submitSettings() {
   });
   const ok = await showConfirmDialog({ title: '保存运营参数', message: `${lines.join('\n')}` }).then(() => true).catch(() => false);
   if (!ok) return;
-  await run(async () => {
+  const saved = await run(async () => {
     const { items } = await adminApi.updateSettings(settingChanges.value);
     settings.value = items;
     draftSettings.value = {};
   });
+  if (!saved) return; // 失败：draftSettings 不清空，已填的修改保留可重试
   showSuccessToast('运营参数已保存');
 }
 </script>

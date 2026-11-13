@@ -80,7 +80,8 @@ export function adminConfigRoutes({ db, config, logger, storage, urlFor }) {
   router.post('/admin/skus/:skuCode/versions', asyncHandler(async (req, res) => {
     const fields = new Fields(req.body);
     const body = {
-      priceFen: fields.int('priceFen', { required: true, min: 0 }),
+      // 上限 10000 分（¥100/单位）：现行最高价 200 分/秒，防误输入多敲一位数字（复审建议 c）
+      priceFen: fields.int('priceFen', { required: true, min: 0, max: 10_000 }),
       costFen: fields.int('costFen', { min: 0 }),
       effectiveAt: dateField(fields, 'effectiveAt'),
       idempotencyKey: fields.string('idempotencyKey', { required: true, max: 100 }),

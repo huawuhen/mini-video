@@ -89,6 +89,7 @@ export function createSegmentGenerateHandler({ db, logger, config, videoProvider
         const { rows: skuRows } = await t.query(
           `SELECT s.sku_code, s.version, s.resolution FROM tier_mappings tm
              JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+             AND s.effective_at <= now()
             WHERE tm.id = $1 ORDER BY s.version DESC LIMIT 1`, [project.tier_mapping_id]);
         const genTaskId = newId('gt');
         await t.query(

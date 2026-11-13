@@ -28,11 +28,16 @@ export function adminAuthRoutes({ db, config }) {
     res.json({ admin: session.admin, csrfToken: session.csrfToken });
   }));
 
-  router.post('/admin/auth/logout', auth.writeGuard, (req, res) => {
-    void auth.logout(auth.readCookie(req));
+  router.post('/admin/auth/logout', auth.writeGuard, asyncHandler(async (req, res) => {
+    const adminId = await auth.logout(auth.readCookie(req));
+    if (adminId) {
+      // 登出也留痕（审计统一带 IP，ADM-04 复审建议 a；无会话的重复登出不记）
+      await auth.audit({ adminId, actor: 'admin', action: 'auth.logout',
+        targetType: 'admin_user', targetId: adminId, ip: req.ip ?? null, detail: {} });
+    }
     auth.clearCookie(res);
     res.json({ ok: true });
-  });
+  }));
 
   return router;
 }

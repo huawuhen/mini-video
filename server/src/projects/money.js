@@ -60,6 +60,7 @@ export async function videoUnitFen(t, tierMappingId) {
   const { rows } = await t.query(
     `SELECT s.price_fen FROM tier_mappings tm
        JOIN skus s ON s.sku_code = tm.video_sku_code AND s.kind = 'video' AND s.status = 'active'
+       AND s.effective_at <= now()
       WHERE tm.id = $1
       ORDER BY s.version DESC LIMIT 1`,
     [tierMappingId],

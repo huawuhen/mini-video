@@ -126,6 +126,10 @@ describe('管理端 价格与配置/审计（M3-ADM-04）', () => {
     // 旧版本保持 active（提前置 inactive 会在生效前出现「无可用价格」）
     const { rows } = await testDb.db.query(`SELECT status FROM skus WHERE sku_code = 'video.480p' AND version = 2`);
     assert.equal(rows[0].status, 'active');
+    // 用户端目录的档位价同样取当前生效版本（复审必改②：全链路口径一致）
+    const catalog = await getCatalog(testDb.db);
+    const standardTier = catalog.qualityTiers.find((tier) => tier.id === 'standard');
+    assert.equal(standardTier.pricePer30sFen, 120 * 30, '未来版本生效前目录档位价不变');
   });
 
   test('新增版本幂等：同键同参重放返回首次结果；同键不同参 409；缺幂等键 400', async () => {
@@ -222,7 +226,7 @@ describe('管理端 价格与配置/审计（M3-ADM-04）', () => {
     assert.equal(rows[0].status, 'inactive');
   });
 
-  test('管理端上传：类型识别、非法文件 400、超 5MB 400', async () => {
+  test('管理端上传：类型识别、非法文件 400、超 5MB 400、MP4 视频不被当 m4a', async () => {
     const bad = await client.call('admin', 'POST', '/admin/uploads',
       { formData: textForm('note.txt'), csrf });
     assert.equal(bad.status, 400);
@@ -236,6 +240,23 @@ describe('管理端 价格与配置/审计（M3-ADM-04）', () => {
     assert.equal(wav.status, 200);
     const { rows } = await testDb.db.query(`SELECT kind, mime FROM uploads WHERE id = $1`, [wav.json.uploadId]);
     assert.deepEqual(rows[0], { kind: 'audio', mime: 'audio/wav' });
+    // 复审建议 b：ftyp isom 的 MP4 视频不能被当 m4a 收下；M4A brand 的音频可收
+    const mp4 = await client.call('admin', 'POST', '/admin/uploads',
+      { formData: ftypForm('clip.mp4', 'isom'), csrf });
+    assert.equal(mp4.status, 400);
+    assert.equal(mp4.json.code, 'UPLOAD_TYPE_INVALID');
+    const m4a = await client.call('admin', 'POST', '/admin/uploads',
+      { formData: ftypForm('audio.m4a', 'M4A '), csrf });
+    assert.equal(m4a.status, 200, `M4A 音频应可上传：${JSON.stringify(m4a.json)}`);
+    const { rows: m4aRows } = await testDb.db.query(`SELECT kind, mime FROM uploads WHERE id = $1`, [m4a.json.uploadId]);
+    assert.deepEqual(m4aRows[0], { kind: 'audio', mime: 'audio/mp4' });
+  });
+
+  test('调价价格上限：超过 ¥100/单位 400（复审建议 c）', async () => {
+    const tooHigh = await client.call('admin', 'POST', '/admin/skus/video.480p/versions',
+      { body: { priceFen: 10_001, idempotencyKey: 'cfg-cap' }, csrf });
+    assert.equal(tooHigh.status, 400);
+    assert.equal(tooHigh.json.code, 'VALIDATION_FAILED');
   });
 
   test('运营参数：白名单外键 400、越界 400、min>max 400、合法修改生效且进审计', async () => {
@@ -318,6 +339,20 @@ function mp3Form(name) {
 function wavForm(name) {
   const form = new FormData();
   const buffer = Buffer.concat([Buffer.from('RIFF____WAVE', 'latin1'), Buffer.alloc(16, 0)]);
+  form.append('file', new Blob([buffer]), name);
+  return form;
+}
+/** ftyp box 样本：major brand 决定是 M4A 音频（可收）还是 MP4 视频（拒收）。 */
+function ftypForm(name, majorBrand) {
+  const form = new FormData();
+  const buffer = Buffer.concat([
+    Buffer.from([0, 0, 0, 24]),
+    Buffer.from('ftyp', 'latin1'),
+    Buffer.from(majorBrand, 'latin1'),
+    Buffer.from('0000', 'latin1'),
+    Buffer.from('isomiso2', 'latin1'),
+    Buffer.alloc(16, 0),
+  ]);
   form.append('file', new Blob([buffer]), name);
   return form;
 }

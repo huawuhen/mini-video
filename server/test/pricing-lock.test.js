@@ -75,6 +75,17 @@ async function changePrice(db, priceFen = 500) {
   });
 }
 
+/** 未来生效改价：插入 version 99（500 分/秒）但 effective_at 在明天——旧版本保持 active。 */
+async function futureChangePrice(db) {
+  await db.tx(async (t) => {
+    await t.query(
+      `INSERT INTO skus (id, sku_code, version, kind, model, channel, resolution, unit, price_fen, cost_fen, durations, effective_at)
+       SELECT 'sku_pricelock0000099', sku_code, 99, kind, model, channel, resolution, unit, 500, cost_fen, durations,
+              now() + interval '1 day'
+         FROM skus WHERE sku_code = $1 ORDER BY version DESC LIMIT 1`, [SKU_CODE]);
+  });
+}
+
 async function wallet(db) {
   const { rows } = await db.query(`SELECT available_fen, frozen_fen FROM wallets WHERE user_id = $1`, [USER]);
   return rows[0];
@@ -268,17 +279,31 @@ describe('价格锁定（M3-ADM-04）', () => {
     assert.equal(detail.pricing.frozenFen, 0);
   });
 
-  test('旧数据回退：video_unit_fen 为 NULL 时按当前价下单（迁移 016 前确认的作品）', async () => {
+  test('未来生效版本：旧作品回退与详情都按当前价，到点后才切换（复审必改②）', async () => {
     const projectId = await makeProject();
     await confirm(projectId, 'lock-c5');
     await ctx.db.query(`UPDATE projects SET video_unit_fen = NULL WHERE id = $1`, [projectId]);
-    await changePrice(ctx.db);
-    const provider = fakeVideoProvider({ pollResults: {} });
+    // 插入明天生效的 500 分/秒版本（旧版本保持 active）——当前价必须仍是 100
+    await futureChangePrice(ctx.db);
+    const provider = fakeVideoProvider({ results: [] });
     const storage = httpMemoryStorage();
     const generate = createSegmentGenerateHandler({ db: ctx.db, logger: silentLogger, config, videoProvider: provider, storage });
     await generate({ projectId, idx: 0 }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
-    const { rows: tasks } = await ctx.db.query(`SELECT request FROM gen_tasks`);
-    const amountFen = (typeof tasks[0].request === 'string' ? JSON.parse(tasks[0].request) : tasks[0].request).amountFen;
-    assert.equal(amountFen, 15000, 'NULL 回退当前价 500×30（原行为）');
+    const readAmount = async () => {
+      const { rows } = await ctx.db.query(`SELECT request FROM gen_tasks ORDER BY created_at DESC LIMIT 1`);
+      return (typeof rows[0].request === 'string' ? JSON.parse(rows[0].request) : rows[0].request).amountFen;
+    };
+    assert.equal(await readAmount(), 3000, '未来版本生效前，NULL 回退按当前价 100×30 下单（不是 15000）');
+    // 未确认作品的详情 pricing（回退当前价）同样不受未来版本影响
+    const detail = await getProjectDetail(ctx.db, { userId: USER, projectId });
+    assert.equal(detail.pricing.videoFen, 6000, '详情 videoFen 按当前价 100×60（不是未来价 500×60）');
+    // ── 到点切换：把未来版本的生效时间改到过去，取价应立即用新版本 ──
+    await ctx.db.query(`UPDATE skus SET effective_at = now() - interval '1 minute'
+      WHERE sku_code = $1 AND version = 99`, [SKU_CODE]);
+    // 第 1 段已有 take（created 未提交）——先把它置 failed，再生成第 2 段验证新价
+    await ctx.db.query(`UPDATE segment_takes SET status = 'failed' WHERE segment_id = (
+      SELECT id FROM segments WHERE project_id = $1 AND idx = 0)`, [projectId]);
+    await generate({ projectId, idx: 1 }, { db: ctx.db, logger: silentLogger, enqueue: async () => {} });
+    assert.equal(await readAmount(), 15000, '生效时间已过 → 切到 500×30');
   });
 });

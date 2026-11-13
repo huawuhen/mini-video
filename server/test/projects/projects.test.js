@@ -191,21 +191,45 @@ describe('projects（M1-BE-05 C2：创建与故事理解）', () => {
   });
 
   test('免费次数：第 quota+1 次创建返回 429；次数按北京日窗口计数', async () => {
-    const limited = loadConfig({ NODE_ENV: 'test', PROJECTS_FREE_DAILY_QUOTA: '2' });
-    await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0002' }), config: limited });
-    await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0003' }), config: limited });
-    await assert.rejects(
-      () => createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0004' }), config: limited }),
-      (err) => err.code === 'FREE_QUOTA_EXHAUSTED');
-    // 换用户不受影响
-    await ctx.db.query(`INSERT INTO users (id, phone, nickname) VALUES ('usr_user00000002', '15800000002', '用户B')`);
-    await ctx.db.query(`INSERT INTO wallets (user_id) VALUES ('usr_user00000002')`);
-    const other = await createProject(ctx.db, { userId: 'usr_user00000002',
-      input: input({ characterIds: [], idempotencyKey: 'idem-b-0001' }), config: limited });
-    assert.equal(other.replayed, false);
+    // M3-ADM-04 复审必改③：免费次数走运营参数（settings 表）优先、env 作默认——
+    // 用 settings 控制，证明后台改了真实生效（.env 已不是这一项的生效来源）
+    await ctx.db.query(`UPDATE settings SET value = '2'::jsonb WHERE key = 'daily_free_understanding'`);
+    try {
+      await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0002' }), config });
+      await createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0003' }), config });
+      await assert.rejects(
+        () => createProject(ctx.db, { userId, input: input({ idempotencyKey: 'idem-0004' }), config }),
+        (err) => err.code === 'FREE_QUOTA_EXHAUSTED');
+      // 换用户不受影响
+      await ctx.db.query(`INSERT INTO users (id, phone, nickname) VALUES ('usr_user00000002', '15800000002', '用户B')`);
+      await ctx.db.query(`INSERT INTO wallets (user_id) VALUES ('usr_user00000002')`);
+      const other = await createProject(ctx.db, { userId: 'usr_user00000002',
+        input: input({ characterIds: [], idempotencyKey: 'idem-b-0001' }), config });
+      assert.equal(other.replayed, false);
+    } finally {
+      await ctx.db.query(`UPDATE settings SET value = '20'::jsonb WHERE key = 'daily_free_understanding'`);
+    }
     // 北京日窗口起点是 UTC 时间的 16:00（前一天）
     const start = beijingDayStartUtc(new Date('2026-10-20T10:00:00Z'));
     assert.equal(start.toISOString(), '2026-10-19T16:00:00.000Z');
+  });
+
+  test('运营参数生效：故事长度上下限按 settings 校验（不再写死 3000）', async () => {
+    await ctx.db.query(`UPDATE settings SET value = '50'::jsonb WHERE key = 'min_story_chars'`);
+    await ctx.db.query(`UPDATE settings SET value = '100'::jsonb WHERE key = 'max_story_chars'`);
+    try {
+      await assert.rejects(
+        () => createProject(ctx.db, { userId, input: input({ storyText: '妈妈带宝宝在公园野餐，树叶被风吹起。', idempotencyKey: 'idem-min-0001' }), config }),
+        (err) => err.code === 'STORY_TOO_SHORT', '低于运营下限（50 字）被拒');
+      await assert.rejects(
+        () => createProject(ctx.db, { userId, input: input({ storyText: '字'.repeat(101), idempotencyKey: 'idem-max-0001' }), config }),
+        (err) => err.code === 'STORY_TOO_LONG', '高于运营上限（100 字）被拒');
+      const ok = await createProject(ctx.db, { userId, input: input({ storyText: '字'.repeat(80), idempotencyKey: 'idem-ok-0001' }), config });
+      assert.equal(ok.replayed, false, '区间内正常创建');
+    } finally {
+      await ctx.db.query(`UPDATE settings SET value = '5'::jsonb WHERE key = 'min_story_chars'`);
+      await ctx.db.query(`UPDATE settings SET value = '3000'::jsonb WHERE key = 'max_story_chars'`);
+    }
   });
 
   test('classifyInput：短想法判为 idea，长文本判为 script', () => {

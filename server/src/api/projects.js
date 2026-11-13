@@ -38,7 +38,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor, channelRout
 
   router.post('/projects', requireAuth, asyncHandler(async (req, res) => {
     const f = new Fields(req.body);
-    const storyText = f.string('storyText', { required: true, max: 3000 });
+    const storyText = f.string('storyText', { required: true, max: 20000 });
     const sourceType = f.oneOf('sourceType', ['text', 'file'], { required: true });
     const title = f.string('title', { max: 60 });
     const styleId = f.string('styleId', { required: true, max: 64 });
@@ -157,7 +157,7 @@ export function projectRoutes({ db, logger, config, storage, urlFor, channelRout
   // ── §6.3 确认点 A ──
   router.post('/projects/:id/story/reanalyze', requireAuth, asyncHandler(async (req, res) => {
     const f = new Fields(req.body);
-    const storyText = f.string('storyText', { required: true, max: 3000 });
+    const storyText = f.string('storyText', { required: true, max: 20000 });
     f.done();
     await reanalyzeProject(db, { userId: req.user.id, projectId: req.params.id, storyText, config });
     res.json(await detail(req));

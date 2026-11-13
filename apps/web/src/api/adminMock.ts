@@ -719,7 +719,9 @@ export const adminMock: AdminApi = {
     await wait(); requireLogin();
     const rows = state.skus.filter((row) => row.skuCode === skuCode);
     if (!rows.length) throw fail(404, 'NOT_FOUND', 'SKU 不存在');
-    if (!Number.isInteger(body.priceFen) || body.priceFen < 0) throw fail(400, 'VALIDATION_FAILED', '填写的内容有误，请检查后重试');
+    if (!Number.isInteger(body.priceFen) || body.priceFen < 0 || body.priceFen > 10_000) {
+      throw fail(400, 'VALIDATION_FAILED', '价格需为 0~100 元（最多两位小数）');
+    }
     const latest = [...rows].sort((a, b) => b.version - a.version)[0];
     if (latest.kind === 'llm' && body.priceFen !== 0) throw fail(400, 'VALIDATION_FAILED', 'LLM 的用户价固定为 0（平台承担），不能设置价格');
     if (state.skuIdem.has(body.idempotencyKey)) {
