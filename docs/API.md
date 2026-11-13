@@ -474,7 +474,7 @@ type AdminOrder = { id: string; userId: string; phoneMasked: string; outTradeNo:
 | 方法 | 路径 | 请求 | 响应 |
 |---|---|---|---|
 | GET | `/admin/skus` | – | `{ items: AdminSku[] }`（每个 `skuCode` 当前生效版本 + 历史版本数） |
-| POST | `/admin/skus/:skuCode/versions` | `{ priceFen, costFen?, effectiveAt?, idempotencyKey }` | `AdminSku`（**新增版本**，旧版本置 `inactive`；不覆盖历史；已出的报价按原价执行） |
+| POST | `/admin/skus/:skuCode/versions` | `{ priceFen, costFen?, effectiveAt?, idempotencyKey }` | `AdminSku`（**新增版本**；立即生效时旧版本置 `inactive`，`effectiveAt` 在未来时新版本与旧版本都保持 `active`、到点自动切换；不覆盖历史；已确认的作品按确认时锁定的单价结算，未消费的旧报价按现契约重算不一致返回 `QUOTE_MISMATCH`） |
 | GET | `/admin/tiers` · PATCH `/admin/tiers/:id` | `{ name?, note?, sort?, status? }` | 档位列表 / 更新后档位 |
 | POST | `/admin/tiers/:id/mappings` | `{ videoSkuCode }` | 新增档位映射版本（同上，不覆盖） |
 | GET | `/admin/styles` · POST `/admin/styles` · PATCH `/admin/styles/:id` | `{ name, description, coverUploadId?, promptHint, sort, status }` | 风格（下架 = `status:'inactive'`，不删除） |
@@ -487,6 +487,7 @@ type AdminSku = { skuCode: string; kind: 'video' | 'image' | 'llm'; model: strin
   effectiveAt: string; marginRate: number | null };   // marginRate = (price - cost) / price，price=0 时 null
 ```
 
+- **价格锁定的影响范围**：作品确认时把视频单价锁进作品（`projects.video_unit_fen`），之后分段生成、续跑、失败重试都按锁定价结算，改价只影响新报价与新确认的作品；交付后的「重拍片段」是一次新的购买，按重拍时的新报价预占与结算。
 - 音色、风格封面上传：复用管理端上传 `POST /admin/uploads`（multipart，图片 ≤5MB、音频 mp3/wav/m4a ≤5MB），返回 `{ uploadId }`。
 
 ### 8.5 运营后台·审计（M3-ADM-04）
